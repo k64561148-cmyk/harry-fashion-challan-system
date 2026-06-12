@@ -166,7 +166,7 @@ export const DEMO_USERS: Profile[] = [
     id: 'user-issue-01',
     email: 'issue@harryfashion.com',
     role: 'issue_dept',
-    name: 'Rakesh Department',
+    name: 'Sundar Department',
     username: 'issue',
     password: 'issue123'
   },
@@ -174,7 +174,7 @@ export const DEMO_USERS: Profile[] = [
     id: 'user-billing-01',
     email: 'billing@harryfashion.com',
     role: 'billing',
-    name: 'Shreya Billing',
+    name: 'Kevin Billing',
     username: 'billing',
     password: 'billing456'
   },
@@ -182,7 +182,7 @@ export const DEMO_USERS: Profile[] = [
     id: 'user-admin-01',
     email: 'admin@harryfashion.com',
     role: 'admin',
-    name: 'Anil Admin (Owner)',
+    name: 'Harry Admin (Owner)',
     username: 'admin',
     password: 'admin789'
   }
@@ -279,10 +279,55 @@ class DatabaseService {
       this.save('materials', initialMaterials);
     }
 
-    // 3. Initialize current user if none selected
+    // 3. Initialize current user if none selected, and migrate existing profiles/current user.
+    let profiles = this.load<Profile[]>('profiles', []);
+    if (profiles.length > 0) {
+      let profilesChanged = false;
+      const updatedProfiles = profiles.map(p => {
+        if (p.id === 'user-admin-01' && p.name.includes('Anil')) {
+          p.name = 'Harry Admin (Owner)';
+          profilesChanged = true;
+        }
+        if (p.id === 'user-issue-01' && p.name.includes('Rakesh')) {
+          p.name = 'Sundar Department';
+          profilesChanged = true;
+        }
+        if (p.id === 'user-billing-01' && p.name.includes('Shreya')) {
+          p.name = 'Kevin Billing';
+          profilesChanged = true;
+        }
+        return p;
+      });
+      if (profilesChanged) {
+        this.save('profiles', updatedProfiles);
+      }
+    }
+
     const currentUser = localStorage.getItem(this.getStorageKey('current_user'));
     if (!currentUser) {
       localStorage.setItem(this.getStorageKey('current_user'), JSON.stringify(DEMO_USERS[2]));
+    } else {
+      try {
+        const parsed = JSON.parse(currentUser) as Profile;
+        let userChanged = false;
+        if (parsed.id === 'user-admin-01' && parsed.name.includes('Anil')) {
+          parsed.name = 'Harry Admin (Owner)';
+          userChanged = true;
+        }
+        if (parsed.id === 'user-issue-01' && parsed.name.includes('Rakesh')) {
+          parsed.name = 'Sundar Department';
+          userChanged = true;
+        }
+        if (parsed.id === 'user-billing-01' && parsed.name.includes('Shreya')) {
+          parsed.name = 'Kevin Billing';
+          userChanged = true;
+        }
+        if (userChanged) {
+          localStorage.setItem(this.getStorageKey('current_user'), JSON.stringify(parsed));
+        }
+      } catch (err) {
+        console.warn('Could not parse or migrate current user:', err);
+      }
     }
 
     // Initialize collections in localStorage as fallback
