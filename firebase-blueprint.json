@@ -1,0 +1,210 @@
+{
+  "entities": {
+    "Master": {
+      "title": "Master",
+      "description": "Tailor master craftsmen records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "type": { "type": "string", "enum": ["jacket", "pant"] },
+        "is_active": { "type": "boolean" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "code", "type", "is_active", "created_at"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "Inventory material items used in tailoring",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "unit": { "type": "string" },
+        "default_rate": { "type": "number" },
+        "current_stock": { "type": "number" },
+        "is_active": { "type": "boolean" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "unit", "default_rate", "current_stock", "is_active", "created_at"]
+    },
+    "Challan": {
+      "title": "Challan",
+      "description": "Material issuance event record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "challan_no": { "type": "string" },
+        "master_id": { "type": "string" },
+        "issued_date": { "type": "string" },
+        "issued_by": { "type": "string" },
+        "status": { "type": "string", "enum": ["issued", "billed"] },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "challan_no", "master_id", "issued_date", "issued_by", "status", "notes", "created_at"]
+    },
+    "ChallanItem": {
+      "title": "ChallanItem",
+      "description": "Individual items included in a material challan",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "challan_id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "qty": { "type": "number" },
+        "rate": { "type": "number" },
+        "amount": { "type": "number" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "challan_id", "material_id", "qty", "rate", "amount", "created_at"]
+    },
+    "InwardEntry": {
+      "title": "InwardEntry",
+      "description": "Stock inventory intake inward record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "qty_received": { "type": "number" },
+        "supplier_name": { "type": "string" },
+        "bill_no": { "type": "string" },
+        "inward_date": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "material_id", "qty_received", "supplier_name", "bill_no", "inward_date", "notes", "created_by", "created_at"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Consolidated month-end clearing invoice",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "invoice_no": { "type": "string" },
+        "master_id": { "type": "string" },
+        "period_month": { "type": "number" },
+        "period_year": { "type": "number" },
+        "work_amount": { "type": "number" },
+        "material_deduction": { "type": "number" },
+        "net_payable": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "finalised"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "invoice_no", "master_id", "period_month", "period_year", "work_amount", "material_deduction", "net_payable", "status", "created_at"]
+    },
+    "InvoiceChallan": {
+      "title": "InvoiceChallan",
+      "description": "Linked mapping of an invoice to its source challans",
+      "type": "object",
+      "properties": {
+        "invoice_id": { "type": "string" },
+        "challan_id": { "type": "string" }
+      },
+      "required": ["invoice_id", "challan_id"]
+    },
+    "MasterRateOverride": {
+      "title": "MasterRateOverride",
+      "description": "Override custom material rating per master",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "master_id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "rate": { "type": "number" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "master_id", "material_id", "rate", "created_at"]
+    },
+    "RateHistory": {
+      "title": "RateHistory",
+      "description": "History of material price changes for catalog validation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "old_rate": { "type": "number" },
+        "new_rate": { "type": "number" },
+        "changed_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "material_id", "old_rate", "new_rate", "changed_by", "created_at"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Central ledger logging user actions for compliance",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_email": { "type": "string" },
+        "action": { "type": "string" },
+        "details": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "user_email", "action", "details", "created_at"]
+    },
+    "Profile": {
+      "title": "Profile",
+      "description": "User account registration and authorization profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["issue_dept", "billing", "admin"] },
+        "name": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "username": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "required": ["id", "email", "role", "name", "created_at"]
+    }
+  },
+  "firestore": {
+    "/profiles/{profileId}": {
+      "schema": "Profile",
+      "description": "User account security profiles"
+    },
+    "/masters/{masterId}": {
+      "schema": "Master",
+      "description": "Tailoring masters"
+    },
+    "/materials/{materialId}": {
+      "schema": "Material",
+      "description": "Tailor material inventory objects"
+    },
+    "/challans/{challanId}": {
+      "schema": "Challan",
+      "description": "Issued material challans"
+    },
+    "/challan_items/{itemId}": {
+      "schema": "ChallanItem",
+      "description": "Specific material items on a challan"
+    },
+    "/inward_entries/{entryId}": {
+      "schema": "InwardEntry",
+      "description": "Stock receiving receipt records"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Monthly clearing invoices"
+    },
+    "/invoice_challans/{id}": {
+      "schema": "InvoiceChallan",
+      "description": "Challans belonging to billing invoice aggregations"
+    },
+    "/master_rate_overrides/{overrideId}": {
+      "schema": "MasterRateOverride",
+      "description": "Override rate matrix per master per material"
+    },
+    "/rate_history/{historyId}": {
+      "schema": "RateHistory",
+      "description": "History logs of material rate revisions"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Audit trails for compliance tracking"
+    }
+  }
+}
