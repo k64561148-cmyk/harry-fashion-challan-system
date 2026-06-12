@@ -26,8 +26,11 @@ import {
   Sparkles,
   User,
   ShieldCheck,
-  CalendarCheck
+  CalendarCheck,
+  Cloud
 } from 'lucide-react';
+import { auth, googleProvider, signInWithPopup, signOut } from './firebase';
+import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
@@ -37,6 +40,40 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Profile>(db.getCurrentUser());
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<string>('');
+
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleCloudLogin = async () => {
+    setIsCloudLoggingIn(true);
+    setCloudError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      db.addAuditLog(currentUser.email, 'Cloud Sync Enabled', 'Linked browser terminal instance to Firebase cloud synchronizer.');
+    } catch (err: any) {
+      console.error(err);
+      setCloudError(err.message || 'Verification rejected.');
+    } finally {
+      setIsCloudLoggingIn(false);
+    }
+  };
+
+  const handleCloudLogout = async () => {
+    try {
+      await signOut(auth);
+      db.addAuditLog(currentUser.email, 'Cloud Sync Disabled', 'Unlinked browser terminal instance from Firebase cloud.');
+    } catch (err: any) {
+      console.error(err);
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('hf_session_logged_in');
@@ -309,6 +346,52 @@ export default function App() {
 
             {/* Right clock & clock profile specs */}
             <div className="flex items-center gap-5">
+              {/* Cloud Sync Status available to all employees to bridge isolated sessions */}
+              <div className="flex items-center gap-2 pr-5 border-r border-slate-250 relative">
+                {firebaseUser ? (
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <div className="text-left">
+                      <span className="text-[9px] font-extrabold text-slate-400 block uppercase tracking-wider leading-none">Cloud Sync</span>
+                      <span className="text-[10px] font-bold text-emerald-600 block mt-0.5" title={`Connected to Firebase: ${firebaseUser.email}`}>
+                        Active
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleCloudLogout}
+                      className="text-[9px] font-extrabold text-[#1A2E4A] hover:text-rose-600 bg-slate-100 hover:bg-rose-50/70 border border-slate-250 hover:border-rose-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0"></span>
+                    <div className="text-left">
+                      <span className="text-[9px] font-extrabold text-slate-400 block uppercase tracking-wider leading-none">Cloud Sync</span>
+                      <span className="text-[10px] font-bold text-amber-600 block mt-0.5">
+                        Offline Cache
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleCloudLogin}
+                      disabled={isCloudLoggingIn}
+                      className="bg-amber-50 hover:bg-amber-100 border border-amber-200/70 hover:border-amber-300 text-amber-800 text-[9px] font-extrabold py-1 px-2.5 rounded-md transition flex items-center gap-0.5 cursor-pointer uppercase"
+                    >
+                      <Cloud className="w-3 h-3" /> {isCloudLoggingIn ? 'Sync...' : 'Link'}
+                    </button>
+                    {cloudError && (
+                      <span className="text-[9px] text-rose-500 font-bold max-w-[50px] truncate" title={cloudError}>
+                        ⚠️ Err
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center gap-1.5 text-slate-500 text-xs font-semibold border-r border-slate-200 pr-5">
                 <CalendarCheck className="w-4 h-4 text-slate-400" />
                 <span>System Clock:</span>
