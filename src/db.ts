@@ -218,6 +218,7 @@ class DatabaseService {
     this.initDatabase();
     this.testCloudConnection();
     this.setupAuthStateListener();
+    this.attemptBackgroundAuth();
   }
 
   // Mandatory getFromServer connection test (from Firebase Skill guidelines)
@@ -229,6 +230,20 @@ class DatabaseService {
       if (error instanceof Error && error.message.includes('the client is offline')) {
         console.error("Please check your Firebase configuration or network status.");
       }
+    }
+  }
+
+  // Silent background Firebase login so all devices synchronize automatically without popups
+  private async attemptBackgroundAuth() {
+    // If we're already checking or authenticated, skip
+    if (auth.currentUser) return;
+    try {
+      const { signInAnonymously } = await import('./firebase');
+      await signInAnonymously(auth);
+      console.log("Background cloud connection successfully synced!");
+    } catch (err: any) {
+      console.warn("Background cloud connection was deferred or requires explicit console option. Normal offline mode ready:", err.message);
+      (window as any)._firebase_init_error = err.message || String(err);
     }
   }
 
@@ -349,16 +364,15 @@ class DatabaseService {
       this.activeListeners = [];
 
       if (user) {
-        console.log(`Authenticated with Cloud Database as ${user.email} (UID: ${user.uid}). Initializing Firestore Real-time synchronization...`);
+        console.log(`Authenticated with Cloud Database as ${user.email || 'Anonymous'} (UID: ${user.uid}). Initializing Firestore Real-time synchronization...`);
         this.isFirebaseInitialized = true;
 
         // 1. Establish real-time listener for current user's security profile
         const profileRef = doc(firestore, 'profiles', user.uid);
         const unsubscribeProfile = onSnapshot(profileRef, async (snap) => {
           if (snap.exists()) {
-            const profile = snap.data() as Profile;
-            this.save('current_user', profile);
-            window.dispatchEvent(new Event('storage'));
+            // Keep the profile, but DO NOT overwrite local storage 'current_user' 
+            // to allow separate local workspace profiles (Sundar, Kevin, Harry) to persist.
             window.dispatchEvent(new Event('db_sync'));
           } else {
             const email = user.email || 'guest@harryfashion.com';
@@ -375,20 +389,16 @@ class DatabaseService {
             const newProfile: Profile = {
               id: user.uid,
               email: email,
-              name: user.displayName || email.split('@')[0],
+              name: user.displayName || (user.isAnonymous ? 'Anonymous Sync Worker' : email.split('@')[0]),
               role: role,
               created_at: new Date().toISOString()
             };
 
             try {
               await setDoc(profileRef, newProfile);
-              this.save('current_user', newProfile);
-              window.dispatchEvent(new Event('storage'));
               window.dispatchEvent(new Event('db_sync'));
             } catch (err) {
-              console.error('Error creating user profile', err);
-              this.save('current_user', newProfile);
-              window.dispatchEvent(new Event('storage'));
+              console.error('Error creating user profile in cloud:', err);
             }
           }
         }, (error) => {

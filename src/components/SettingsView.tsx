@@ -1262,9 +1262,9 @@ export const SettingsView: React.FC = () => {
               </p>
             </div>
             {firebaseUser ? (
-              <span className="px-3 py-1 bg-green-50 text-green-700 rounded-full text-xs font-bold border border-green-200 flex items-center gap-1.5 shadow-xs">
-                <span className="w-2 h-2 rounded-full bg-green-500 animate-ping"></span>
-                Cloud Sync Active
+              <span className={`px-3 py-1 ${firebaseUser.isAnonymous ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-green-50 text-green-700 border-green-200'} rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-xs`}>
+                <span className={`w-2 h-2 rounded-full ${firebaseUser.isAnonymous ? 'bg-indigo-500' : 'bg-green-500'} animate-ping`}></span>
+                {firebaseUser.isAnonymous ? 'Shared Background Auto-Sync Active' : 'Personal Google Sync Active'}
               </span>
             ) : (
               <span className="px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-xs font-bold border border-amber-200 flex items-center gap-1.5 shadow-xs">
@@ -1289,8 +1289,18 @@ export const SettingsView: React.FC = () => {
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-white p-3 rounded-xl border border-slate-200">
                       <div>
-                        <span className="text-slate-400 font-medium block text-[10px]">AUTH SYSTEM EMAIL</span>
-                        <span className="font-bold text-slate-805 truncate block">{firebaseUser.email}</span>
+                        <span className="text-slate-400 font-medium block text-[10px]">AUTHENTICATION TYPE</span>
+                        <span className="font-bold text-slate-800 block">
+                          {firebaseUser.isAnonymous 
+                            ? 'Shared Silent Background Key' 
+                            : 'Personal Google Google Account'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-medium block text-[10px]">CONNECTED CLIENT EMAIL</span>
+                        <span className="font-bold text-slate-800 truncate block">
+                          {firebaseUser.email || 'None (Shared Anonymous Device Client)'}
+                        </span>
                       </div>
                       <div>
                         <span className="text-slate-404 font-medium block text-[10px]">ESTABLISHED UNIQUE UID</span>
@@ -1298,20 +1308,41 @@ export const SettingsView: React.FC = () => {
                       </div>
                       <div>
                         <span className="text-slate-404 font-medium block text-[10px]">FIRESTORE DATABASE NAME</span>
-                        <span className="font-bold text-blue-700 block">gen-lang-client-0377985094 (Default)</span>
-                      </div>
-                      <div>
-                        <span className="text-slate-404 font-medium block text-[10px]">REGIONAL DEPLOY NODE</span>
-                        <span className="font-bold text-slate-850 block">AP-SOUTH-1 (Mumbai Area)</span>
+                        <span className="font-bold text-blue-700 block">ai-studio-8cf63be5-8c2c-4ac4-9bc5-3f05fd20bdfb (Default)</span>
                       </div>
                     </div>
+
+                    <div className="p-3.5 bg-sky-50 rounded-xl border border-sky-100 text-[11px] text-sky-850 leading-relaxed font-medium">
+                      <p className="font-bold text-sky-900 mb-0.5">ℹ️ Multi-User Separation Preserved</p>
+                      Your Google or Anonymous connection is used strictly as a database-level secure synchronizer pipeline. The active logged-in terminal employee (<strong className="text-sky-900">{currentUser.name} as {currentUser.role.toUpperCase()}</strong>) remains independent and separate. This ensures Sundar Department (Issue) and Kevin Billing can use separate devices on the same database in real time!
+                    </div>
                     
-                    <button
-                      onClick={handleGoogleSignOut}
-                      className="inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-705 text-xs font-bold py-2.5 px-4 rounded-xl transition cursor-pointer"
-                    >
-                      <LogOut className="w-4 h-4" /> Stop Cloud Sync
-                    </button>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        onClick={handleGoogleSignOut}
+                        className="inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold py-2 px-4.5 rounded-lg transition cursor-pointer"
+                      >
+                        <LogOut className="w-4 h-4" /> Stop Cloud Sync (Go Offline)
+                      </button>
+                      
+                      {!firebaseUser.isAnonymous && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const { signInAnonymously } = await import('firebase/auth');
+                              await signOut(auth);
+                              await signInAnonymously(auth);
+                              showFeedback('Switched to shared background auto-sync successfully!');
+                            } catch (e: any) {
+                              showFeedback(e.message || 'Background switch failed', true);
+                            }
+                          }}
+                          className="inline-flex items-center gap-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold py-2 px-4.5 rounded-lg border border-indigo-200 transition cursor-pointer"
+                        >
+                          <RefreshCw className="w-4 h-4 animate-spin" /> Switch to Shared Auto-Sync
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -1326,24 +1357,82 @@ export const SettingsView: React.FC = () => {
                       </span>
                     </div>
 
-                    <button
-                      onClick={handleGoogleSignIn}
-                      disabled={isLoggingIn}
-                      className="inline-flex items-center gap-2 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs font-bold py-3 px-5 rounded-xl transition cursor-pointer shadow-sm shadow-[#1A2E4A]/10 disabled:opacity-50"
-                    >
-                      {isLoggingIn ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" /> Verifying Connection...
-                        </>
-                      ) : (
-                        <>
-                          <LogIn className="w-4 h-4" /> Authenticate & Sync with Google Account
-                        </>
-                      )}
-                    </button>
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <button
+                        onClick={handleGoogleSignIn}
+                        disabled={isLoggingIn}
+                        className="inline-flex items-center justify-center gap-2 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs font-bold py-3 px-5 rounded-xl transition cursor-pointer shadow-sm shadow-[#1A2E4A]/10 disabled:opacity-50"
+                      >
+                        {isLoggingIn ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" /> Verifying Connection...
+                          </>
+                        ) : (
+                          <>
+                            <LogIn className="w-4 h-4" /> Link Personal Google Account
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={async () => {
+                          setIsLoggingIn(true);
+                          try {
+                            const { signInAnonymously } = await import('firebase/auth');
+                            await signInAnonymously(auth);
+                            showFeedback('Connected to shared background synchronizer successfully!');
+                          } catch (err: any) {
+                            console.error(err);
+                            showFeedback(err.message || 'Background connection deferred', true);
+                          } finally {
+                            setIsLoggingIn(false);
+                          }
+                        }}
+                        className="inline-flex items-center justify-center gap-2 bg-indigo-650 hover:bg-indigo-700 text-white text-xs font-bold py-3 px-5 rounded-xl transition cursor-pointer shadow-sm shadow-indigo-650/10"
+                      >
+                        <RefreshCw className="w-4 h-4" /> Connect Silent Shared Sync
+                      </button>
+                    </div>
                   </div>
                 )}
 
+              </div>
+
+              {/* FRIENDLY SYSTEM COMPLIANCE TROUBLESHOOTING FOR HARRY FASHION TEAM */}
+              <div className="bg-rose-50/50 border border-slate-200 p-5 rounded-2xl space-y-4" id="compliance-troubleshooter text-left">
+                <h4 className="text-xs font-bold text-rose-800 uppercase tracking-wider flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0"></span>
+                  Troubleshooting Guide: Fix Vercel Domains & Sync Issues
+                </h4>
+                <div className="space-y-3.5 text-xs text-slate-700">
+                  <div className="space-y-1">
+                    <p className="font-bold text-[#1A2E4A]">1. Facing "Firebase: Error (auth/unauthorized-domain)" on Vercel?</p>
+                    <p className="text-[11px] text-slate-500 leading-relaxed font-normal">
+                      By default, Firebase prevents signing in or syncing on new domains (like your Vercel or Netlify link) to prevent abuse. Fix it in <strong className="font-bold text-slate-700">30 seconds</strong>:
+                    </p>
+                    <ol className="list-decimal pl-5 text-[10px] space-y-1 text-slate-500 mt-1 font-sans">
+                      <li>Go to your <a href="https://console.firebase.google.com/" target="_blank" className="text-blue-600 font-bold hover:underline">Firebase Console</a>, click your business project.</li>
+                      <li>In the left sidebar, click <strong className="font-bold text-slate-700">Authentication</strong>, then click the <strong className="font-bold text-slate-700">Settings</strong> tab at the top.</li>
+                      <li>In the side sub-panel, click <strong className="font-bold text-[#1A2E4A]">Authorized Domains</strong>.</li>
+                      <li>Click <strong className="text-[#1A2E4A] font-bold">Add Domain</strong>, copy & type <code className="bg-slate-150 py-0.5 px-1 rounded text-red-600 font-mono text-[9px]">harry-fashion-challan-system-esjd.vercel.app</code>, and click Add. You are all set!</li>
+                    </ol>
+                  </div>
+
+                  <hr className="border-slate-200/50" />
+
+                  <div className="space-y-1">
+                    <p className="font-bold text-[#1A2E4A]">2. Enable "Anonymous Sign-In" to Connect Seamlessly WITHOUT Google Passwords</p>
+                    <p className="text-[11px] text-slate-500 leading-relaxed font-normal">
+                      If you want Sunder (Issue) and Kevin (Billing) to sync data automatically in the background without needing to prompt them for passwords, enable anonymous sign-up:
+                    </p>
+                    <ol className="list-decimal pl-5 text-[10px] space-y-1 text-slate-500 mt-1 font-sans">
+                      <li>In your <strong className="font-bold text-slate-700">Firebase Console &rarr; Authentication</strong> panel, click the <strong className="font-bold text-slate-700">Sign-in Method</strong> tab.</li>
+                      <li>Click <strong className="font-bold text-[#1A2E4A]">Add New Provider</strong> and choose <strong className="font-bold text-[#1A2E4A]">Anonymous</strong>.</li>
+                      <li>Toggle <strong className="font-bold text-emerald-600">Enable</strong> and click <strong className="font-bold text-slate-700">Save</strong>.</li>
+                      <li>The application can now sync silently behind the scenes automatically on all employee devices!</li>
+                    </ol>
+                  </div>
+                </div>
               </div>
 
               {/* Data Safety Info Panel */}
