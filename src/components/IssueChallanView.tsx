@@ -68,11 +68,29 @@ export const IssueChallanView: React.FC = () => {
     setChallanNo(db.getNextChallanNo());
   };
 
+  const createBlankRows = (count: number, startIdx: number = 0): ChallanFormItem[] => {
+    const newRows: ChallanFormItem[] = [];
+    const baseTime = Date.now();
+    for (let i = 0; i < count; i++) {
+      const newId = `row-${baseTime}-${startIdx + i}-${Math.random().toString(36).substring(2, 7)}`;
+      newRows.push({
+        id: newId,
+        material_id: '',
+        qty: '',
+        rate: '',
+        unit: 'pc',
+        amount: 0,
+        stockWarning: false
+      });
+    }
+    return newRows;
+  };
+
   useEffect(() => {
     loadChallanMastersData();
 
-    // Initialize with 1 empty row
-    addItemRow();
+    // Initialize with 20 empty rows
+    setItems(createBlankRows(20));
 
     window.addEventListener('db_sync', loadChallanMastersData);
     return () => window.removeEventListener('db_sync', loadChallanMastersData);
@@ -90,36 +108,18 @@ export const IssueChallanView: React.FC = () => {
   }, [items]);
 
   const addItemRow = () => {
-    const newId = 'row-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5);
-    setItems(prev => [
-      ...prev,
-      {
-        id: newId,
-        material_id: '',
-        qty: '',
-        rate: '',
-        unit: 'pc',
-        amount: 0,
-        stockWarning: false
-      }
-    ]);
+    setItems(prev => [...prev, ...createBlankRows(1, prev.length)]);
+  };
+
+  const add20ItemRows = () => {
+    setItems(prev => [...prev, ...createBlankRows(20, prev.length)]);
   };
 
   const deleteItemRow = (id: string) => {
     if (items.length > 1) {
       setItems(prev => prev.filter(item => item.id !== id));
     } else {
-      setItems([
-        {
-          id: 'row-' + Date.now(),
-          material_id: '',
-          qty: '',
-          rate: '',
-          unit: 'pc',
-          amount: 0,
-          stockWarning: false
-        }
-      ]);
+      setItems(createBlankRows(20));
     }
   };
 
@@ -290,19 +290,8 @@ export const IssueChallanView: React.FC = () => {
     setErrorMessage('');
     setChallanNo(db.getNextChallanNo());
     
-    // Append 1 empty line
-    const initId = 'row-' + Date.now();
-    setItems([
-      {
-        id: initId,
-        material_id: '',
-        qty: '',
-        rate: '',
-        unit: 'pc',
-        amount: 0,
-        stockWarning: false
-      }
-    ]);
+    // Append 20 empty lines
+    setItems(createBlankRows(20));
   };
 
   // Filter masters list
@@ -483,14 +472,7 @@ export const IssueChallanView: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {items.map((item, index) => {
-                    const rowSearch = rowSearchTerms[item.id] || '';
-                    const isFocused = focusedRowId === item.id;
                     const matObj = materials.find(m => m.id === item.material_id);
-                    
-                    // Filter materials for this row dropdown
-                    const filteredRowMaterials = materials.filter(m => 
-                      m.name.toLowerCase().includes(rowSearch.toLowerCase())
-                    );
 
                     return (
                       <tr key={item.id} className="hover:bg-slate-50/50 transition">
@@ -500,40 +482,23 @@ export const IssueChallanView: React.FC = () => {
                           {index + 1}
                         </td>
 
-                        {/* Searchable Material dropdown */}
-                        <td className="py-3 px-3 relative align-middle">
-                          <div className="relative">
-                            <input
-                              type="text"
-                              placeholder="Search threads, satin, fusing..."
-                              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold"
-                              value={rowSearch}
-                              onChange={(e) => {
-                                setRowSearchTerms(prev => ({ ...prev, [item.id]: e.target.value }));
-                                setFocusedRowId(item.id);
-                              }}
-                              onFocus={() => setFocusedRowId(item.id)}
-                            />
-                            {isFocused && (
-                              <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-40 overflow-y-auto">
-                                {filteredRowMaterials.length === 0 ? (
-                                  <p className="p-2.5 text-[11px] text-slate-400 text-center">Item not found</p>
-                                ) : (
-                                  filteredRowMaterials.map(m => (
-                                    <button
-                                      key={m.id}
-                                      type="button"
-                                      onClick={() => handleMaterialSelect(item.id, m.id)}
-                                      className="w-full text-left px-2.5 py-1.5 text-[11px] hover:bg-slate-50 text-slate-700 transition flex justify-between"
-                                    >
-                                      <span className="font-bold">{m.name}</span>
-                                      <span className="text-[10px] text-slate-400">Stock: {m.current_stock.toFixed(1)} {m.unit}</span>
-                                    </button>
-                                  ))
-                                )}
-                              </div>
-                            )}
-                          </div>
+                        {/* Dropdown Material Selector */}
+                        <td className="py-3 px-3 align-middle">
+                          <select
+                            className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold cursor-pointer"
+                            value={item.material_id}
+                            onChange={(e) => handleMaterialSelect(item.id, e.target.value)}
+                          >
+                            <option value="">-- Choose Material --</option>
+                            {materials.map(m => {
+                              const resolvedRate = selectedMasterId ? db.getRateForMaster(selectedMasterId, m.id) : m.default_rate;
+                              return (
+                                <option key={m.id} value={m.id}>
+                                  {m.name} [₹{resolvedRate} / Stock: {m.current_stock.toFixed(1)} {m.unit}]
+                                </option>
+                              );
+                            })}
+                          </select>
                           
                           {/* Stock warn tags */}
                           {item.stockWarning && matObj && (
@@ -595,14 +560,23 @@ export const IssueChallanView: React.FC = () => {
               </table>
             </div>
 
-            {/* Add row controller */}
-            <button
-              type="button"
-              onClick={addItemRow}
-              className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1.5 cursor-pointer ml-auto"
-            >
-              <Plus className="w-4 h-4" /> Add Row Line
-            </button>
+            {/* Add row controllers */}
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={addItemRow}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-750 border border-slate-200 text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" /> Add Row Line
+              </button>
+              <button
+                type="button"
+                onClick={add20ItemRows}
+                className="bg-[#1A2E4A]/10 hover:bg-[#1A2E4A]/25 text-[#1A2E4A] border border-[#1A2E4A]/20 text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1.5 cursor-pointer font-sans"
+              >
+                <Plus className="w-4 h-4" /> Add 20 Rows
+              </button>
+            </div>
           </div>
 
           <hr className="border-slate-100" />
