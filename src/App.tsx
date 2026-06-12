@@ -351,20 +351,20 @@ export default function App() {
                 {firebaseUser ? (
                   <div className="flex items-center gap-2">
                     <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${firebaseUser.isAnonymous ? 'bg-indigo-400' : 'bg-emerald-400'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-2 w-2 ${firebaseUser.isAnonymous ? 'bg-indigo-500' : 'bg-emerald-500'}`}></span>
                     </span>
                     <div className="text-left">
                       <span className="text-[9px] font-extrabold text-slate-400 block uppercase tracking-wider leading-none">Cloud Sync</span>
-                      <span className="text-[10px] font-bold text-emerald-600 block mt-0.5" title={`Connected to Firebase: ${firebaseUser.email}`}>
-                        Active
+                      <span className={`text-[10px] font-bold block mt-0.5 ${firebaseUser.isAnonymous ? 'text-indigo-600' : 'text-emerald-600'}`} title={firebaseUser.isAnonymous ? 'Connected anonymously to the shared database' : `Connected as ${firebaseUser.email}`}>
+                        {firebaseUser.isAnonymous ? 'Shared Auto-Sync' : 'Personal Sync'}
                       </span>
                     </div>
                     <button
                       onClick={handleCloudLogout}
                       className="text-[9px] font-extrabold text-[#1A2E4A] hover:text-rose-600 bg-slate-100 hover:bg-rose-50/70 border border-slate-250 hover:border-rose-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase"
                     >
-                      Logout
+                      Disconnect
                     </button>
                   </div>
                 ) : (

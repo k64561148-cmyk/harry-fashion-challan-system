@@ -218,7 +218,6 @@ class DatabaseService {
     this.initDatabase();
     this.testCloudConnection();
     this.setupAuthStateListener();
-    this.attemptBackgroundAuth();
   }
 
   // Mandatory getFromServer connection test (from Firebase Skill guidelines)
@@ -358,6 +357,7 @@ class DatabaseService {
 
   // Listen to Auth changes and enable cloud listeners
   private setupAuthStateListener() {
+    let isFirstCheck = true;
     auth.onAuthStateChanged((user) => {
       // Clear active listeners
       this.activeListeners.forEach(unsubscribe => unsubscribe());
@@ -412,7 +412,13 @@ class DatabaseService {
       } else {
         console.log("Database running in Local-first offline mode. Sign in to sync with Cloud!");
         this.isFirebaseInitialized = false;
+
+        // If first check has completed with null, trigger silent background authorization!
+        if (isFirstCheck) {
+          this.attemptBackgroundAuth();
+        }
       }
+      isFirstCheck = false;
     });
   }
 
