@@ -5,7 +5,8 @@
 
 import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
-import { Challan, ChallanItem, Material, Master, Invoice, InwardEntry } from '../types';
+import { Challan, ChallanItem, Material, Master, Invoice, InwardEntry, AuditLog } from '../types';
+import { smartSavePDF, getFolderChallanDateText, getFolderInvoiceDateText } from './smartDownloader';
 
 // Helper to format currency in INR style (Indian Rupees with commas)
 export function formatINR(num: number): string {
@@ -420,21 +421,43 @@ export async function generateChallanPDF(
 
   drawFooter(doc, 1, 1);
 
+  if (challan.status === ('voided' as any)) {
+    doc.saveGraphicsState();
+    doc.setTextColor(220, 50, 50);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(72);
+    // Draw "VOID" watermark diagonally in the center of the page
+    doc.text('VOIDED', 105, 140, { align: 'center', angle: 30 });
+    
+    // Draw diagonal cross lines in red
+    doc.setDrawColor(220, 50, 50);
+    doc.setLineWidth(1.0);
+    doc.line(14, 50, 196, 240);
+    doc.line(196, 50, 14, 240);
+    doc.restoreGraphicsState();
+  }
+
   // Return generated pdf blob
   const pdfBlob = doc.output('blob');
   
   if (autoDownload) {
-    doc.save(`CHALLAN_${challan.challan_no}.pdf`);
+    smartSavePDF({
+      blob: pdfBlob,
+      category: 'challan',
+      dateText: getFolderChallanDateText(challan.issued_date),
+      masterName: master.name,
+      fileNo: challan.challan_no,
+      isVoided: challan.status === ('voided' as any)
+    });
   }
 
   if (shouldPrint) {
     printPDFDoc(doc);
   }
 
-  // Log simulated Supabase storage saves
   const yr = new Date().getFullYear();
   const mo = String(new Date().getMonth() + 1).padStart(2, '0');
-  console.log(`Saved PDF to simulated Supabase storage bucket: /challans/${yr}-${mo}/CHALLAN_${challan.challan_no}.pdf`);
+  console.log(`Saved PDF using Smart Folder System / Cloud: /challans/${yr}-${mo}/CHALLAN_${challan.challan_no}.pdf`);
 
   return pdfBlob;
 }
@@ -724,7 +747,13 @@ export async function generateInvoicePDF(
   const pdfBlob = doc.output('blob');
   
   if (autoDownload) {
-    doc.save(`INVOICE_${invoice.invoice_no}.pdf`);
+    smartSavePDF({
+      blob: pdfBlob,
+      category: 'invoice',
+      dateText: getFolderInvoiceDateText(invoice.period_month, invoice.period_year),
+      masterName: master.name,
+      fileNo: invoice.invoice_no
+    });
   }
 
   if (shouldPrint) {
@@ -733,7 +762,7 @@ export async function generateInvoicePDF(
 
   const yr = new Date().getFullYear();
   const mo = String(new Date().getMonth() + 1).padStart(2, '0');
-  console.log(`Saved Invoice PDF locally: /invoices/${yr}-${mo}/INVOICE_${invoice.invoice_no}.pdf`);
+  console.log(`Saved Invoice PDF using Smart Folder System / Cloud: /invoices/${yr}-${mo}/INVOICE_${invoice.invoice_no}.pdf`);
 
   return pdfBlob;
 }
@@ -1066,4 +1095,96 @@ export function exportToExcel(data: any[], fileName: string, sheetName = 'Harry 
   }));
 
   XLSX.writeFile(wb, `${fileName}.xlsx`);
+}
+
+/**
+ * GENERATE AUDIT TRAIL REPORTS (PDF / PRINT)
+ */
+export function generateAuditTrailPDF(audits: AuditLog[], triggerDownload = true, triggerPrint = false) {
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4'
+  });
+
+  // Title / Headers
+  doc.setFillColor(26, 46, 74); // Deep Navy Base Hex #1A2E4A
+  doc.rect(0, 0, 210, 32, 'F');
+
+  doc.setFont('Helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.setTextColor(255, 255, 255);
+  doc.text('HARRY FASHION', 14, 15);
+
+  doc.setFontSize(10);
+  doc.setFont('Helvetica', 'normal');
+  doc.setTextColor(220, 225, 230);
+  doc.text('SYSTEM OPERATION TRAIL & AUDIT REPORT • MUMBAI', 14, 21);
+  doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 26);
+
+  // Table Headers
+  let y = 42;
+  doc.setFillColor(235, 240, 245);
+  doc.rect(14, y, 182, 8, 'F');
+  doc.setFont('Helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(50, 65, 80);
+  doc.text('DATE & TIME', 16, y + 5.5);
+  doc.text('USER EMAIL', 54, y + 5.5);
+  doc.text('ACTION', 105, y + 5.5);
+  doc.text('DESCRIPTIVE LOG DETAIL', 135, y + 5.5);
+
+  y += 8;
+
+  // Render Rows
+  doc.setFont('Helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(70, 80, 90);
+
+  audits.forEach((log, index) => {
+    // Check page boundaries (A4 height is 297mm)
+    if (y > 270) {
+      doc.addPage();
+      y = 15;
+      // Repeat Headers
+      doc.setFillColor(235, 240, 245);
+      doc.rect(14, y, 182, 8, 'F');
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(50, 65, 80);
+      doc.text('DATE & TIME', 16, y + 5.5);
+      doc.text('USER EMAIL', 54, y + 5.5);
+      doc.text('ACTION', 105, y + 5.5);
+      doc.text('DESCRIPTIVE LOG DETAIL', 135, y + 5.5);
+      y += 8;
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(70, 80, 90);
+    }
+
+    const dt = new Date(log.created_at).toLocaleString('en-IN');
+    doc.text(dt, 16, y + 4.5);
+    doc.text(log.user_email, 54, y + 4.5);
+    
+    // Bold Action Tag
+    doc.setFont('Helvetica', 'bold');
+    doc.text(log.action.toUpperCase(), 105, y + 4.5);
+    doc.setFont('Helvetica', 'normal');
+
+    // Softly split multi line detail text to fit within page bounds (width 60mm)
+    const detailLines = doc.splitTextToSize(log.details, 60);
+    doc.text(detailLines, 135, y + 4.5);
+
+    const rowHeight = Math.max(6, detailLines.length * 4.5 + 2);
+
+    doc.setDrawColor(240, 243, 245);
+    doc.line(14, y + rowHeight, 196, y + rowHeight);
+    y += rowHeight;
+  });
+
+  if (triggerPrint) {
+    printPDFDoc(doc);
+  } else if (triggerDownload) {
+    doc.save(`audit_trail_${new Date().toISOString().split('T')[0]}.pdf`);
+  }
 }

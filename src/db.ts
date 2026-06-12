@@ -909,6 +909,217 @@ class DatabaseService {
     }
   }
 
+  permanentlyDeleteChallan(challanId: string): void {
+    const challanList = this.getChallans();
+    const allItemsList = this.getChallanItems();
+    const currentUser = this.getCurrentUser();
+    const mastersList = this.getMasters();
+
+    const idx = challanList.findIndex(c => c.id === challanId);
+    if (idx > -1) {
+      const challan = challanList[idx];
+      const masterObj = mastersList.find(m => m.id === challan.master_id);
+      const masterName = masterObj ? masterObj.name : 'Unknown';
+      const deletedItems = allItemsList.filter(item => item.challan_id === challanId);
+
+      // Remove from local Lists
+      challanList.splice(idx, 1);
+      const remainingItems = allItemsList.filter(item => item.challan_id !== challanId);
+
+      this.save('challans', challanList);
+      this.save('challan_items', remainingItems);
+
+      this.addAuditLog(currentUser.email, 'DELETED', `Permanently deleted Challan ${challan.challan_no} for Master ${masterName}`);
+
+      if (this.isFirebaseInitialized) {
+        try {
+          const batch = writeBatch(firestore);
+          batch.delete(doc(firestore, 'challans', challanId));
+          deletedItems.forEach(item => {
+            batch.delete(doc(firestore, 'challan_items', item.id));
+          });
+          batch.commit().catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_delete/${challanId}`));
+        } catch (err) {
+          console.warn(err);
+        }
+      }
+    }
+  }
+
+  voidAndReverseChallan(challanId: string, reason: string): void {
+    const challanList = this.getChallans();
+    const allItemsList = this.getChallanItems();
+    const materialsList = this.getMaterials();
+    const currentUser = this.getCurrentUser();
+    const mastersList = this.getMasters();
+
+    const idx = challanList.findIndex(c => c.id === challanId);
+    if (idx > -1) {
+      const challan = challanList[idx];
+      if (challan.status === 'billed') {
+        throw new Error('Completed/Billed challans cannot be voided');
+      }
+      if (challan.status === ('voided' as any)) {
+        throw new Error('Challan is already voided');
+      }
+
+      // Update status to VOIDED
+      challan.status = 'voided' as any;
+      if (reason) {
+        challan.notes = (challan.notes ? challan.notes + '\n' : '') + `VOID REASON: ${reason}`;
+      }
+
+      const masterObj = mastersList.find(m => m.id === challan.master_id);
+      const masterName = masterObj ? masterObj.name : 'Unknown';
+
+      // Restore stocks
+      const matchingItems = allItemsList.filter(item => item.challan_id === challanId);
+      matchingItems.forEach(item => {
+        const matIdx = materialsList.findIndex(m => m.id === item.material_id);
+        if (matIdx > -1) {
+          materialsList[matIdx].current_stock += item.qty;
+        }
+      });
+
+      this.save('challans', challanList);
+      this.save('materials', materialsList);
+
+      this.addAuditLog(currentUser.email, 'VOIDED', `Voided Challan ${challan.challan_no} for Master ${masterName}. Reason: ${reason}`);
+
+      if (this.isFirebaseInitialized) {
+        try {
+          const batch = writeBatch(firestore);
+          batch.update(doc(firestore, 'challans', challanId), {
+            status: 'voided',
+            notes: challan.notes
+          });
+          matchingItems.forEach(item => {
+            batch.update(doc(firestore, 'materials', item.material_id), {
+              current_stock: increment(item.qty)
+            });
+          });
+          batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_void/${challanId}`));
+        } catch (err) {
+          console.warn(err);
+        }
+      }
+    }
+  }
+
+  editChallan(
+    challanId: string,
+    updatedItems: { material_id: string; qty: number; rate: number }[],
+    notes: string,
+    reason: string
+  ): void {
+    const challanList = this.getChallans();
+    const allItemsList = this.getChallanItems();
+    const materialsList = this.getMaterials();
+    const currentUser = this.getCurrentUser();
+    const mastersList = this.getMasters();
+
+    const idx = challanList.findIndex(c => c.id === challanId);
+    if (idx > -1) {
+      const challan = challanList[idx];
+      if (challan.status === 'billed') {
+        throw new Error('Completed/Billed challans cannot be edited');
+      }
+
+      const masterObj = mastersList.find(m => m.id === challan.master_id);
+      const masterName = masterObj ? masterObj.name : 'Unknown';
+
+      // Reconcile material stock
+      const previousItems = allItemsList.filter(item => item.challan_id === challanId);
+
+      // Revert previous stock changes (restoring what was issued)
+      previousItems.forEach(item => {
+        const matIdx = materialsList.findIndex(m => m.id === item.material_id);
+        if (matIdx > -1) {
+          materialsList[matIdx].current_stock += item.qty;
+        }
+      });
+
+      // Deduct new items from stock
+      updatedItems.forEach(item => {
+        const matIdx = materialsList.findIndex(m => m.id === item.material_id);
+        if (matIdx > -1) {
+          materialsList[matIdx].current_stock -= item.qty;
+        }
+      });
+
+      // Remove old items from allItemsList
+      const remainingItems = allItemsList.filter(item => item.challan_id !== challanId);
+
+      // Create new items list
+      const savedChallanItems: ChallanItem[] = [];
+      updatedItems.forEach(item => {
+        const challanItem: ChallanItem = {
+          id: generateUUID(),
+          challan_id: challanId,
+          material_id: item.material_id,
+          qty: item.qty,
+          rate: item.rate,
+          amount: parseFloat((item.qty * item.rate).toFixed(2)),
+          created_at: new Date().toISOString()
+        };
+        savedChallanItems.push(challanItem);
+      });
+
+      // Combine
+      const newItemsList = [...remainingItems, ...savedChallanItems];
+
+      // Update remaining fields on Challan
+      if (notes !== undefined) {
+        challan.notes = notes;
+      }
+      if (reason) {
+        challan.notes = (challan.notes ? challan.notes + '\n' : '') + `EDIT REASON: ${reason}`;
+      }
+
+      this.save('challans', challanList);
+      this.save('challan_items', newItemsList);
+      this.save('materials', materialsList);
+
+      this.addAuditLog(currentUser.email, 'EDITED', `Edited Challan ${challan.challan_no} for Master ${masterName}. Reason: ${reason}`);
+
+      if (this.isFirebaseInitialized) {
+        try {
+          const batch = writeBatch(firestore);
+          // Update Challan fields
+          batch.update(doc(firestore, 'challans', challanId), {
+            notes: challan.notes
+          });
+          
+          // Delete old items on cloud
+          previousItems.forEach(item => {
+            batch.delete(doc(firestore, 'challan_items', item.id));
+          });
+
+          // Upload new items to cloud
+          savedChallanItems.forEach(item => {
+            batch.set(doc(firestore, 'challan_items', item.id), item);
+          });
+
+          // Reconcile stocks atomically on Firestore: add back old, subtract new
+          previousItems.forEach(item => {
+            batch.update(doc(firestore, 'materials', item.material_id), {
+              current_stock: increment(item.qty)
+            });
+          });
+          updatedItems.forEach(item => {
+            batch.update(doc(firestore, 'materials', item.material_id), {
+              current_stock: increment(-item.qty)
+            });
+          });
+
+          batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_edit/${challanId}`));
+        } catch (err) {
+          console.warn(err);
+        }
+      }
+    }
+  }
+
   // --- Inward Entries ---
   getInwardEntries(): InwardEntry[] {
     return this.load<InwardEntry[]>('inward_entries', []);

@@ -4,9 +4,11 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import JSZip from 'jszip';
 import { db, DEMO_USERS } from '../db';
 import { Master, Material, MasterRateOverride, AuditLog, RateHistory, UserRole, Profile } from '../types';
-import { formatINR, formatDate } from '../utils/exportUtils';
+import { formatINR, formatDate, generateAuditTrailPDF, generateChallanPDF, generateInvoicePDF } from '../utils/exportUtils';
+import { getFolderChallanDateText, getFolderInvoiceDateText } from '../utils/smartDownloader';
 import { 
   Settings, 
   Users, 
@@ -26,7 +28,11 @@ import {
   LogIn,
   LogOut,
   RefreshCw,
-  Database
+  Database,
+  Search,
+  Printer,
+  Download,
+  Calendar
 } from 'lucide-react';
 import { MasterPanAccount } from '../types';
 import { auth, signInWithPopup, signOut, googleProvider } from '../firebase';
@@ -36,6 +42,26 @@ export const SettingsView: React.FC = () => {
   const [activeSubTab, setActiveSubTab] = useState<'masters' | 'materials' | 'overrides' | 'users' | 'audit_log' | 'cloud'>('masters');
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [boundFolderName, setBoundFolderName] = useState<string | null>(null);
+
+  // States for Multi-Compile Batch Document Packager (Offline-Safe Browser ZIP Exporter)
+  const [batchDownloadDate, setBatchDownloadDate] = useState<string>(() => {
+    // Default to today's date in local user time (YYYY-MM-DD format)
+    const local = new Date();
+    const y = local.getFullYear();
+    const m = String(local.getMonth() + 1).padStart(2, '0');
+    const d = String(local.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  });
+  const [batchDownloadMasterId, setBatchDownloadMasterId] = useState<string>('all');
+  const [batchDownloadType, setBatchDownloadType] = useState<'all' | 'challans' | 'invoices'>('all');
+  const [isBatchCompiling, setIsBatchCompiling] = useState<boolean>(false);
+  const [batchCompileStatus, setBatchCompileStatus] = useState<string>('');
+
+  // States for Firebase database cleaner / data retention center
+  const [purgeRetentionMonths, setPurgeRetentionMonths] = useState<number | 'all'>(6);
+  const [isPurging, setIsPurging] = useState<boolean>(false);
+  const [purgeConfirmText, setPurgeConfirmText] = useState<string>('');
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -52,6 +78,12 @@ export const SettingsView: React.FC = () => {
   const [audits, setAudits] = useState<AuditLog[]>([]);
   const [rateHistories, setRateHistories] = useState<RateHistory[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>(db.getProfiles());
+
+  // Audit log filter states
+  const [auditSearchQuery, setAuditSearchQuery] = useState('');
+  const [auditActionFilter, setAuditActionFilter] = useState('all');
+  const [auditStartDate, setAuditStartDate] = useState('');
+  const [auditEndDate, setAuditEndDate] = useState('');
 
   // Profile editing states
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
@@ -160,6 +192,297 @@ export const SettingsView: React.FC = () => {
   const showFeedback = (text: string, isError = false) => {
     setMessage({ text, isError });
     setTimeout(() => setMessage(null), 4000);
+  };
+
+  useEffect(() => {
+    async function loadFolder() {
+      try {
+        const { getStoredDirectoryHandle } = await import('../utils/smartDownloader');
+        const handle = await getStoredDirectoryHandle();
+        if (handle) {
+          setBoundFolderName(handle.name);
+        } else {
+          setBoundFolderName(null);
+        }
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+    loadFolder();
+  }, [activeSubTab]);
+
+  const handleLinkLocalFolder = async () => {
+    if (window.self !== window.top) {
+      showFeedback('Iframe Constraint: Click "Open in new window" ↗ in the top right of your preview to bind folders from outside the sandbox!', true);
+      return;
+    }
+    try {
+      const { promptForBaseDirectory } = await import('../utils/smartDownloader');
+      const handle = await promptForBaseDirectory();
+      if (handle) {
+        setBoundFolderName(handle.name);
+        showFeedback(`Successfully linked folder: "${handle.name}"! Now system saves are categorized.`);
+      } else {
+        showFeedback('Folder linking was closed or declined.', true);
+      }
+    } catch (err: any) {
+      console.error(err);
+      const errMsg = err.message || String(err);
+      if (errMsg.includes('sub frame') || errMsg.includes('cross origin') || errMsg.includes('SecurityError') || errMsg.includes('allowed to show a file picker')) {
+        showFeedback('Sandbox active: Click "Open in new window" ↗ in the top right, then link your folder in that standalone tab!', true);
+      } else if (!('showDirectoryPicker' in window)) {
+        showFeedback('Your browser does not support Directory APIs, or you are in an isolated app iframe. Click "Open in new window" in the top right to link folders!', true);
+      } else {
+        showFeedback(errMsg || 'Error choosing folder.', true);
+      }
+    }
+  };
+
+  const handleClearLocalFolder = async () => {
+    try {
+      const { clearDirectoryHandle } = await import('../utils/smartDownloader');
+      await clearDirectoryHandle();
+      setBoundFolderName(null);
+      showFeedback('Local folder link removed. Falling back to standard browser downloads.');
+    } catch (err) {
+      showFeedback('Failed to remove folder integration.', true);
+    }
+  };
+
+  const handleBulkZipDownload = async () => {
+    setIsBatchCompiling(true);
+    setBatchCompileStatus('Initializing ZIP compiler...');
+    try {
+      const zip = new JSZip();
+
+      // Retrieve lists from index DB model
+      const allChallans = db.getChallans();
+      const allChallanItems = db.getChallanItems();
+      const allInvoices = db.getInvoices();
+      const allMasters = db.getMasters();
+      const allMaterials = db.getMaterials();
+
+      // Filter challans and invoices based on selected Date and Master
+      let filteredChallans = allChallans;
+      let filteredInvoices = allInvoices;
+
+      // Filter by Date (match YYYY-MM-DD exactly for challan, matching year & month for invoices)
+      if (batchDownloadDate) {
+        filteredChallans = filteredChallans.filter(c => c.issued_date === batchDownloadDate);
+        
+        const dateParts = batchDownloadDate.split('-');
+        if (dateParts.length === 3) {
+          const yNum = parseInt(dateParts[0], 10);
+          const mNum = parseInt(dateParts[1], 10);
+          filteredInvoices = filteredInvoices.filter(inv => inv.period_month === mNum && inv.period_year === yNum);
+        }
+      }
+
+      // Filter by Master ID
+      if (batchDownloadMasterId && batchDownloadMasterId !== 'all') {
+        filteredChallans = filteredChallans.filter(c => c.master_id === batchDownloadMasterId);
+        filteredInvoices = filteredInvoices.filter(inv => inv.master_id === batchDownloadMasterId);
+      }
+
+      // Filter by Type
+      if (batchDownloadType === 'challans') {
+        filteredInvoices = [];
+      } else if (batchDownloadType === 'invoices') {
+        filteredChallans = [];
+      }
+
+      // Check if we have anything to zip
+      if (filteredChallans.length === 0 && filteredInvoices.length === 0) {
+        showFeedback('No matching challans or invoices found for the selected criteria in database.', true);
+        setIsBatchCompiling(false);
+        setBatchCompileStatus('');
+        return;
+      }
+
+      const totalDocs = filteredChallans.length + filteredInvoices.length;
+      let compiledCount = 0;
+
+      // 1. Pack Challans
+      for (const challan of filteredChallans) {
+        compiledCount++;
+        setBatchCompileStatus(`Generating Challan [${compiledCount}/${totalDocs}]: ${challan.challan_no}...`);
+
+        const items = allChallanItems.filter(item => item.challan_id === challan.id);
+        const master = allMasters.find(m => m.id === challan.master_id) || { name: 'Unknown Master' } as Master;
+        
+        // Generate the PDF representation as blob on the fly without prompt or browser iframe block
+        const blob = await generateChallanPDF(
+          challan,
+          items,
+          master,
+          allMaterials,
+          false, // autoDownload = false
+          false  // shouldPrint = false
+        );
+
+        // Naming path: Harry Fashion/Challans/{DateText}/{MasterCleanName}/Challan-{ChallanNo}.pdf
+        const dateText = getFolderChallanDateText(challan.issued_date);
+        const masterClean = master.name.replace(/[^a-zA-Z0-9_\s-]/g, '').trim().replace(/\s+/g, '_');
+        const challanNoClean = challan.challan_no.replace(/\//g, '-');
+        const path = `Harry Fashion/Challans/${dateText}/${masterClean}/Challan-${challanNoClean}.pdf`;
+
+        zip.file(path, blob);
+      }
+
+      // 2. Pack Invoices
+      for (const invoice of filteredInvoices) {
+        compiledCount++;
+        setBatchCompileStatus(`Generating Invoice [${compiledCount}/${totalDocs}]: ${invoice.invoice_no || ('INV-' + invoice.id)}...`);
+
+        const master = allMasters.find(m => m.id === invoice.master_id) || { name: 'Unknown Master' } as Master;
+        
+        // Find matching challans for this invoice
+        const invoiceChallansRelation = db.getInvoiceChallans(invoice.id);
+        const challanIds = invoiceChallansRelation.map(rel => rel.challan_id);
+        const invoiceChallans = allChallans.filter(c => challanIds.includes(c.id));
+
+        const blob = await generateInvoicePDF(
+          invoice,
+          invoiceChallans,
+          allChallanItems,
+          master,
+          allMaterials,
+          false, // autoDownload = false
+          false  // shouldPrint = false
+        );
+
+        const dateText = getFolderInvoiceDateText(invoice.period_month, invoice.period_year);
+        const masterClean = master.name.replace(/[^a-zA-Z0-9_\s-]/g, '').trim().replace(/\s+/g, '_');
+        const invoiceNoClean = (invoice.invoice_no || `INV-${invoice.id}`).replace(/\//g, '-');
+        const path = `Harry Fashion/Invoices/${dateText}/${masterClean}/Invoice-${invoiceNoClean}.pdf`;
+
+        zip.file(path, blob);
+      }
+
+      setBatchCompileStatus('Assembling structured ZIP folder container...');
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+      // Generate standard download
+      const userDateText = batchDownloadDate || 'All';
+      const userMasterName = batchDownloadMasterId === 'all' ? 'AllMasters' : (allMasters.find(m => m.id === batchDownloadMasterId)?.name || 'Master');
+      const userMasterClean = userMasterName.replace(/[^a-zA-Z0-9_\s-]/g, '').trim().replace(/\s+/g, '_');
+      
+      const downloadName = `Harry_Fashion_Files_${userDateText}_${userMasterClean}.zip`;
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = downloadName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      db.addAuditLog(
+        currentUser.email,
+        'ZIP EXPORT',
+        `Downloaded ZIP archive containing ${totalDocs} documents for period/date ${userDateText}`
+      );
+
+      showFeedback(`Successfully compiled and downloaded "${downloadName}" with ${totalDocs} PDFs!`);
+    } catch (err: any) {
+      console.error(err);
+      showFeedback('Zip compiler failed: ' + (err.message || String(err)), true);
+    } finally {
+      setIsBatchCompiling(false);
+      setBatchCompileStatus('');
+    }
+  };
+
+  const handlePurgeOldRecords = async () => {
+    if (currentUser.role !== 'admin') {
+      showFeedback('Administrative status is required to execute system-wide data purges.', true);
+      return;
+    }
+
+    if (purgeConfirmText !== 'PURGE') {
+      showFeedback('Please write "PURGE" inside the text box to execute this action.', true);
+      return;
+    }
+
+    setIsPurging(true);
+    try {
+      const allChallans = db.getChallans();
+      const allInvoices = db.getInvoices();
+
+      // Determine threshold date
+      let thresholdDate = new Date();
+      if (purgeRetentionMonths === 'all') {
+        thresholdDate = new Date(); // delete completely
+      } else {
+        thresholdDate.setMonth(thresholdDate.getMonth() - Number(purgeRetentionMonths));
+      }
+
+      const thresholdStr = thresholdDate.toISOString().split('T')[0];
+      
+      let toDeleteChallans = allChallans;
+      let toDeleteInvoices = allInvoices;
+
+      if (purgeRetentionMonths !== 'all') {
+        toDeleteChallans = allChallans.filter(c => c.issued_date < thresholdStr);
+        toDeleteInvoices = allInvoices.filter(inv => {
+          const invDate = new Date(inv.period_year, inv.period_month - 1, 15);
+          return invDate < thresholdDate;
+        });
+      }
+
+      if (toDeleteChallans.length === 0 && toDeleteInvoices.length === 0) {
+        showFeedback('No stored records found older than the chosen timeline settings.', false);
+        setIsPurging(false);
+        setPurgeConfirmText('');
+        return;
+      }
+
+      const doubleCheck = window.confirm(
+        `⚠️ ATTENTION: PERMANENT DELETION ⚠️\n\nYou are about to purge:\n- ${toDeleteChallans.length} Challans (including all Stitching item logs)\n- ${toDeleteInvoices.length} Invoices\n\nThis will completely erase these from Firestore and local memory, allowing you to free up space. Have you already downloaded a Backup ZIP representing these records first?\n\nClick OK to permanently delete.`
+      );
+
+      if (!doubleCheck) {
+        setIsPurging(false);
+        setPurgeConfirmText('');
+        return;
+      }
+
+      let deletedRecordsCount = 0;
+
+      // Deleting matching challans
+      for (const ch of toDeleteChallans) {
+        try {
+          db.deleteChallan(ch.id);
+          deletedRecordsCount++;
+        } catch (e) {
+          console.error(`Error deleting challan ${ch.id}:`, e);
+        }
+      }
+
+      // Deleting matching invoices
+      for (const inv of toDeleteInvoices) {
+        try {
+          db.deleteInvoice(inv.id);
+          deletedRecordsCount++;
+        } catch (e) {
+          console.error(`Error deleting invoice ${inv.id}:`, e);
+        }
+      }
+
+      db.addAuditLog(
+        currentUser.email,
+        'DATA PURGE',
+        `Cleaned up ${deletedRecordsCount} records from system databases (Setting: ${purgeRetentionMonths === 'all' ? 'All Data' : purgeRetentionMonths + ' months'})`
+      );
+
+      showFeedback(`Successfully purged ${deletedRecordsCount} items from server & local databases.`);
+      setPurgeConfirmText('');
+    } catch (err: any) {
+      console.error(err);
+      showFeedback('Purger Failure: ' + (err.message || String(err)), true);
+    } finally {
+      setIsPurging(false);
+    }
   };
 
   // --- Profile Switch handler ---
@@ -1203,12 +1526,136 @@ export const SettingsView: React.FC = () => {
 
       {/* --- SUB PANEL 5: SYSTEM AUDIT LOGS --- */}
       {activeSubTab === 'audit_log' && (
-        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-          <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider mb-4 border-b border-slate-200 pb-2.5 uppercase">
-            CHRONOLOGICAL SYSTEM AUDIT TRAIL LOGS
-          </h3>
+        <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4 animate-fade-in">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+            <div>
+              <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">
+                CHRONOLOGICAL SYSTEM AUDIT TRAIL LOGS
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-1 font-sans">
+                Observe, search and filter all creation, deletion, corrections, state transitions & sync actions.
+              </p>
+            </div>
 
-          <div className="overflow-x-auto max-h-[460px] overflow-y-auto border border-slate-200 rounded-xl overflow-hidden">
+            {/* Export buttons */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  const filtered = audits.filter(log => {
+                    const matchSearch = !auditSearchQuery ? true : (
+                      log.user_email.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.action.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
+                    );
+                    const matchAction = auditActionFilter === 'all' ? true : (
+                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                    );
+                    if (auditStartDate) {
+                      const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs < startMs) return false;
+                    }
+                    if (auditEndDate) {
+                      const endMs = new Date(auditEndDate + 'T23:59:59').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs > endMs) return false;
+                    }
+                    return matchSearch && matchAction;
+                  });
+                  generateAuditTrailPDF(filtered, true, false);
+                }}
+                className="text-xs bg-slate-100 hover:bg-slate-200 text-[#1A2E4A] font-bold py-1.5 px-3 rounded-lg border border-slate-200 flex items-center gap-1 cursor-pointer transition"
+              >
+                <Download className="w-3.5 h-3.5" /> Download PDF
+              </button>
+              <button
+                onClick={() => {
+                  const filtered = audits.filter(log => {
+                    const matchSearch = !auditSearchQuery ? true : (
+                      log.user_email.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.action.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
+                    );
+                    const matchAction = auditActionFilter === 'all' ? true : (
+                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                    );
+                    if (auditStartDate) {
+                      const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs < startMs) return false;
+                    }
+                    if (auditEndDate) {
+                      const endMs = new Date(auditEndDate + 'T23:59:59').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs > endMs) return false;
+                    }
+                    return matchSearch && matchAction;
+                  });
+                  generateAuditTrailPDF(filtered, false, true);
+                }}
+                className="text-xs bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white font-bold py-1.5 px-3 rounded-lg flex items-center gap-1 cursor-pointer transition shadow-xs"
+              >
+                <Printer className="w-3.5 h-3.5" /> Direct Print Table
+              </button>
+            </div>
+          </div>
+
+          {/* Filtering Layout Toolbar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-150">
+            {/* Search Box */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+              <input 
+                type="text"
+                placeholder="Search email, action, text..."
+                value={auditSearchQuery}
+                onChange={(e) => setAuditSearchQuery(e.target.value)}
+                className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1.5 pl-8 pr-3 font-medium text-slate-800 outline-none"
+              />
+            </div>
+
+            {/* Action Type drop */}
+            <div>
+              <select
+                value={auditActionFilter}
+                onChange={(e) => setAuditActionFilter(e.target.value)}
+                className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1.5 px-2.5 font-bold text-slate-700 outline-none cursor-pointer"
+              >
+                <option value="all">ALL OPERATIONS</option>
+                <option value="CREATE">CREATE</option>
+                <option value="DELETED">DELETED / PURGES</option>
+                <option value="VOIDED">VOIDED</option>
+                <option value="EDITED">EDITED</option>
+                <option value="CLOUD SYNC ENABLED">CLOUD SYNC</option>
+                <option value="USER AUTHENTICATION">SECURITY AUTH</option>
+              </select>
+            </div>
+
+            {/* Date Start */}
+            <div className="relative">
+              <Calendar className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="date"
+                value={auditStartDate}
+                onChange={(e) => setAuditStartDate(e.target.value)}
+                className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1.5 pl-8 pr-2 font-medium text-[#1A2E4A]"
+              />
+            </div>
+
+            {/* Date End */}
+            <div className="relative">
+              <Calendar className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                type="date"
+                value={auditEndDate}
+                onChange={(e) => setAuditEndDate(e.target.value)}
+                className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1.5 pl-8 pr-2 font-medium text-[#1A2E4A]"
+              />
+            </div>
+          </div>
+
+          {/* Table list */}
+          <div className="overflow-x-auto max-h-[460px] overflow-y-auto border border-slate-200 rounded-xl overflow-hidden shadow-xs">
             <table className="w-full text-xs text-left border-collapse">
               <thead>
                 <tr className="bg-[#1A2E4A] text-white font-bold border-b border-slate-200">
@@ -1218,26 +1665,71 @@ export const SettingsView: React.FC = () => {
                   <th className="py-2.5 px-3">OPERATION DESCRIPTIVE DETAIL</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-slate-805">
-                {audits.length === 0 ? (
+              <tbody className="divide-y divide-slate-100 text-slate-800">
+                {audits.filter(log => {
+                  const matchSearch = !auditSearchQuery ? true : (
+                    log.user_email.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                    log.action.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                    log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
+                  );
+                  const matchAction = auditActionFilter === 'all' ? true : (
+                    log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                  );
+                  if (auditStartDate) {
+                    const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
+                    const logMs = new Date(log.created_at).getTime();
+                    if (logMs < startMs) return false;
+                  }
+                  if (auditEndDate) {
+                    const endMs = new Date(auditEndDate + 'T23:59:59').getTime();
+                    const logMs = new Date(log.created_at).getTime();
+                    if (logMs > endMs) return false;
+                  }
+                  return matchSearch && matchAction;
+                }).length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="py-12 text-center text-slate-400 text-xs font-medium">
-                      No system events tracked yet. Log operations to create audit logs.
+                    <td colSpan={4} className="py-12 text-center text-slate-400 text-xs font-medium bg-slate-50 animate-pulse">
+                      No system events found matching configured filters.
                     </td>
                   </tr>
                 ) : (
-                  audits.map(log => (
-                    <tr key={log.id} className="hover:bg-slate-50/60 transition">
-                      <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500 font-bold">
+                  audits.filter(log => {
+                    const matchSearch = !auditSearchQuery ? true : (
+                      log.user_email.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.action.toLowerCase().includes(auditSearchQuery.toLowerCase()) ||
+                      log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
+                    );
+                    const matchAction = auditActionFilter === 'all' ? true : (
+                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                    );
+                    if (auditStartDate) {
+                      const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs < startMs) return false;
+                    }
+                    if (auditEndDate) {
+                      const endMs = new Date(auditEndDate + 'T23:59:59').getTime();
+                      const logMs = new Date(log.created_at).getTime();
+                      if (logMs > endMs) return false;
+                    }
+                    return matchSearch && matchAction;
+                  }).map(log => (
+                    <tr key={log.id} className="hover:bg-slate-50/60 transition bg-white text-slate-700">
+                      <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500 font-bold whitespace-nowrap">
                         {new Date(log.created_at).toLocaleString('en-IN')}
                       </td>
                       <td className="py-2.5 px-3 font-bold text-slate-650">{log.user_email}</td>
-                      <td className="py-2.5 px-3 font-bold uppercase text-[9px]">
-                        <span className="bg-slate-105 text-slate-600 inline-block px-1.5 py-0.5 rounded-sm">
+                      <td className="py-2.5 px-3 font-bold uppercase text-[9px] whitespace-nowrap">
+                        <span className={`inline-block px-1.5 py-0.5 rounded-sm font-bold ${
+                          log.action === 'DELETED' ? 'bg-red-50 text-red-700 border border-red-100' :
+                          log.action === 'VOIDED' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
+                          log.action === 'EDITED' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
+                          'bg-slate-100 text-slate-600 border border-slate-200'
+                        }`}>
                           {log.action}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-slate-800 font-bold">
+                      <td className="py-2.5 px-3 text-slate-900 font-semibold">
                         {log.details}
                       </td>
                     </tr>
@@ -1396,6 +1888,314 @@ export const SettingsView: React.FC = () => {
                   </div>
                 )}
 
+              </div>
+
+              {/* --- LOCAL SYSTEM FOLDER INTEGRATION (FILESYSTEM ACCESS API) --- */}
+              <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
+                <div className="flex justify-between items-start gap-4">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                      📁 Local File System Synchronization (Automatic Directory Categorizer)
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-1 font-medium leading-relaxed font-sans">
+                      If linked successfully, generated stitching challans and billing invoices are saved into real physical subdirectories structured by date and masters Name.
+                    </p>
+                  </div>
+                  {boundFolderName ? (
+                    <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-200 uppercase whitespace-nowrap">
+                      Connected: {boundFolderName}
+                    </span>
+                  ) : (
+                    <span className="bg-slate-100 text-slate-500 text-[10px] font-bold px-2 py-0.5 rounded border border-slate-200 uppercase whitespace-nowrap">
+                      Fallback Mode
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 leading-relaxed">
+                    <span className="text-[10px] font-bold text-[#1A2E4A] block uppercase">Folder Mapping Blueprint</span>
+                    <ul className="text-[10px] text-slate-500 space-y-1 font-mono">
+                      <li>📂 <strong className="text-slate-700">{boundFolderName || "Selected Folder"}</strong></li>
+                      <li>└ 📂 Harry Fashion</li>
+                      <li>&nbsp;&nbsp;├ 📂 Challans</li>
+                      <li>&nbsp;&nbsp;│&nbsp;&nbsp;└ 📂 <span className="text-blue-600 font-semibold">12-Jun-2026</span></li>
+                      <li>&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ 📂 <span className="text-blue-600 font-semibold">Sunder-Jacket</span></li>
+                      <li>&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└ 📄 <span className="text-slate-850 font-bold">Challan-HF-001.pdf</span></li>
+                      <li>&nbsp;&nbsp;└ 📂 Invoices</li>
+                    </ul>
+                  </div>
+
+                  <div className="space-y-3 leading-relaxed">
+                    <div className="text-[11px] text-slate-600 space-y-1.5 font-sans">
+                      <p className="font-bold text-slate-800">⚠️ Important Browser Constraint:</p>
+                      <ul className="list-disc pl-4 text-[10.5px] text-slate-500 space-y-1 mt-1 leading-normal font-sans">
+                        <li>
+                          <strong>Iframe Sandbox Limit</strong>: Modern browsers strictly prevent selecting directory folders when running inside iframe preview widgets.
+                        </li>
+                        <li>
+                          <strong>How to Enable Folder Sync</strong>: You must click the <strong className="text-slate-800">"Open in new window"</strong> icon in the top right-hand corner of the screen, and then bind the directory folder inside that tab page!
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleLinkLocalFolder}
+                        className="flex-1 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-[11px] font-bold py-2 px-3.5 rounded-lg transition text-center cursor-pointer shadow-xs uppercase tracking-wider"
+                      >
+                        {boundFolderName ? 'Change Linked Folder' : 'Link Local Directory Folder'}
+                      </button>
+                      {boundFolderName && (
+                        <button
+                          onClick={handleClearLocalFolder}
+                          className="bg-rose-50 hover:bg-rose-100 text-rose-700 text-[11px] font-bold py-2 px-3.5 rounded-lg border border-rose-150 transition cursor-pointer"
+                        >
+                          Clear Link
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* --- MULTI-COMPILE BATCH DOCUMENT PACKAGER (OFFLINE-SAFE BROWSER ZIP EXPORTER) --- */}
+              <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    📦 Multi-Compile Batch Document Packager (Universal ZIP Exporter)
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mt-1 font-medium leading-relaxed font-sans">
+                    Compile and bundle your entire daily or monthly stitching documents into a real structured ZIP file instantly in your browser. Bypasses all Sandbox iframe constraints perfectly!
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-[#1A2E4A] uppercase mb-1">Target Date</label>
+                    <input
+                      type="date"
+                      value={batchDownloadDate}
+                      onChange={(e) => setBatchDownloadDate(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-[#1A2E4A] uppercase mb-1">Stitching Master</label>
+                    <select
+                      value={batchDownloadMasterId}
+                      onChange={(e) => setBatchDownloadMasterId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none"
+                    >
+                      <option value="all">All Masters (Grouped-Folders)</option>
+                      {masters.map(m => (
+                        <option key={m.id} value={m.id}>{m.name} ({m.type === 'jacket' ? 'Jackets' : 'Pants'})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-[#1A2E4A] uppercase mb-1">Document Filter</label>
+                    <select
+                      value={batchDownloadType}
+                      onChange={(e) => setBatchDownloadType(e.target.value as any)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none"
+                    >
+                      <option value="all">Both Challans & Invoices</option>
+                      <option value="challans">Challans Only</option>
+                      <option value="invoices">Invoices Only</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Compile Info Indicator */}
+                {(() => {
+                  const stats = (() => {
+                    const allChallans = db.getChallans();
+                    const allInvoices = db.getInvoices();
+                    let filteredChallans = allChallans;
+                    let filteredInvoices = allInvoices;
+
+                    if (batchDownloadDate) {
+                      filteredChallans = filteredChallans.filter(c => c.issued_date === batchDownloadDate);
+                      const dateParts = batchDownloadDate.split('-');
+                      if (dateParts.length === 3) {
+                        const yNum = parseInt(dateParts[0], 10);
+                        const mNum = parseInt(dateParts[1], 10);
+                        filteredInvoices = filteredInvoices.filter(inv => inv.period_month === mNum && inv.period_year === yNum);
+                      }
+                    }
+
+                    if (batchDownloadMasterId && batchDownloadMasterId !== 'all') {
+                      filteredChallans = filteredChallans.filter(c => c.master_id === batchDownloadMasterId);
+                      filteredInvoices = filteredInvoices.filter(inv => inv.master_id === batchDownloadMasterId);
+                    }
+
+                    if (batchDownloadType === 'challans') {
+                      filteredInvoices = [];
+                    } else if (batchDownloadType === 'invoices') {
+                      filteredChallans = [];
+                    }
+
+                    return {
+                      challans: filteredChallans.length,
+                      invoices: filteredInvoices.length,
+                      total: filteredChallans.length + filteredInvoices.length
+                    };
+                  })();
+
+                  return (
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex flex-wrap justify-between items-center gap-4 text-xs font-medium">
+                      <div className="space-y-1 text-left">
+                        <span className="text-slate-500 block text-[10px]">RECORDS FOUND FOR RETRIEVAL</span>
+                        <div className="flex gap-3 text-[11px]">
+                          <span className="text-slate-700 bg-white border border-slate-200 px-2.5 py-0.5 rounded">📦 <strong>{stats.challans}</strong> Challans</span>
+                          <span className="text-slate-700 bg-white border border-slate-200 px-2.5 py-0.5 rounded">📄 <strong>{stats.invoices}</strong> Invoices</span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleBulkZipDownload}
+                        disabled={isBatchCompiling || stats.total === 0}
+                        className="bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold py-2.5 px-4 rounded-xl cursor-pointer shadow-sm transition-all disabled:opacity-50 flex items-center gap-1.5 uppercase"
+                      >
+                        {isBatchCompiling ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Compiling...
+                          </>
+                        ) : (
+                          <>
+                            <Download className="w-3.5 h-3.5" /> Download Structured ZIP ({stats.total})
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })()}
+
+                {isBatchCompiling && (
+                  <div className="bg-blue-50 border border-blue-200 text-blue-800 text-[11px] p-3 rounded-lg flex items-center gap-2 font-medium">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                    <span>{batchCompileStatus}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* --- FIREBASE DATABASE CLEANUP & DATA RETENTION CENTER --- */}
+              <div className="p-5 rounded-2xl bg-rose-50/20 border border-rose-250 shadow-xs space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold text-rose-800 uppercase tracking-wider flex items-center gap-1.5">
+                    🧹 Firebase Storage & Database Cleanup (Permanent Offline/Cloud Space Purger)
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mt-1 font-medium leading-relaxed font-sans">
+                    Erase old history records from your terminal and Firestore immediately to free up clutter and cloud resources. We recommend downloading a <strong>consolidated ZIP backup first</strong> for archiving!
+                  </p>
+                </div>
+
+                {currentUser.role !== 'admin' ? (
+                  <div className="p-4 bg-amber-50 rounded-xl border border-amber-100 text-[11px] font-medium leading-relaxed text-amber-800 text-left">
+                    🔒 <strong>Administrative Privileges Required</strong>: Your current profile role is set to <strong className="uppercase">{currentUser.role}</strong>. Old system data purges can only be triggered by the Main business manager (Admin). Swapping to the admin profile inside the "Users" sub-tab unlocks this cleaner!
+                  </div>
+                ) : (
+                  <div className="space-y-4 text-xs text-left">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] font-bold text-rose-900 uppercase mb-1">Target Clean-Up Range</label>
+                        <select
+                          value={purgeRetentionMonths}
+                          onChange={(e) => setPurgeRetentionMonths(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-rose-500 outline-none"
+                        >
+                          <option value={1}>Older than 30 Days (Delete older than 1 month)</option>
+                          <option value={3}>Older than 90 Days (Delete older than 3 months)</option>
+                          <option value={6}>Older than 180 Days (Delete older than 6 months)</option>
+                          <option value={12}>Older than 365 Days (Delete older than 1 year)</option>
+                          <option value="all">Permanent Full Wipeout (Erase all documents completely)</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-1 bg-white p-2.5 rounded-xl border border-slate-150 text-left">
+                        <span className="text-[10px] font-bold text-rose-850 uppercase block">Eligible Deletion Candidates</span>
+                        {(() => {
+                          const stats = (() => {
+                            const allChallans = db.getChallans();
+                            const allInvoices = db.getInvoices();
+
+                            if (purgeRetentionMonths === 'all') {
+                              return {
+                                challans: allChallans.length,
+                                invoices: allInvoices.length,
+                                total: allChallans.length + allInvoices.length
+                              };
+                            }
+
+                            const cutoff = new Date();
+                            cutoff.setMonth(cutoff.getMonth() - Number(purgeRetentionMonths));
+                            const cutoffStr = cutoff.toISOString().split('T')[0];
+
+                            const chCount = allChallans.filter(c => c.issued_date < cutoffStr).length;
+                            const invCount = allInvoices.filter(inv => {
+                              const invDate = new Date(inv.period_year, inv.period_month - 1, 15);
+                              return invDate < cutoff;
+                            }).length;
+
+                            return {
+                              challans: chCount,
+                              invoices: invCount,
+                              total: chCount + invCount
+                            };
+                          })();
+
+                          return (
+                            <div className="flex gap-2 text-[10.5px] items-center text-rose-700 font-bold mt-1">
+                              <span>📂 {stats.challans} Old Challans</span>
+                              <span>•</span>
+                              <span>📄 {stats.invoices} Old Invoices</span>
+                              <span className="bg-rose-50 border border-rose-100 text-[9.5px] px-1.5 py-0.5 rounded ml-auto uppercase">To purge: {stats.total}</span>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 leading-relaxed text-left">
+                      <div className="text-[11px] text-rose-650 bg-rose-50/50 p-3 rounded-xl border border-rose-150/50 space-y-1">
+                        <strong className="text-rose-950 block font-bold">⚠️ Warning: Deletions synchronize automatically</strong>
+                        Any records deleted here will be purged permanently from both your local web offline storage and your shared Firebase Cloud DB live. Make absolutely sure you have backup files.
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3 items-end">
+                        <div className="flex-1">
+                          <label className="block text-[10px] font-bold text-rose-900 uppercase mb-1">To verify type the word <strong className="font-mono text-[11px] font-extrabold text-rose-800">PURGE</strong> below:</label>
+                          <input
+                            type="text"
+                            placeholder="Type PURGE here"
+                            value={purgeConfirmText}
+                            onChange={(e) => setPurgeConfirmText(e.target.value)}
+                            className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-rose-500 outline-none uppercase font-mono tracking-widest text-center"
+                          />
+                        </div>
+
+                        <button
+                          onClick={handlePurgeOldRecords}
+                          disabled={isPurging || purgeConfirmText !== 'PURGE'}
+                          className="bg-rose-600 hover:bg-rose-700 disabled:opacity-40 text-white text-[11px] font-bold py-2.5 px-5 rounded-lg transition-all cursor-pointer font-sans shadow-sm uppercase tracking-wider flex items-center gap-1.5"
+                        >
+                          {isPurging ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin animate-fade" /> Purging...
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" /> Execute Permanent Database Purge
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* FRIENDLY SYSTEM COMPLIANCE TROUBLESHOOTING FOR HARRY FASHION TEAM */}

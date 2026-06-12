@@ -20,6 +20,23 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
     }
 
+    // Role-based helper checks (guarded for non-existent profiles)
+    function getUserRole() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'admin';
+    }
+
+    function isBilling() {
+      return isSignedIn() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'billing' || getUserRole() == 'admin');
+    }
+
+    function isIssueDept() {
+      return isSignedIn() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'issue_dept' || getUserRole() == 'billing' || getUserRole() == 'admin');
+    }
+
     function isValidProfile(data) {
       return data.keys().hasAll(['id', 'email', 'role', 'name', 'created_at'])
         && data.id is string && data.id.size() <= 128
@@ -48,7 +65,7 @@ service cloud.firestore {
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
         && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 20
         && data.default_rate is number && data.default_rate >= 0
-        && data.current_stock is number && data.current_stock >= 0
+        && data.current_stock is number
         && data.is_active is bool
         && data.created_at is string;
     }
@@ -60,7 +77,7 @@ service cloud.firestore {
         && data.master_id is string && data.master_id.size() <= 128
         && data.issued_date is string
         && data.issued_by is string && data.issued_by.size() <= 200
-        && data.status is string && (data.status == 'issued' || data.status == 'billed')
+        && data.status is string && (data.status == 'issued' || data.status == 'billed' || data.status == 'voided')
         && data.notes is string && data.notes.size() <= 2000
         && data.created_at is string;
     }
@@ -108,80 +125,70 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && isValidId(profileId) && isValidProfile(request.resource.data);
       allow update: if isSignedIn() && isValidId(profileId) && isValidProfile(request.resource.data) && (
-        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin' ||
-        (request.auth.uid == profileId && request.resource.data.role == resource.data.role)
+        isAdmin() || (request.auth.uid == profileId && request.resource.data.role == resource.data.role)
       );
-      allow delete: if isSignedIn() && isValidId(profileId) && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role == 'admin';
+      allow delete: if isAdmin();
     }
 
     match /masters/{masterId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(masterId) && isValidMaster(request.resource.data);
-      allow update: if isSignedIn() && isValidId(masterId) && isValidMaster(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(masterId);
+      allow create, update, delete: if isAdmin() && isValidId(masterId);
     }
 
     match /materials/{materialId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(materialId) && isValidMaterial(request.resource.data);
-      allow update: if isSignedIn() && isValidId(materialId) && isValidMaterial(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(materialId);
+      allow create, delete: if isAdmin() && isValidId(materialId);
+      allow update: if isIssueDept() && isValidId(materialId) && isValidMaterial(request.resource.data);
     }
 
     match /challans/{challanId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow update: if isSignedIn() && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(challanId);
+      allow create: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
+      allow update: if isAdmin() && isValidId(challanId) && isValidChallan(request.resource.data);
+      allow delete: if isAdmin() && isValidId(challanId);
     }
 
     match /challan_items/{itemId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(itemId) && isValidChallanItem(request.resource.data);
-      allow update: if isSignedIn() && isValidId(itemId) && isValidChallanItem(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(itemId);
+      allow create: if isIssueDept() && isValidId(itemId) && isValidChallanItem(request.resource.data);
+      allow update: if isAdmin() && isValidId(itemId) && isValidChallanItem(request.resource.data);
+      allow delete: if isAdmin() && isValidId(itemId);
     }
 
     match /inward_entries/{entryId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(entryId) && isValidInwardEntry(request.resource.data);
-      allow update: if isSignedIn() && isValidId(entryId) && isValidInwardEntry(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(entryId);
+      allow create: if isIssueDept() && isValidId(entryId) && isValidInwardEntry(request.resource.data);
+      allow update, delete: if isAdmin() && isValidId(entryId);
     }
 
     match /invoices/{invoiceId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
-      allow update: if isSignedIn() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
-      allow delete: if isSignedIn() && isValidId(invoiceId);
+      allow create: if isBilling() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
+      allow update: if isAdmin() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
+      allow delete: if isAdmin() && isValidId(invoiceId);
     }
 
     match /invoice_challans/{id} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(id);
-      allow update: if isSignedIn() && isValidId(id);
-      allow delete: if isSignedIn() && isValidId(id);
+      allow create: if isBilling() && isValidId(id);
+      allow update, delete: if isAdmin() && isValidId(id);
     }
 
     match /master_rate_overrides/{overrideId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(overrideId);
-      allow update: if isSignedIn() && isValidId(overrideId);
-      allow delete: if isSignedIn() && isValidId(overrideId);
+      allow create, update, delete: if isAdmin() && isValidId(overrideId);
     }
 
     match /rate_history/{historyId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(historyId);
-      allow update: if isSignedIn() && isValidId(historyId);
-      allow delete: if isSignedIn() && isValidId(historyId);
+      allow create: if isAdmin() && isValidId(historyId);
+      allow update, delete: if false;
     }
 
     match /audit_logs/{logId} {
-      allow read: if isSignedIn();
+      allow read: if isAdmin();
       allow create: if isSignedIn() && isValidId(logId);
-      allow update: if isSignedIn() && isValidId(logId);
-      allow delete: if isSignedIn() && isValidId(logId);
+      allow update, delete: if false;
     }
   }
 }

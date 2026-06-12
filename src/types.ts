@@ -4,7 +4,7 @@
  */
 
 export type MasterType = 'jacket' | 'pant';
-export type ChallanStatus = 'issued' | 'billed';
+export type ChallanStatus = 'issued' | 'billed' | 'voided';
 export type InvoiceStatus = 'draft' | 'finalised';
 export type UserRole = 'issue_dept' | 'billing' | 'admin';
 
