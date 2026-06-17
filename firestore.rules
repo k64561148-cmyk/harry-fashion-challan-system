@@ -38,14 +38,14 @@ service cloud.firestore {
     }
 
     function isValidProfile(data) {
-      return data.keys().hasAll(['id', 'email', 'role', 'name', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'username', 'active', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 200
         && data.role is string && (data.role == 'issue_dept' || data.role == 'billing' || data.role == 'admin')
-        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
-        && data.created_at is string
-        && (!data.keys().contains('username') || (data.username is string && data.username.size() >= 1 && data.username.size() <= 128))
-        && (!data.keys().contains('password') || (data.password is string && data.password.size() >= 1 && data.password.size() <= 128));
+        && data.username is string && data.username.size() >= 1 && data.username.size() <= 128
+        && data.active is bool
+        && data.createdAt is string
+        && data.updatedAt is string;
     }
 
     // Helper functions for entity schema validation
@@ -144,7 +144,7 @@ service cloud.firestore {
     match /challans/{challanId} {
       allow read: if isSignedIn();
       allow create: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow update: if isAdmin() && isValidId(challanId) && isValidChallan(request.resource.data);
+      allow update: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
       allow delete: if isAdmin() && isValidId(challanId);
     }
 

@@ -96,16 +96,38 @@ export const IssueChallanView: React.FC = () => {
     return () => window.removeEventListener('db_sync', loadChallanMastersData);
   }, []);
 
-  // Recalculates amount and total
+  // Memoized aggregated requested quantities by materialId to prevent state loop updates
+  const aggregatedQtys = React.useMemo(() => {
+    const agg: { [matId: string]: number } = {};
+    items.forEach(item => {
+      if (item.material_id) {
+        const q = parseFloat(String(item.qty)) || 0;
+        agg[item.material_id] = (agg[item.material_id] || 0) + q;
+      }
+    });
+    return agg;
+  }, [items]);
+
+  // Derived check if the combined total of a material exceeds available stock
+  const isRowOverStock = React.useCallback((item: ChallanFormItem) => {
+    if (!item.material_id) return false;
+    const mat = materials.find(m => m.id === item.material_id);
+    if (!mat) return false;
+    const totalQty = aggregatedQtys[item.material_id] || 0;
+    return totalQty > mat.current_stock;
+  }, [aggregatedQtys, materials]);
+
+  // Recalculates amount and total excluding over-stock rows
   useEffect(() => {
     let tot = 0;
     items.forEach(item => {
+      if (isRowOverStock(item)) return; // Exclude over-stock items from totals
       const q = parseFloat(String(item.qty)) || 0;
       const r = parseFloat(String(item.rate)) || 0;
       tot += q * r;
     });
     setRunningTotal(tot);
-  }, [items]);
+  }, [items, isRowOverStock]);
 
   const addItemRow = () => {
     setItems(prev => [...prev, ...createBlankRows(1, prev.length)]);
@@ -223,14 +245,9 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
-    // Stock verification
-    const hasWarnings = validLines.some(line => {
-      const mat = materials.find(m => m.id === line.material_id);
-      return mat && parseFloat(String(line.qty)) > mat.current_stock;
-    });
-
-    if (hasWarnings && !overrideConfirm) {
-      setErrorMessage('ATTENTION: One or more rows exceed raw stock levels. Confirm below to allow stock overwrite.');
+    // Stock verification - hard block (aggregated by material ID)
+    if (hasOverStockError) {
+      setErrorMessage('ATTENTION: One or more materials exceed available stock levels in aggregate. You must fix these errors before you can issue the challan.');
       return;
     }
 
@@ -299,6 +316,59 @@ export const IssueChallanView: React.FC = () => {
     m.name.toLowerCase().includes(masterSearch.toLowerCase()) ||
     m.code.toLowerCase().includes(masterSearch.toLowerCase())
   );
+
+  // List of clear error messages for materials exceeding stock
+  const stockErrors = React.useMemo(() => {
+    const messages: string[] = [];
+    const formatQty = (v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1);
+
+    Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
+      const mat = materials.find(m => m.id === materialId);
+      const qtyNum = totalQty as number;
+      if (mat && qtyNum > mat.current_stock) {
+        messages.push(`${mat.name} total issue ${formatQty(qtyNum)} exceeds stock ${formatQty(mat.current_stock)} ${mat.unit || 'pc'}.`);
+      }
+    });
+
+    return messages;
+  }, [aggregatedQtys, materials]);
+
+  const autoMergeDuplicates = () => {
+    const mergedMap: { [matId: string]: ChallanFormItem } = {};
+    const otherRows: ChallanFormItem[] = [];
+
+    items.forEach(item => {
+      if (item.material_id) {
+        if (!mergedMap[item.material_id]) {
+          mergedMap[item.material_id] = { ...item };
+        } else {
+          // Combine quantity of duplicate
+          const existingQty = parseFloat(String(mergedMap[item.material_id].qty)) || 0;
+          const newQty = parseFloat(String(item.qty)) || 0;
+          const totalQty = existingQty + newQty;
+
+          const rate = parseFloat(String(mergedMap[item.material_id].rate)) || 0;
+          mergedMap[item.material_id].qty = totalQty;
+          mergedMap[item.material_id].amount = totalQty * rate;
+        }
+      } else {
+        otherRows.push(item);
+      }
+    });
+
+    const mergedRows = Object.values(mergedMap);
+    const finalRows = [...mergedRows, ...otherRows];
+    
+    // Maintain minimum 20 rows
+    if (finalRows.length < 20) {
+      const paddingCount = 20 - finalRows.length;
+      finalRows.push(...createBlankRows(paddingCount, finalRows.length));
+    }
+
+    setItems(finalRows);
+  };
+
+  const hasOverStockError = stockErrors.length > 0;
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm max-w-5xl mx-auto" id="issue-challan-view">
@@ -500,10 +570,10 @@ export const IssueChallanView: React.FC = () => {
                             })}
                           </select>
                           
-                          {/* Stock warn tags */}
-                          {item.stockWarning && matObj && (
-                            <span className="text-[9px] text-rose-600 bg-rose-50 border border-rose-100 rounded px-1 mt-1 block w-max font-semibold flex items-center gap-0.5 animate-pulse">
-                              <AlertTriangle className="w-2.5 h-2.5" /> Overdraft: {matObj.current_stock.toFixed(1)} available
+                          {/* Stock error tag */}
+                          {isRowOverStock(item) && matObj && (
+                            <span className="text-[10px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-0.5 mt-1 block w-max font-bold flex items-center gap-1 animate-pulse">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-600 animate-bounce" /> Error: Combined total issue for {matObj.name} exceeds available stock ({matObj.current_stock.toFixed(1)} {item.unit || matObj.unit} available). Row excluded from total.
                             </span>
                           )}
                         </td>
@@ -564,6 +634,13 @@ export const IssueChallanView: React.FC = () => {
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
+                onClick={autoMergeDuplicates}
+                className="bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-250 text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1.5 cursor-pointer transition shadow-xs"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-amber-700" /> Auto-Merge Duplicates
+              </button>
+              <button
+                type="button"
                 onClick={addItemRow}
                 className="bg-slate-100 hover:bg-slate-200 text-slate-750 border border-slate-200 text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1.5 cursor-pointer"
               >
@@ -595,23 +672,21 @@ export const IssueChallanView: React.FC = () => {
           </div>
 
           {/* Error panel / warnings */}
-          {errorMessage && (
-            <div className="p-4 bg-orange-50 border border-orange-250 text-orange-850 rounded-lg space-y-2 text-xs flex flex-col">
-              <span className="font-semibold flex items-center gap-1">
-                <AlertTriangle className="w-4 h-4 " /> {errorMessage}
+          {(errorMessage || hasOverStockError) && (
+            <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg space-y-1.5 text-xs flex flex-col">
+              <span className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-rose-900">
+                <AlertTriangle className="w-4 h-4 text-rose-600 animate-bounce" /> Warning / Hard Block Activated
               </span>
-              {errorMessage.includes('exceed raw stock levels') && (
-                <label className="flex items-center gap-2 mt-2 bg-white/80 p-2 rounded border border-orange-200">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 rounded border-slate-300"
-                    checked={overrideConfirm}
-                    onChange={(e) => setOverrideConfirm(e.target.checked)}
-                  />
-                  <span className="font-bold text-slate-800">
-                    Authorize stock override / force debit despite low levels
-                  </span>
-                </label>
+              {errorMessage && <p className="text-rose-700 leading-relaxed">{errorMessage}</p>}
+              {stockErrors.map((err, idx) => (
+                <p key={idx} className="text-rose-800 font-semibold leading-relaxed">
+                  • {err}
+                </p>
+              ))}
+              {!errorMessage && stockErrors.length === 0 && (
+                <p className="text-rose-700 leading-relaxed">
+                  One or more line items have exceeded the current available stock. These lines have been excluded from the running total, and submission is disabled. Please decrease the quantity or choose a different item.
+                </p>
               )}
             </div>
           )}
@@ -621,7 +696,7 @@ export const IssueChallanView: React.FC = () => {
             <div className="flex items-center gap-2">
               <Calculator className="w-5 h-5 text-blue-300" />
               <div>
-                <p className="text-[10px] text-slate-300 font-bold font-sans uppercase">AGGREGATE ESTIMATED OUTFLOW</p>
+                <p className="text-[10px] text-slate-300 font-bold font-sans uppercase">AGGREGATE ESTIMATED OUTFLOW (EXCLUDING BLOCKED LINES)</p>
                 <p className="text-xl font-bold font-mono text-white">{formatINR(runningTotal)}</p>
               </div>
             </div>
@@ -637,8 +712,8 @@ export const IssueChallanView: React.FC = () => {
               
               <button
                 type="submit"
-                disabled={loading}
-                className="flex-1 sm:flex-initial bg-green-600 hover:bg-green-500 text-white text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition"
+                disabled={loading || hasOverStockError}
+                className="flex-1 sm:flex-initial bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition"
               >
                 {loading ? 'Processing...' : 'Issue Challan & Print'}
               </button>

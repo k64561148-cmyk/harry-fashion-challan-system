@@ -27,7 +27,8 @@ import {
   Plus,
   Minus,
   Check,
-  AlertCircle
+  AlertCircle,
+  Lock
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -66,27 +67,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     const todayList = challans.filter(c => c.issued_date === todayStr && c.status !== 'voided');
     setTodayChallans(todayList);
 
-    // 2. This Month's Issued Materials Total Value
+    // 2. This Month's Issued Materials Total Value from central normalized transactions list
     const currentYear = new Date().getFullYear();
     const currentMonth = new Date().getMonth() + 1; // 1-12
-    const items = db.getChallanItems();
-    
-    let totalVal = 0;
-    challans.forEach(c => {
-      if (c.status !== 'voided') {
-        const cDate = new Date(c.issued_date);
-        if (cDate.getFullYear() === currentYear && (cDate.getMonth() + 1) === currentMonth) {
-          const cItems = items.filter(item => item.challan_id === c.id);
-          const sum = cItems.reduce((acc, curr) => acc + curr.amount, 0);
-          totalVal += sum;
-        }
-      }
-    });
+    const currentMonthStr = String(currentMonth).padStart(2, '0');
+    const monthPattern = `${currentYear}-${currentMonthStr}`;
+    const allTransactions = db.getTransactions();
+
+    const totalVal = allTransactions
+      .filter(tx => tx.type === 'MATERIAL_ISSUE' && tx.date.startsWith(monthPattern))
+      .reduce((acc, curr) => acc + curr.amount, 0);
+
     setThisMonthMaterialValue(totalVal);
 
-    // 3. Pending Invoices (Draft Status)
-    const invoices = db.getInvoices();
-    const pendingList = invoices.filter(inv => inv.status === 'draft');
+    // 3. Pending Invoices (Draft Status) from central normalized transactions list
+    const pendingList = allTransactions.filter(tx => tx.type === 'BILL_DRAFT');
     setPendingInvoicesCount(pendingList.length);
 
     // 4. Low Stock Alerts (Stock < 15)
@@ -505,31 +500,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                               {/* Admin Exclusive Controls */}
                               {currentUser.role === 'admin' && (
                                 <>
-                                  {c.status === 'issued' && (
+                                  {c.status === 'billed' ? (
+                                    <div 
+                                      className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-50 border border-slate-150 rounded px-1.5 py-0.5 select-none"
+                                      title={c.billedInvoiceId ? `Billed under Invoice ID ${c.billedInvoiceId} on ${c.billedAt ? new Date(c.billedAt).toLocaleDateString() : 'unknown'} by ${c.billedBy || 'unknown'}` : 'Locked: Billed'}
+                                    >
+                                      <Lock className="w-2.5 h-2.5 text-slate-400" />
+                                      <span>BILLED LINK</span>
+                                    </div>
+                                  ) : (
                                     <>
+                                      {c.status === 'issued' && (
+                                        <>
+                                          <button
+                                            onClick={() => triggerEdit(c)}
+                                            title="Edit items in Challan"
+                                            className="p-1 hover:bg-blue-50 text-blue-600 border border-transparent hover:border-blue-200 rounded transition cursor-pointer flex items-center justify-center"
+                                          >
+                                            <Edit className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button
+                                            onClick={() => triggerVoid(c)}
+                                            title="Void & Reverse Challan stocks"
+                                            className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
+                                          >
+                                            <Ban className="w-3.5 h-3.5" />
+                                          </button>
+                                        </>
+                                      )}
                                       <button
-                                        onClick={() => triggerEdit(c)}
-                                        title="Edit items in Challan"
-                                        className="p-1 hover:bg-blue-50 text-blue-600 border border-transparent hover:border-blue-200 rounded transition cursor-pointer flex items-center justify-center"
+                                        onClick={() => triggerDelete(c)}
+                                        title="Permanently Delete Challan Document"
+                                        className="p-1 hover:bg-rose-50 text-rose-600 border border-transparent hover:border-rose-200 rounded transition cursor-pointer flex items-center justify-center"
                                       >
-                                        <Edit className="w-3.5 h-3.5" />
-                                      </button>
-                                      <button
-                                        onClick={() => triggerVoid(c)}
-                                        title="Void & Reverse Challan stocks"
-                                        className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
-                                      >
-                                        <Ban className="w-3.5 h-3.5" />
+                                        <Trash2 className="w-3.5 h-3.5" />
                                       </button>
                                     </>
                                   )}
-                                  <button
-                                    onClick={() => triggerDelete(c)}
-                                    title="Permanently Delete Challan Document"
-                                    className="p-1 hover:bg-rose-50 text-rose-600 border border-transparent hover:border-rose-200 rounded transition cursor-pointer flex items-center justify-center"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
                                 </>
                               )}
                             </div>

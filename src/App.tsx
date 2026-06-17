@@ -44,6 +44,15 @@ export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
   const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  const [cloudHealth, setCloudHealth] = useState(() => db.getCloudHealth());
+
+  useEffect(() => {
+    const handleSync = () => {
+      setCloudHealth(db.getCloudHealth());
+    };
+    window.addEventListener('db_sync', handleSync);
+    return () => window.removeEventListener('db_sync', handleSync);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -125,13 +134,12 @@ export default function App() {
     const role = currentUser.role;
     if (role === 'admin') return true;
     if (role === 'billing') {
-      // Billing can view everything except settings (some pages in settings are simulated, which is fine, but we restrict Setting subTabs)
-      // They can view all reports, billing registers, inward entries, issue challan
+      // Billing can view everything except settings
       return tab !== 'settings'; 
     }
     if (role === 'issue_dept') {
-      // Issue department can ONLY access: dashboard, issue_challan, inward_entry
-      return ['dashboard', 'issue_challan', 'inward_entry'].includes(tab);
+      // Issue department can access dashboard, issue_challan, inward_entry, and settings (restricted sub-tabs inside)
+      return ['dashboard', 'issue_challan', 'inward_entry', 'settings'].includes(tab);
     }
     return false;
   };
@@ -296,6 +304,53 @@ export default function App() {
             )}
 
           </nav>
+
+          {/* Cloud Health Panel */}
+          <div className="mx-4 mb-4 p-3.5 bg-[#14233a]/80 rounded-xl border border-[#2D3E5D]/80 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-slate-400 font-extrabold tracking-wider uppercase flex items-center gap-1.5 font-sans">
+                <Cloud className={`w-3.5 h-3.5 ${cloudHealth.syncFailed ? 'text-rose-500 animate-pulse' : 'text-blue-400'}`} />
+                Cloud Health Status
+              </span>
+              <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${cloudHealth.syncFailed ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+                {cloudHealth.syncFailed ? 'Sync Failed' : 'Healthy'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-350 font-mono mt-1 border-t border-[#2D3E5D]/40 pt-2">
+              <div>
+                <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Last Write</span>
+                <span className="font-semibold text-slate-200">
+                  {cloudHealth.lastSuccessfulWrite ? new Date(cloudHealth.lastSuccessfulWrite).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Never'}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Last Read</span>
+                <span className="font-semibold text-slate-200">
+                  {cloudHealth.lastRead ? new Date(cloudHealth.lastRead).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Never'}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Queue Size</span>
+                <span className={`font-semibold ${cloudHealth.pendingOfflineWrites > 0 ? 'text-amber-400 font-bold' : 'text-slate-200'}`}>
+                  {cloudHealth.pendingOfflineWrites} writes
+                </span>
+              </div>
+              <div>
+                <span className="block text-[8px] text-slate-500 font-bold uppercase tracking-wider">Device Node</span>
+                <span className="font-semibold text-slate-400 truncate block max-w-[95px]" title={db.getCloudHealth().deviceId}>
+                  Terminal Client
+                </span>
+              </div>
+            </div>
+
+            {cloudHealth.lastError && (
+              <div className="mt-1.5 p-2 bg-rose-950/30 border border-rose-800/30 rounded-lg text-[9px] text-rose-300 leading-normal font-mono select-text break-all max-h-[80px] overflow-y-auto">
+                <span className="font-bold text-rose-400 block mb-0.5 uppercase tracking-wider">Write Exception:</span>
+                {cloudHealth.lastError}
+              </div>
+            )}
+          </div>
 
           {/* Quick Active user Profile Panel */}
           <div className="p-4 border-t border-[#2D3E5D] bg-[#14233a] flex flex-col gap-3.5">

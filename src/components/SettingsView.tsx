@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import JSZip from 'jszip';
-import { db, DEMO_USERS } from '../db';
+import { db } from '../db';
 import { Master, Material, MasterRateOverride, AuditLog, RateHistory, UserRole, Profile } from '../types';
 import { formatINR, formatDate, generateAuditTrailPDF, generateChallanPDF, generateInvoicePDF } from '../utils/exportUtils';
 import { getFolderChallanDateText, getFolderInvoiceDateText } from '../utils/smartDownloader';
@@ -89,7 +89,7 @@ export const SettingsView: React.FC = () => {
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editUsername, setEditUsername] = useState('');
-  const [editPassword, setEditPassword] = useState('');
+  const [editActive, setEditActive] = useState<boolean>(true);
 
   const handleRoleChange = (profileId: string, newRole: UserRole) => {
     const userProf = profiles.find(p => p.id === profileId);
@@ -487,7 +487,7 @@ export const SettingsView: React.FC = () => {
 
   // --- Profile Switch handler ---
   const handleUserSwap = (userId: string) => {
-    const user = DEMO_USERS.find(u => u.id === userId);
+    const user = profiles.find(u => u.uid === userId || u.id === userId);
     if (user) {
       db.setCurrentUser(user);
       setCurrentUser(user);
@@ -728,37 +728,43 @@ export const SettingsView: React.FC = () => {
         >
           <Layers className="w-4 h-4" /> Material Settings
         </button>
-        <button
-          onClick={() => setActiveSubTab('overrides')}
-          className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-            activeSubTab === 'overrides' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
-          }`}
-        >
-          <Percent className="w-4 h-4" /> Custom Master Rates
-        </button>
-        <button
-          onClick={() => setActiveSubTab('users')}
-          className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-            activeSubTab === 'users' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
-          }`}
-        >
-          <Users className="w-4 h-4" /> Employee Roles & Access
-        </button>
-        <button
-          onClick={() => setActiveSubTab('audit_log')}
-          className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-            activeSubTab === 'audit_log' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
-          }`}
-        >
-          <History className="w-4 h-4" /> System Audit Trails
-        </button>
+        {currentUser.role !== 'issue_dept' && (
+          <button
+            onClick={() => setActiveSubTab('overrides')}
+            className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+              activeSubTab === 'overrides' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+            }`}
+          >
+            <Percent className="w-4 h-4" /> Custom Master Rates
+          </button>
+        )}
+        {currentUser.role !== 'issue_dept' && (
+          <button
+            onClick={() => setActiveSubTab('users')}
+            className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+              activeSubTab === 'users' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+            }`}
+          >
+            <Users className="w-4 h-4" /> Employee Roles & Access
+          </button>
+        )}
+        {currentUser.role !== 'issue_dept' && (
+          <button
+            onClick={() => setActiveSubTab('audit_log')}
+            className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
+              activeSubTab === 'audit_log' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+            }`}
+          >
+            <History className="w-4 h-4" /> System Audit Trails
+          </button>
+        )}
         <button
           onClick={() => setActiveSubTab('cloud')}
           className={`flex-1 min-w-[110px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
             activeSubTab === 'cloud' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
           }`}
         >
-          <Cloud className="w-4 h-4" /> Cloud Persistence Sync
+          <Cloud className="w-4 h-4" /> {currentUser.role === 'issue_dept' ? 'Daily Challan Packager' : 'Cloud Persistence Sync'}
         </button>
       </div>
 
@@ -1371,16 +1377,19 @@ export const SettingsView: React.FC = () => {
                     <th className="py-3 px-4">System Access Role</th>
                     <th className="py-3 px-4">Employee Display Name</th>
                     <th className="py-3 px-4">System User ID (Username)</th>
-                    <th className="py-3 px-4">Secret Access Password</th>
+                    <th className="py-3 px-4">Profile Status</th>
                     <th className="py-3 px-4 text-center">Actions & Changes</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {profiles.map((prof) => {
-                    const isSelf = prof.id === currentUser.id;
-                    const isEditing = editingProfileId === prof.id;
+                    const idToCompare = prof.uid || prof.id;
+                    const isSelf = idToCompare === (currentUser.uid || currentUser.id);
+                    const isEditing = editingProfileId === idToCompare;
+                    const isActive = prof.active !== false;
+
                     return (
-                      <tr key={prof.id} className="hover:bg-slate-50/55 transition">
+                      <tr key={idToCompare} className="hover:bg-slate-50/55 transition">
                         {/* System Access Role badge */}
                         <td className="py-4 px-4 font-extrabold text-slate-800 whitespace-nowrap">
                           {prof.role === 'admin' ? (
@@ -1413,7 +1422,7 @@ export const SettingsView: React.FC = () => {
                               className="w-full text-xs font-semibold bg-white text-slate-800 border border-slate-250 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
                             />
                           ) : (
-                            <span className="text-xs">{prof.name}</span>
+                            <span className="text-xs">{prof.displayName || prof.name}</span>
                           )}
                         </td>
 
@@ -1432,17 +1441,31 @@ export const SettingsView: React.FC = () => {
                           )}
                         </td>
 
-                        {/* Secret Access Password */}
+                        {/* Profile Status */}
                         <td className="py-4 px-4 text-slate-650 font-mono text-xs">
                           {isEditing ? (
-                            <input
-                              type="text"
-                              value={editPassword}
-                              onChange={(e) => setEditPassword(e.target.value)}
-                              className="w-full text-xs font-mono bg-white text-slate-800 border border-slate-250 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                id={`status-${idToCompare}`}
+                                checked={editActive}
+                                onChange={(e) => setEditActive(e.target.checked)}
+                                className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                              />
+                              <label htmlFor={`status-${idToCompare}`} className="text-xs font-semibold font-sans text-slate-700 cursor-pointer">
+                                {editActive ? 'Active' : 'Suspended'}
+                              </label>
+                            </div>
                           ) : (
-                            <span className="text-slate-400 font-bold font-sans">•••••••• (Protected)</span>
+                            isActive ? (
+                              <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
+                                ● Active
+                              </span>
+                            ) : (
+                              <span className="text-[9px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded uppercase tracking-wider">
+                                🚫 Suspended
+                              </span>
+                            )
                           )}
                         </td>
 
@@ -1454,28 +1477,36 @@ export const SettingsView: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (!editName.trim() || !editUsername.trim() || !editPassword.trim()) {
-                                      alert("Please complete all credentials fields. No blanks allowed.");
+                                    if (!editName.trim() || !editUsername.trim()) {
+                                      alert("Please complete display name and user ID. No blanks allowed.");
                                       return;
                                     }
                                     if (!/^[a-zA-Z0-9_\-]+$/.test(editUsername)) {
                                       alert("User ID can only contain letters, numbers, hyphens or underscores.");
                                       return;
                                     }
-                                    const updatedProf = {
+                                    if (isSelf && !editActive) {
+                                      alert("You cannot suspend your own owner profile.");
+                                      return;
+                                    }
+                                    const updatedProf: Profile = {
                                       ...prof,
+                                      uid: idToCompare,
+                                      id: idToCompare,
+                                      displayName: editName.trim(),
                                       name: editName.trim(),
                                       username: editUsername.trim().toLowerCase(),
-                                      password: editPassword.trim()
+                                      active: editActive,
+                                      updatedAt: new Date().toISOString()
                                     };
                                     db.saveProfile(updatedProf);
-                                    showFeedback(`Successfully updated internal key credentials for ${prof.role.toUpperCase()}!`);
+                                    showFeedback(`Successfully updated internal profile parameters for ${prof.role.toUpperCase()}!`);
                                     setEditingProfileId(null);
                                     setProfiles(db.getProfiles());
                                   }}
                                   className="py-1 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[10px] cursor-pointer transition uppercase"
                                 >
-                                  Save Key
+                                  Save Config
                                 </button>
                                 <button
                                   type="button"
@@ -1489,14 +1520,14 @@ export const SettingsView: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setEditingProfileId(prof.id);
-                                  setEditName(prof.name);
+                                  setEditingProfileId(idToCompare);
+                                  setEditName(prof.displayName || prof.name);
                                   setEditUsername(prof.username || '');
-                                  setEditPassword(prof.password || '');
+                                  setEditActive(isActive);
                                 }}
                                 className="py-1.5 px-3 bg-[#1A2E4A]/10 text-[#1A2E4A] hover:bg-[#1A2E4A]/20 font-bold rounded-lg text-[10px] cursor-pointer transition uppercase"
                               >
-                                Edit Key Card
+                                Edit Profile
                               </button>
                             )
                           ) : (
@@ -1769,9 +1800,11 @@ export const SettingsView: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             
             {/* Left/Middle Column status & actions */}
-            <div className="md:col-span-2 space-y-6">
+            <div className={`${currentUser.role === 'issue_dept' ? 'md:col-span-3' : 'md:col-span-2'} space-y-6`}>
               
-              <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 shadow-xs space-y-4">
+              {currentUser.role !== 'issue_dept' && (
+                <>
+                  <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 shadow-xs space-y-4">
                 <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Storage Node Allocation Summary</h4>
                 
                 {firebaseUser ? (
@@ -1958,6 +1991,8 @@ export const SettingsView: React.FC = () => {
                   </div>
                 </div>
               </div>
+            </>
+          )}
 
               {/* --- MULTI-COMPILE BATCH DOCUMENT PACKAGER (OFFLINE-SAFE BROWSER ZIP EXPORTER) --- */}
               <div className="p-5 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-4">
@@ -2082,8 +2117,10 @@ export const SettingsView: React.FC = () => {
                 )}
               </div>
 
-              {/* --- FIREBASE DATABASE CLEANUP & DATA RETENTION CENTER --- */}
-              <div className="p-5 rounded-2xl bg-rose-50/20 border border-rose-250 shadow-xs space-y-4">
+              {currentUser.role !== 'issue_dept' && (
+                <>
+                  {/* --- FIREBASE DATABASE CLEANUP & DATA RETENTION CENTER --- */}
+                  <div className="p-5 rounded-2xl bg-rose-50/20 border border-rose-250 shadow-xs space-y-4">
                 <div>
                   <h4 className="text-xs font-bold text-rose-800 uppercase tracking-wider flex items-center gap-1.5">
                     🧹 Firebase Storage & Database Cleanup (Permanent Offline/Cloud Space Purger)
@@ -2253,11 +2290,14 @@ export const SettingsView: React.FC = () => {
                   </div>
                 </div>
               </div>
+            </>
+          )}
 
             </div>
 
             {/* Right Column: Database collections statistics and seed controls */}
-            <div className="space-y-6">
+            {currentUser.role !== 'issue_dept' && (
+              <div className="space-y-6">
               {!isSeeded && (
                 <div id="seed-database-container" className="p-5 rounded-2xl bg-[#1A2E4A]/5 border border-[#1A2E4A]/10 shadow-xs space-y-4">
                   <h4 className="text-xs font-bold text-[#1A2E4A] uppercase tracking-wider flex items-center gap-1.5">
@@ -2316,6 +2356,7 @@ export const SettingsView: React.FC = () => {
                 </div>
               </div>
             </div>
+          )}
 
           </div>
         </div>

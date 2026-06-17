@@ -9,13 +9,17 @@ export type InvoiceStatus = 'draft' | 'finalised';
 export type UserRole = 'issue_dept' | 'billing' | 'admin';
 
 export interface Profile {
-  id: string;
+  uid: string;
+  id: string; // compatibility fallback
+  displayName: string;
+  name: string; // compatibility fallback
   email: string;
   role: UserRole;
-  name: string;
-  created_at?: string;
-  username?: string;
-  password?: string;
+  username: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  created_at?: string; // compatibility fallback
 }
 
 export interface MasterPanAccount {
@@ -56,6 +60,9 @@ export interface Challan {
   status: ChallanStatus;
   notes: string;
   created_at: string;
+  billedInvoiceId?: string;
+  billedAt?: string;
+  billedBy?: string;
 }
 
 export interface ChallanItem {
@@ -78,6 +85,14 @@ export interface InwardEntry {
   notes: string;
   created_by: string;
   created_at: string;
+  materialId?: string;
+  materialNameSnapshot?: string;
+  unit?: string;
+  quantity?: number;
+  rateSnapshot?: number;
+  supplier?: string;
+  billNo?: string;
+  date?: string;
 }
 
 export interface Invoice {
@@ -130,4 +145,36 @@ export interface AuditLog {
   action: string;
   details: string;
   created_at: string;
+}
+
+export type TransactionType =
+  | 'MATERIAL_ISSUE'
+  | 'STOCK_INWARD'
+  | 'BILL_DRAFT'
+  | 'BILL_FINALIZED'
+  | 'PAYMENT'
+  | 'VOID'
+  | 'ADJUSTMENT';
+
+export interface LedgerTransaction {
+  id: string;
+  type: TransactionType;
+  date: string; // YYYY-MM-DD
+  master_id?: string;
+  material_id?: string;
+  qty?: number;
+  rate?: number;
+  amount: number; // for ledger accounting
+  ref_id: string;
+  ref_no: string;
+  notes?: string;
+  created_at: string;
+  // Detailed values for identical calculations
+  work_amount?: number;
+  material_deduction?: number;
+  discount?: number;
+  tds_amount?: number;
+  net_payable?: number;
+  period_month?: number;
+  period_year?: number;
 }

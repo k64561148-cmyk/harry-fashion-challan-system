@@ -64,13 +64,13 @@ export function printPDFDoc(doc: jsPDF) {
           console.warn('Iframe printing blocked or failed. Running fallback download:', innerError);
           doc.save('document.pdf');
         } finally {
-          // Cleanup frame and revoke blob URL after printed/canceled
+          // Cleanup frame and revoke blob URL after printed/canceled (prolonged to 2 minutes to block preview disappearance)
           setTimeout(() => {
             if (iframe.parentNode) {
               document.body.removeChild(iframe);
             }
             URL.revokeObjectURL(pdfBlobUrl);
-          }, 5000);
+          }, 120000);
         }
       }, 500);
     };

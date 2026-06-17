@@ -150,15 +150,18 @@
       "description": "User account registration and authorization profiles",
       "type": "object",
       "properties": {
+        "uid": { "type": "string" },
         "id": { "type": "string" },
+        "displayName": { "type": "string" },
+        "name": { "type": "string" },
         "email": { "type": "string" },
         "role": { "type": "string", "enum": ["issue_dept", "billing", "admin"] },
-        "name": { "type": "string" },
-        "created_at": { "type": "string", "format": "date-time" },
         "username": { "type": "string" },
-        "password": { "type": "string" }
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "email", "role", "name", "created_at"]
+      "required": ["uid", "displayName", "role", "username", "active", "createdAt", "updatedAt"]
     }
   },
   "firestore": {

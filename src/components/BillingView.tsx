@@ -18,7 +18,9 @@ import {
   AlertCircle,
   Clock,
   Printer,
-  Download
+  Download,
+  Edit3,
+  Search
 } from 'lucide-react';
 
 interface GroupedItem {
@@ -31,6 +33,26 @@ interface GroupedItem {
 }
 
 export const BillingView: React.FC = () => {
+  const currentUser = db.getCurrentUser();
+  const [activeBillingTab, setActiveBillingTab] = useState<'create' | 'manage'>('create');
+  const [allInvoices, setAllInvoices] = useState<Invoice[]>([]);
+  
+  // Settle & Manage filters
+  const [filterMasterId, setFilterMasterId] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  // Edit invoice inline controls
+  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
+  const [editPcs, setEditPcs] = useState<number>(0);
+  const [editWorkAmount, setEditWorkAmount] = useState<number>(0);
+  const [editDiscount, setEditDiscount] = useState<number>(0);
+  const [editPanNo, setEditPanNo] = useState<string>('');
+  const [editBankName, setEditBankName] = useState<string>('');
+  const [editAccountNo, setEditAccountNo] = useState<string>('');
+  const [editIfscCode, setEditIfscCode] = useState<string>('');
+  const [editBranchName, setEditBranchName] = useState<string>('');
+  const [editStatus, setEditStatus] = useState<'draft' | 'finalised'>('draft');
+
   const [masters, setMasters] = useState<Master[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   
@@ -48,6 +70,7 @@ export const BillingView: React.FC = () => {
   // Pending challans of selected master
   const [pendingChallans, setPendingChallans] = useState<Challan[]>([]);
   const [selectedChallanIds, setSelectedChallanIds] = useState<{ [id: string]: boolean }>({});
+  const [challansVersion, setChallansVersion] = useState<number>(0);
 
   // Grouped line items inside selected challans
   const [billingItems, setBillingItems] = useState<GroupedItem[]>([]);
@@ -119,6 +142,8 @@ export const BillingView: React.FC = () => {
   const loadInitialData = () => {
     setMasters(db.getMasters().filter(m => m.is_active));
     setMaterials(db.getMaterials());
+    setAllInvoices(db.getInvoices());
+    setChallansVersion(v => v + 1);
   };
 
   useEffect(() => {
@@ -128,11 +153,25 @@ export const BillingView: React.FC = () => {
     return () => window.removeEventListener('db_sync', loadInitialData);
   }, []);
 
-  // Fetch all pending 'issued' challans when master changes
+  // Fetch all pending 'issued' and unbilled challans when master, monthly period, or database version changes
   useEffect(() => {
     if (selectedMasterId) {
       const allChallans = db.getChallans();
-      const masterPending = allChallans.filter(c => c.master_id === selectedMasterId && c.status === 'issued');
+      const invoiceChallans = db.getInvoiceChallans();
+      const linkedChallanIds = new Set(invoiceChallans.map(ic => ic.challan_id));
+
+      const masterPending = allChallans.filter(c => {
+        // Must match master, must be in 'issued' state (not billed, not voided), and must not be currently linked to any invoice
+        if (c.master_id !== selectedMasterId || c.status !== 'issued' || linkedChallanIds.has(c.id)) {
+          return false;
+        }
+        // Match selected month and year from YYYY-MM-DD
+        const parts = (c.issued_date || '').split('-');
+        if (parts.length < 3) return false;
+        const cYear = parseInt(parts[0], 10);
+        const cMonth = parseInt(parts[1], 10);
+        return cYear === periodYear && cMonth === periodMonth;
+      });
       setPendingChallans(masterPending);
 
       // Auto check all by default
@@ -154,7 +193,7 @@ export const BillingView: React.FC = () => {
     setDiscountRaw('');
     setSuccessInvoice(null);
     setErrorMsg('');
-  }, [selectedMasterId]);
+  }, [selectedMasterId, periodMonth, periodYear, challansVersion]);
 
   // Aggregate item lines when selected challan ids or checked lines change
   useEffect(() => {
@@ -241,6 +280,11 @@ export const BillingView: React.FC = () => {
       setErrorMsg('');
       setLoading(true);
 
+      if (status === 'finalised' && db.isSyncFailed()) {
+        setErrorMsg('Sync failed! Cloud write permission failure has blocked finalisation. Resolve permissions or cloud connection to proceed.');
+        return;
+      }
+
       const activeChallanIds = Object.keys(selectedChallanIds).filter(id => selectedChallanIds[id]);
       if (activeChallanIds.length === 0) {
         setErrorMsg('At least one Challan must be checked to generate an Invoice.');
@@ -273,6 +317,10 @@ export const BillingView: React.FC = () => {
 
       // 1. Commit and get compiled invoice Record
       const invoiceResult = db.saveInvoice(invoicePayload, activeChallanIds);
+
+      // Reload local data and notify other components
+      loadInitialData();
+      window.dispatchEvent(new Event('db_sync'));
 
       // 2. Generate PDF download
       const masterObj = masters.find(m => m.id === selectedMasterId)!;
@@ -324,66 +372,201 @@ export const BillingView: React.FC = () => {
     setErrorMsg('');
   };
 
+  // Start Invoice Editing Context
+  const handleStartEdit = (inv: Invoice) => {
+    setEditingInvoice(inv);
+    setEditPcs(inv.pcs || 0);
+    setEditWorkAmount(inv.work_amount || 0);
+    setEditDiscount(inv.discount || 0);
+    setEditPanNo(inv.selected_pan_no || '');
+    setEditBankName(inv.selected_bank_name || '');
+    setEditAccountNo(inv.selected_account_no || '');
+    setEditIfscCode(inv.selected_ifsc_code || '');
+    setEditBranchName(inv.selected_branch_name || '');
+    setEditStatus(inv.status);
+  };
+
+  // Safely save edited invoice totals & details
+  const handleSaveEditInvoice = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingInvoice) return;
+
+    try {
+      db.editInvoice(editingInvoice.id, {
+        pcs: editPcs,
+        work_amount: editWorkAmount,
+        discount: editDiscount,
+        selected_pan_no: editPanNo || undefined,
+        selected_bank_name: editBankName || undefined,
+        selected_account_no: editAccountNo || undefined,
+        selected_ifsc_code: editIfscCode || undefined,
+        selected_branch_name: editBranchName || undefined,
+        status: editStatus
+      });
+      setEditingInvoice(null);
+      loadInitialData();
+      window.dispatchEvent(new Event('db_sync'));
+      alert("✅ Invoice updated successfully!");
+    } catch (err: any) {
+      alert("❌ Edit failed: " + err.message);
+    }
+  };
+
+  // Void and Settle Cleanup for Administrative invoice Purging
+  const handleDeleteInvoiceClick = (invoiceId: string, invoiceNo: string) => {
+    const confirmation = window.confirm(`⚠️ ATTENTION: VOID & DELETE INVOICE ${invoiceNo} ⚠️\n\nDeleting this invoice will:\n1. Permanently remove this billing ledger entry.\n2. Revert all its linked challans back to "Issued / Pending" status instantly.\n\nClick OK to confirm.`);
+    if (!confirmation) return;
+
+    const reason = window.prompt(`Please enter an audit reason for reversing and deleting Invoice ${invoiceNo}:`);
+    if (reason === null) return; // user cancelled
+    if (!reason.trim()) {
+      alert("❌ Audit reason is required to reverse the bill.");
+      return;
+    }
+
+    try {
+      db.deleteInvoice(invoiceId, reason.trim());
+      loadInitialData();
+      window.dispatchEvent(new Event('db_sync'));
+      alert("✅ Invoice voided/deleted successfully. Linked challans are now active again.");
+    } catch (err: any) {
+      alert("❌ Deletion failed: " + err.message);
+    }
+  };
+
+  // Re-download PDF helper from list
+  const triggerListPDFDownload = async (inv: Invoice) => {
+    try {
+      const masterObj = db.getMasters().find(m => m.id === inv.master_id);
+      if (!masterObj) {
+        alert("Master profile not found in database.");
+        return;
+      }
+      const icList = db.getInvoiceChallans(inv.id).map(ic => ic.challan_id);
+      const chList = db.getChallans().filter(c => icList.includes(c.id));
+      const allItems = db.getChallanItems();
+      await generateInvoicePDF(inv, chList, allItems, masterObj, materials, true, false);
+    } catch (err: any) {
+      alert("Failed generating document download: " + err.message);
+    }
+  };
+
+  // Direct print PDF helper from list
+  const triggerListPDFPrint = async (inv: Invoice) => {
+    try {
+      const masterObj = db.getMasters().find(m => m.id === inv.master_id);
+      if (!masterObj) {
+        alert("Master profile not found in database.");
+        return;
+      }
+      const icList = db.getInvoiceChallans(inv.id).map(ic => ic.challan_id);
+      const chList = db.getChallans().filter(c => icList.includes(c.id));
+      const allItems = db.getChallanItems();
+      await generateInvoicePDF(inv, chList, allItems, masterObj, materials, false, true);
+    } catch (err: any) {
+      alert("Failed triggering direct print dialog: " + err.message);
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto space-y-6" id="billing-view">
       
-      {/* Search Header */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        
-        <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
-          <div className="p-2 bg-blue-50 text-[#1A2E4A] rounded-lg">
-            <Receipt className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MASTER MONTHLY STITCHING SETTLE BILL</h3>
-            <p className="text-[10px] text-slate-400 font-sans">Accumulate material challans, enter stitching jobwork earnings, settle balances</p>
+      {db.isSyncFailed() && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-4 flex items-center gap-3 animate-pulse">
+          <AlertCircle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+          <div className="text-xs">
+            <span className="font-bold block uppercase tracking-wider text-rose-700">Sync Failed / Cloud Save Disabled</span>
+            Security/Authorization permissions failure detected with Google Firebase Firestore. Settle finalisation matches are currently blocked to prevent inconsistent local states.
           </div>
         </div>
+      )}
+      
+      {/* Dynamic View Navigation */}
+      <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+        <button
+          onClick={() => {
+            setActiveBillingTab('create');
+            setSuccessInvoice(null);
+          }}
+          className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer uppercase ${
+            activeBillingTab === 'create' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+          }`}
+        >
+          <Receipt className="w-4.5 h-4.5" /> Assemble Settle Bill
+        </button>
+        <button
+          onClick={() => {
+            setActiveBillingTab('manage');
+            setEditingInvoice(null);
+          }}
+          className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer uppercase ${
+            activeBillingTab === 'manage' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+          }`}
+        >
+          <FileCheck className="w-4.5 h-4.5" /> Manage & Settle Registers
+        </button>
+      </div>
 
-        {/* Filters and inputs */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">SELECT MASTER</label>
-            <select
-              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-800 font-bold"
-              value={selectedMasterId}
-              onChange={(e) => setSelectedMasterId(e.target.value)}
-            >
-              <option value="">-- Choose master craftsman --</option>
-              {masters.map(m => (
-                <option key={m.id} value={m.id}>{m.name} ({m.type.toUpperCase()})</option>
-              ))}
-            </select>
-          </div>
+      {activeBillingTab === 'create' ? (
+        <>
+          {/* Search Header */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+            
+            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
+              <div className="p-2 bg-blue-50 text-[#1A2E4A] rounded-lg">
+                <Receipt className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MASTER MONTHLY STITCHING SETTLE BILL</h3>
+                <p className="text-[10px] text-slate-400 font-sans">Accumulate material challans, enter stitching jobwork earnings, settle balances</p>
+              </div>
+            </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">BILLING MONTH</label>
-            <select
-              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-bold"
-              value={periodMonth}
-              onChange={(e) => setPeriodMonth(parseInt(e.target.value, 10))}
-            >
-              {monthsList.map(m => (
-                <option key={m.value} value={m.value}>{m.name}</option>
-              ))}
-            </select>
-          </div>
+            {/* Filters and inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">SELECT MASTER</label>
+                <select
+                  className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-800 font-bold"
+                  value={selectedMasterId}
+                  onChange={(e) => setSelectedMasterId(e.target.value)}
+                >
+                  <option value="">-- Choose master craftsman --</option>
+                  {masters.map(m => (
+                    <option key={m.id} value={m.id}>{m.name} ({m.type.toUpperCase()})</option>
+                  ))}
+                </select>
+              </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">BILLING YEAR</label>
-            <select
-              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-bold"
-              value={periodYear}
-              onChange={(e) => setPeriodYear(parseInt(e.target.value, 10))}
-            >
-              <option value={2025}>F.Y. 2024-25</option>
-              <option value={2026}>F.Y. 2025-26</option>
-              <option value={2027}>F.Y. 2026-27</option>
-            </select>
-          </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">BILLING MONTH</label>
+                <select
+                  className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-bold"
+                  value={periodMonth}
+                  onChange={(e) => setPeriodMonth(parseInt(e.target.value, 10))}
+                >
+                  {monthsList.map(m => (
+                    <option key={m.value} value={m.value}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
 
-        </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">BILLING YEAR</label>
+                <select
+                  className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-bold"
+                  value={periodYear}
+                  onChange={(e) => setPeriodYear(parseInt(e.target.value, 10))}
+                >
+                  <option value={2025}>2025</option>
+                  <option value={2026}>2026</option>
+                  <option value={2027}>2027</option>
+                  <option value={2028}>2028</option>
+                </select>
+              </div>
+
+            </div>
 
       </div>
 
@@ -815,6 +998,327 @@ export const BillingView: React.FC = () => {
             </div>
           )}
         </>
+      )}
+      </>
+      ) : (
+        /* Settle registry lists & Edit Invoice inline form */
+        <div className="space-y-6 text-left">
+          {editingInvoice ? (
+            /* ACTIVE EDITING CARD FOR ADMIN */
+            <form onSubmit={handleSaveEditInvoice} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-6">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-indigo-50 text-[#1A2E4A] rounded-lg">
+                    <Edit3 className="w-5 h-5 animate-pulse text-indigo-650" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-850">Modifier Settle Register: {editingInvoice.invoice_no}</h4>
+                    <p className="text-[10px] text-slate-400">Modify pieces, wages, discounts, or bank dispatch details</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingInvoice(null)}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-655 text-xs py-1.5 px-3 rounded-lg font-bold"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Total Pcs</label>
+                  <input
+                    type="number"
+                    value={editPcs}
+                    onChange={(e) => setEditPcs(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Gross Stitching Wages (Rs)</label>
+                  <input
+                    type="number"
+                    value={editWorkAmount}
+                    onChange={(e) => setEditWorkAmount(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Deducted Discount (Rs)</label>
+                  <input
+                    type="number"
+                    value={editDiscount}
+                    onChange={(e) => setEditDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Bill Status</label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value as 'draft' | 'finalised')}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-bold text-slate-705"
+                  >
+                    <option value="draft">DRAFT</option>
+                    <option value="finalised">FINALISED</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Bank Accounts Dropdown for Autofill */}
+              {(() => {
+                const master = masters.find(m => m.id === editingInvoice.master_id);
+                if (master && master.pan_accounts && master.pan_accounts.length > 0) {
+                  return (
+                    <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl space-y-2">
+                      <label className="block text-[11px] font-bold text-[#1A2E4A] uppercase">Select Master PAN/Bank Profile Override</label>
+                      <select
+                        onChange={(e) => {
+                          const profile = master.pan_accounts?.find(p => p.id === e.target.value);
+                          if (profile) {
+                            setEditPanNo(profile.pan_no);
+                            setEditBankName(profile.bank_name);
+                            setEditAccountNo(profile.account_no);
+                            setEditIfscCode(profile.ifsc_code);
+                            setEditBranchName(profile.branch_name || '');
+                          }
+                        }}
+                        className="w-full bg-white border border-slate-200 p-2 text-xs rounded-lg outline-none font-bold text-slate-700 cursor-pointer"
+                        defaultValue={editPanNo}
+                      >
+                        <option value="">-- Apply custom registered bank allocation profile --</option>
+                        {master.pan_accounts.map(p => (
+                          <option key={p.id} value={p.id}>{p.pan_no} - {p.bank_name} ({p.account_no})</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 space-y-4">
+                <span className="text-[10px] font-extrabold text-[#1A2E4A] tracking-wider uppercase block">Custom Settle Dispatch Details</span>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-650 uppercase mb-1">PAN Number</label>
+                    <input
+                      type="text"
+                      value={editPanNo}
+                      onChange={(e) => setEditPanNo(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-mono uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-655 uppercase mb-1">Bank Name</label>
+                    <input
+                      type="text"
+                      value={editBankName}
+                      onChange={(e) => setEditBankName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-655 uppercase mb-1">Account Number</label>
+                    <input
+                      type="text"
+                      value={editAccountNo}
+                      onChange={(e) => setEditAccountNo(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-655 uppercase mb-1">IFSC Code</label>
+                    <input
+                      type="text"
+                      value={editIfscCode}
+                      onChange={(e) => setEditIfscCode(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none font-mono uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-655 uppercase mb-1">Branch Name</label>
+                    <input
+                      type="text"
+                      value={editBranchName}
+                      onChange={(e) => setEditBranchName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none text-slate-700"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-2.5 pt-3 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setEditingInvoice(null)}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold py-2.5 px-4 rounded-xl text-xs border border-slate-200 cursor-pointer"
+                >
+                  Cancel Modification
+                </button>
+                <button
+                  type="submit"
+                  className="bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white font-bold py-2.5 px-5 rounded-xl text-xs uppercase tracking-wider cursor-pointer shadow-sm"
+                >
+                  Save Invoice Changes
+                </button>
+              </div>
+            </form>
+          ) : (
+            /* INVOICE REGISTRY GRID */
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-3">
+                <div>
+                  <h4 className="text-xs font-bold text-[#1A2E4A] uppercase tracking-wider flex items-center gap-1.5">
+                    📑 Complete Settle Invoice Registry
+                  </h4>
+                  <p className="text-[10px] text-slate-450 font-sans">List of all saved drafts & finalized month-end stitching settlements</p>
+                </div>
+
+                {/* Registry filters */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div>
+                    <select
+                      value={filterMasterId}
+                      onChange={(e) => setFilterMasterId(e.target.value)}
+                      className="bg-slate-50 border border-slate-200 rounded-lg p-1.5 text-xs font-bold text-slate-700 outline-none cursor-pointer"
+                    >
+                      <option value="all">All Stitching Masters</option>
+                      {db.getMasters().map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <select
+                      value={filterStatus}
+                      onChange={(e) => setFilterStatus(e.target.value)}
+                      className="bg-slate-50 border border-slate-200 rounded-lg p-1.5 text-xs font-bold text-slate-700 outline-none cursor-pointer"
+                    >
+                      <option value="all">All Statuses</option>
+                      <option value="draft">Draft Bills</option>
+                      <option value="finalised">Finalised Bills</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Registry List Table */}
+              {(() => {
+                let filteredInvoices = allInvoices;
+                if (filterMasterId !== 'all') {
+                  filteredInvoices = filteredInvoices.filter(inv => inv.master_id === filterMasterId);
+                }
+                if (filterStatus !== 'all') {
+                  filteredInvoices = filteredInvoices.filter(inv => inv.status === filterStatus);
+                }
+
+                if (filteredInvoices.length === 0) {
+                  return (
+                    <div className="p-8 text-center bg-slate-50 border border-slate-150 border-dashed rounded-xl">
+                      <Receipt className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="text-xs text-slate-400 font-semibold uppercase">No invoice registers matched selection filters</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs font-sans min-w-[700px]">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-500 font-bold uppercase text-[9px] border-b border-slate-250">
+                          <th className="py-2.5 px-3">Bill ID</th>
+                          <th className="py-2.5 px-3">Stitching Master</th>
+                          <th className="py-2.5 px-3">Settle Period</th>
+                          <th className="py-2.5 px-3">Total Pcs</th>
+                          <th className="py-2.5 px-3 text-right">Pre-Wages</th>
+                          <th className="py-2.5 px-3 text-right">Deduction</th>
+                          <th className="py-2.5 px-3 text-right">Net Paid</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                          <th className="py-2.5 px-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredInvoices.map(inv => {
+                          const master = db.getMasters().find(m => m.id === inv.master_id);
+                          const periodMonthName = monthsList.find(m => m.value === inv.period_month)?.name || `Month ${inv.period_month}`;
+                          return (
+                            <tr key={inv.id} className="hover:bg-slate-50/50 transition">
+                              <td className="py-3 px-3 font-mono font-bold text-[#1A2E4A] whitespace-nowrap">{inv.invoice_no}</td>
+                              <td className="py-3 px-3">
+                                <div className="font-bold text-slate-755">{master?.name || 'Unknown Master'}</div>
+                                <div className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">{master?.type === 'jacket' ? '👔 jackets tailor' : '👖 pants tailor'}</div>
+                              </td>
+                              <td className="py-3 px-3 font-semibold text-slate-600 whitespace-nowrap">{periodMonthName} {inv.period_year}</td>
+                              <td className="py-3 px-3 font-mono text-slate-600 font-bold">{inv.pcs || 0} pcs</td>
+                              <td className="py-3 px-3 font-mono text-slate-655 text-right font-semibold">{formatINR(inv.work_amount || 0)}</td>
+                              <td className="py-3 px-3 font-mono text-rose-655 text-right font-medium">{formatINR(inv.material_deduction || 0)}</td>
+                              <td className="py-3 px-3 font-mono text-emerald-800 text-right font-extrabold">{formatINR(inv.net_payable)}</td>
+                              <td className="py-3 px-3 text-center whitespace-nowrap">
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                                  inv.status === 'finalised' 
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-150' 
+                                    : 'bg-amber-50 text-amber-700 border border-amber-150'
+                                }`}>
+                                  {inv.status.toUpperCase()}
+                                </span>
+                              </td>
+                              <td className="py-3 px-3 text-right whitespace-nowrap text-slate-700">
+                                <div className="flex justify-end gap-1.5 items-center">
+                                  <button
+                                    onClick={() => triggerListPDFPrint(inv)}
+                                    title="Direct spool to printer"
+                                    className="p-1 px-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-md border border-slate-200 transition cursor-pointer"
+                                  >
+                                    <Printer className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => triggerListPDFDownload(inv)}
+                                    title="Download high-quality settled PDF"
+                                    className="p-1 px-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-md border border-blue-200 transition cursor-pointer"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  {currentUser.role === 'admin' ? (
+                                    <>
+                                      <button
+                                        onClick={() => handleStartEdit(inv)}
+                                        title="Recalculate or override dispatcher bank accounts (Admin only)"
+                                        className="p-1 px-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-md border border-indigo-200 transition cursor-pointer"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteInvoiceClick(inv.id, inv.invoice_no)}
+                                        title="Void Bill & Restore Material Challans (Admin only)"
+                                        className="p-1 px-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-md border border-rose-200 transition cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span 
+                                      title="Admin permissions required to modify invoice"
+                                      className="text-[9px] text-slate-400 font-mono italic select-none"
+                                    >
+                                      🔒 locked
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
       )}
 
     </div>

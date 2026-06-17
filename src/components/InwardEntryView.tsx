@@ -103,32 +103,86 @@ export const InwardEntryView: React.FC = () => {
     setErrorMsg('');
     setSuccessMsg('');
 
-    const validRows = rows.filter(r => r.material_id !== '');
-    if (validRows.length === 0) {
-      setErrorMsg('Choose at least one material to inward.');
+    if (!supplierName.trim()) {
+      setErrorMsg('Supplier name is required.');
       return;
     }
 
-    if (!supplierName.trim()) {
-      setErrorMsg('Supplier name is required.');
+    // Comprehensive validation for each row in the form
+    const validRowsToSave: { materialId: string; quantity: number }[] = [];
+
+    for (const row of rows) {
+      const searchVal = (rowSearchTerms[row.id] || '').trim();
+      const qtyVal = String(row.qty_received).trim();
+
+      // If anything is entered in this row (search term or quantity)
+      if (searchVal || qtyVal) {
+        if (!row.material_id) {
+          setErrorMsg('Create SKU in Material Settings first.');
+          return;
+        }
+
+        const mat = materials.find(m => m.id === row.material_id);
+        if (!mat) {
+          setErrorMsg('Create SKU in Material Settings first.');
+          return;
+        }
+
+        // Validate the search text matches the material name
+        if (searchVal.toLowerCase() !== mat.name.toLowerCase()) {
+          const exactMat = materials.find(m => m.name.toLowerCase() === searchVal.toLowerCase());
+          if (exactMat) {
+            row.material_id = exactMat.id;
+          } else {
+            setErrorMsg('Create SKU in Material Settings first.');
+            return;
+          }
+        }
+
+        const qty = parseFloat(qtyVal);
+        if (isNaN(qty) || qty <= 0) {
+          setErrorMsg(`Please enter a valid quantity greater than 0 for ${mat.name}.`);
+          return;
+        }
+
+        validRowsToSave.push({
+          materialId: row.material_id,
+          quantity: qty,
+        });
+      }
+    }
+
+    if (validRowsToSave.length === 0) {
+      setErrorMsg('Create SKU in Material Settings first.');
       return;
     }
 
     try {
       setLoading(true);
 
-      validRows.forEach((row) => {
+      validRowsToSave.forEach((item) => {
+        const mat = materials.find(m => m.id === item.materialId);
         db.saveInwardEntry({
-          material_id: row.material_id,
-          qty_received: parseFloat(String(row.qty_received)) || 0,
+          material_id: item.materialId,
+          qty_received: item.quantity,
           supplier_name: supplierName,
           bill_no: billNo || 'CH-NA',
           inward_date: inwardDate,
-          notes: notes
+          notes: notes,
+
+          // Exact requested fields to be saved in the record
+          materialId: item.materialId,
+          materialNameSnapshot: mat ? mat.name : '',
+          unit: mat ? mat.unit : 'pcs',
+          quantity: item.quantity,
+          rateSnapshot: mat ? mat.default_rate : 0,
+          supplier: supplierName,
+          billNo: billNo || 'CH-NA',
+          date: inwardDate,
         });
       });
 
-      setSuccessMsg(`Stock Inward recorded! Added quantities to ${validRows.length} items.`);
+      setSuccessMsg(`Stock Inward recorded! Added quantities to ${validRowsToSave.length} items.`);
       setSupplierName('');
       setBillNo('');
       setNotes('');
@@ -247,23 +301,43 @@ export const InwardEntryView: React.FC = () => {
                             className="w-full bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs font-semibold text-slate-800"
                             value={search}
                             onChange={(e) => {
-                              setRowSearchTerms(prev => ({ ...prev, [row.id]: e.target.value }));
+                              const typed = e.target.value;
+                              setRowSearchTerms(prev => ({ ...prev, [row.id]: typed }));
+                              const mat = materials.find(m => m.name.toLowerCase() === typed.trim().toLowerCase());
+                              setRows(prev => prev.map(r => r.id === row.id ? { ...r, material_id: mat ? mat.id : '' } : r));
                               setFocusedRowId(row.id);
                             }}
                             onFocus={() => setFocusedRowId(row.id)}
+                            onBlur={() => {
+                              setTimeout(() => {
+                                setRows(prev => prev.map(r => {
+                                  if (r.id === row.id) {
+                                    const typed = (rowSearchTerms[row.id] || '').trim();
+                                    const exact = materials.find(m => m.name.toLowerCase() === typed.toLowerCase());
+                                    if (exact) {
+                                      return { ...r, material_id: exact.id };
+                                    } else if (!typed) {
+                                      return { ...r, material_id: '' };
+                                    }
+                                  }
+                                  return r;
+                                }));
+                                setFocusedRowId(current => current === row.id ? null : current);
+                              }, 250);
+                            }}
                           />
 
                           {isFocused && (
-                            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-36 overflow-y-auto">
+                            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-36 overflow-y-auto font-sans">
                               {matchedMats.length === 0 ? (
-                                <p className="p-2 text-[10px] text-slate-400 text-center">Item not found</p>
+                                <p className="p-2 text-[10px] text-slate-400 text-center font-bold">Create SKU in Material Settings first.</p>
                               ) : (
                                 matchedMats.map(m => (
                                   <button
                                     key={m.id}
                                     type="button"
                                     onClick={() => handleMaterialSelect(row.id, m.id)}
-                                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-slate-50 text-slate-700 font-bold flex justify-between"
+                                    className="w-full text-left px-3 py-1.5 text-[11px] hover:bg-slate-50 text-slate-700 font-bold flex justify-between cursor-pointer"
                                   >
                                     <span>{m.name}</span>
                                     <span className="text-slate-400">({m.unit})</span>

@@ -16,7 +16,9 @@ import {
   AuditLog,
   Profile,
   UserRole,
-  InvoiceStatus
+  InvoiceStatus,
+  LedgerTransaction,
+  TransactionType
 } from './types';
 
 import { 
@@ -161,36 +163,90 @@ const DEFAULT_MATERIALS_RAW = [
   { name: 'Thread Tube', unit: 'pc', default_rate: 25, stock: 130 }
 ];
 
-export const DEMO_USERS: Profile[] = [
-  {
-    id: 'user-issue-01',
-    email: 'issue@harryfashion.com',
-    role: 'issue_dept',
-    name: 'Sundar Department',
-    username: 'issue',
-    password: 'issue123'
-  },
-  {
-    id: 'user-billing-01',
-    email: 'billing@harryfashion.com',
-    role: 'billing',
-    name: 'Kevin Billing',
-    username: 'billing',
-    password: 'billing456'
-  },
-  {
-    id: 'user-admin-01',
-    email: 'admin@harryfashion.com',
-    role: 'admin',
-    name: 'Harry Admin (Owner)',
-    username: 'admin',
-    password: 'admin789'
-  }
-];
+// Clear hardcoded demo users to prevent credentials exposure in client bundle.
 
 class DatabaseService {
   private activeListeners: (() => void)[] = [];
   private isFirebaseInitialized: boolean = false;
+  private profilesAttemptedToWrite = new Set<string>();
+  private cloudHealth = {
+    lastSuccessfulWrite: localStorage.getItem('hf_health_last_write') || null,
+    lastRead: localStorage.getItem('hf_health_last_read') || null,
+    pendingOfflineWrites: 0,
+    lastError: null as string | null,
+    syncFailed: false,
+  };
+
+  private getDeviceId(): string {
+    let devId = localStorage.getItem('hf_device_id');
+    if (!devId) {
+      devId = 'device_' + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('hf_device_id', devId);
+    }
+    return devId;
+  }
+
+  public getCloudHealth() {
+    return { 
+      ...this.cloudHealth,
+      deviceId: this.getDeviceId()
+    };
+  }
+
+  public isSyncFailed(): boolean {
+    return this.cloudHealth.syncFailed;
+  }
+
+  private enrichPayload<T extends object>(payload: T): T & {
+    auth: { uid: string };
+    employeeName: string;
+    role: string;
+    deviceId: string;
+    createdAt: string;
+    updatedAt: string;
+  } {
+    const currentUser = this.getCurrentUser();
+    const systemUid = auth.currentUser?.uid || currentUser.uid || 'guest';
+    const email = auth.currentUser?.email || currentUser.email || 'guest@harryfashion.com';
+    const employeeName = currentUser.displayName || currentUser.name || email.split('@')[0];
+    const role = currentUser.role || 'issue_dept';
+
+    return {
+      ...payload,
+      auth: {
+        uid: systemUid
+      },
+      employeeName,
+      role,
+      deviceId: this.getDeviceId(),
+      createdAt: (payload as any).created_at || (payload as any).createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T> {
+    this.cloudHealth.pendingOfflineWrites += 1;
+    window.dispatchEvent(new Event('db_sync'));
+    try {
+      const result = await operation();
+      this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+      localStorage.setItem('hf_health_last_write', this.cloudHealth.lastSuccessfulWrite);
+      this.cloudHealth.syncFailed = false;
+      this.cloudHealth.lastError = null;
+      return result;
+    } catch (error: any) {
+      console.error("Cloud write failed: ", error);
+      const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
+      if (isPermissionError) {
+        this.cloudHealth.syncFailed = true;
+      }
+      this.cloudHealth.lastError = error?.message || String(error);
+      throw error;
+    } finally {
+      this.cloudHealth.pendingOfflineWrites = Math.max(0, this.cloudHealth.pendingOfflineWrites - 1);
+      window.dispatchEvent(new Event('db_sync'));
+    }
+  }
 
   private getStorageKey(key: string): string {
     return `hf_${key}`;
@@ -225,6 +281,10 @@ class DatabaseService {
     try {
       await getDocFromServer(doc(firestore, 'test_connection', 'ping'));
       console.log("Firebase Connection Active");
+      this.cloudHealth.lastRead = new Date().toISOString();
+      localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
+      this.cloudHealth.syncFailed = false;
+      window.dispatchEvent(new Event('db_sync'));
     } catch (error) {
       if (error instanceof Error && error.message.includes('the client is offline')) {
         console.error("Please check your Firebase configuration or network status.");
@@ -319,29 +379,19 @@ class DatabaseService {
 
     const currentUser = localStorage.getItem(this.getStorageKey('current_user'));
     if (!currentUser) {
-      localStorage.setItem(this.getStorageKey('current_user'), JSON.stringify(DEMO_USERS[2]));
-    } else {
-      try {
-        const parsed = JSON.parse(currentUser) as Profile;
-        let userChanged = false;
-        if (parsed.id === 'user-admin-01' && parsed.name.includes('Anil')) {
-          parsed.name = 'Harry Admin (Owner)';
-          userChanged = true;
-        }
-        if (parsed.id === 'user-issue-01' && parsed.name.includes('Rakesh')) {
-          parsed.name = 'Sundar Department';
-          userChanged = true;
-        }
-        if (parsed.id === 'user-billing-01' && parsed.name.includes('Shreya')) {
-          parsed.name = 'Kevin Billing';
-          userChanged = true;
-        }
-        if (userChanged) {
-          localStorage.setItem(this.getStorageKey('current_user'), JSON.stringify(parsed));
-        }
-      } catch (err) {
-        console.warn('Could not parse or migrate current user:', err);
-      }
+      const defaultUser: Profile = {
+        uid: 'guest-01',
+        id: 'guest-01',
+        displayName: 'Guest Profile',
+        name: 'Guest Profile',
+        email: 'guest@harryfashion.com',
+        role: 'issue_dept',
+        username: 'guest',
+        active: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      localStorage.setItem(this.getStorageKey('current_user'), JSON.stringify(defaultUser));
     }
 
     // Initialize collections in localStorage as fallback
@@ -364,17 +414,60 @@ class DatabaseService {
       this.activeListeners = [];
 
       if (user) {
-        console.log(`Authenticated with Cloud Database as ${user.email || 'Anonymous'} (UID: ${user.uid}). Initializing Firestore Real-time synchronization...`);
+        if (user.isAnonymous) {
+          console.warn("Blocking anonymous user sync session. Signing out...");
+          auth.signOut();
+          return;
+        }
+
+        console.log(`Authenticated with Cloud Database as ${user.email} (UID: ${user.uid}). Initializing Firestore Real-time synchronization...`);
         this.isFirebaseInitialized = true;
 
         // 1. Establish real-time listener for current user's security profile
         const profileRef = doc(firestore, 'profiles', user.uid);
+        let cloudSyncStarted = false;
+
         const unsubscribeProfile = onSnapshot(profileRef, async (snap) => {
           if (snap.exists()) {
-            // Keep the profile, but DO NOT overwrite local storage 'current_user' 
-            // to allow separate local workspace profiles (Sundar, Kevin, Harry) to persist.
+            this.cloudHealth.lastRead = new Date().toISOString();
+            localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
+            this.cloudHealth.syncFailed = false;
+
+            const data = snap.data();
+            const email = data.email || user.email || 'user@harryfashion.com';
+            const prof: Profile = {
+              uid: data.uid || user.uid,
+              id: data.uid || user.uid,
+              displayName: data.displayName || data.name || email.split('@')[0],
+              name: data.displayName || data.name || email.split('@')[0],
+              email: email,
+              role: data.role || 'issue_dept',
+              username: data.username || email.split('@')[0],
+              active: data.active !== undefined ? data.active : true,
+              createdAt: data.createdAt || data.created_at || new Date().toISOString(),
+              updatedAt: data.updatedAt || data.updated_at || new Date().toISOString()
+            };
+            this.save('current_user', prof);
             window.dispatchEvent(new Event('db_sync'));
+
+            // Secure and deferred synchronization launch using official fetched role
+            if (!cloudSyncStarted) {
+              cloudSyncStarted = true;
+              this.setupCloudSyncListeners(prof.role);
+            }
           } else {
+            // Check if registration is already in progress via system UI form
+            if (localStorage.getItem('hf_registration_in_progress') === 'true') {
+              console.log('Registration is concurrently in progress in UI. Skipping default profile birth write.');
+              return;
+            }
+
+            if (this.profilesAttemptedToWrite.has(user.uid)) {
+              console.log('Skipping duplicate profile birth write attempt to prevent infinite loop for UID:', user.uid);
+              return;
+            }
+            this.profilesAttemptedToWrite.add(user.uid);
+
             const email = user.email || 'guest@harryfashion.com';
             let role: UserRole = 'issue_dept';
             // Pre-assign admin to k64561148@gmail.com and admin@harryfashion.com, billing for billing emails
@@ -387,43 +480,47 @@ class DatabaseService {
             }
 
             const newProfile: Profile = {
+              uid: user.uid,
               id: user.uid,
+              displayName: user.displayName || email.split('@')[0],
+              name: user.displayName || email.split('@')[0],
               email: email,
-              name: user.displayName || (user.isAnonymous ? 'Anonymous Sync Worker' : email.split('@')[0]),
               role: role,
-              created_at: new Date().toISOString()
+              username: email.split('@')[0],
+              active: true,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
             };
 
             try {
-              await setDoc(profileRef, newProfile);
+              const enrichedProfile = this.enrichPayload(newProfile);
+              await this.performCloudWrite(() => setDoc(profileRef, enrichedProfile));
               window.dispatchEvent(new Event('db_sync'));
             } catch (err) {
               console.error('Error creating user profile in cloud:', err);
+              // Remove if failed so we can retry on next clean login, but keep to prevent local snapshot loop in the same session
             }
           }
         }, (error) => {
           console.warn('Profile listener blocked or failed:', error);
+          const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
+          if (isPermissionError) {
+            this.cloudHealth.syncFailed = true;
+            window.dispatchEvent(new Event('db_sync'));
+          }
         });
 
         this.activeListeners.push(unsubscribeProfile);
-
-        // 2. Load cloud synchronization for lists
-        this.setupCloudSyncListeners();
       } else {
         console.log("Database running in Local-first offline mode. Sign in to sync with Cloud!");
         this.isFirebaseInitialized = false;
-
-        // If first check has completed with null, trigger silent background authorization!
-        if (isFirstCheck) {
-          this.attemptBackgroundAuth();
-        }
       }
       isFirstCheck = false;
     });
   }
 
   // Real-time multi-collection snap listeners (Zero cost for local-first, infinite sync)
-  private setupCloudSyncListeners() {
+  private setupCloudSyncListeners(role?: UserRole) {
     const syncCollections = [
       'profiles',
       'masters',
@@ -435,12 +532,21 @@ class DatabaseService {
       'invoices',
       'invoice_challans',
       'rate_history',
-      'audit_logs'
+      'ledger_transactions'
     ];
+
+    // Only attempt to synchronize audit logs if the authenticated user holds required admin privilege
+    if (role === 'admin') {
+      syncCollections.push('audit_logs');
+    }
 
     syncCollections.forEach((collName) => {
       try {
         const unsubscribe = onSnapshot(collection(firestore, collName), { includeMetadataChanges: false }, (snapshot) => {
+          this.cloudHealth.lastRead = new Date().toISOString();
+          localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
+          this.cloudHealth.syncFailed = false;
+
           const remoteRecords: any[] = [];
           snapshot.forEach((docSnap) => {
             remoteRecords.push(docSnap.data());
@@ -461,6 +567,11 @@ class DatabaseService {
           }
         }, (error) => {
           console.warn(`Firestore listener error on selection ${collName}. Non-fatal, continuing offline.`, error);
+          const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
+          if (isPermissionError) {
+            this.cloudHealth.syncFailed = true;
+            window.dispatchEvent(new Event('db_sync'));
+          }
         });
 
         this.activeListeners.push(unsubscribe);
@@ -493,48 +604,42 @@ class DatabaseService {
 
   // --- Profile / Auth ---
   getCurrentUser(): Profile {
-    return this.load<Profile>('current_user', DEMO_USERS[2]);
+    const defaultUser: Profile = {
+      uid: 'guest-01',
+      id: 'guest-01',
+      displayName: 'Guest Profile',
+      name: 'Guest Profile',
+      email: 'guest@harryfashion.com',
+      role: 'issue_dept',
+      username: 'guest',
+      active: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return this.load<Profile>('current_user', defaultUser);
   }
 
   setCurrentUser(user: Profile): void {
     this.save('current_user', user);
-    this.addAuditLog(user.email, 'User Authentication', `Switched active user profile to ${user.name} (${user.role})`);
+    this.addAuditLog(user.email, 'User Authentication', `Switched active user profile to ${user.displayName || user.name} (${user.role})`);
     
     // Write back profile to Firebase if synced
-    if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'profiles', user.id), user)
+    if (this.isFirebaseInitialized && user.uid && user.uid !== 'guest-01') {
+      const idToUse = user.uid || user.id;
+      this.performCloudWrite(() => setDoc(doc(firestore, 'profiles', idToUse), this.enrichPayload(user)))
         .catch(err => console.warn('Could not sync user swap to cloud:', err));
     }
   }
 
   getProfiles(): Profile[] {
-    const list = this.load<Profile[]>('profiles', []);
-    if (list.length === 0) {
-      return DEMO_USERS;
-    }
-    // Defensive check: ensure all loaded profiles have their username and password defined from DEMO_USERS defaults
-    let changed = false;
-    const merged = list.map(profile => {
-      const defaultValue = DEMO_USERS.find(d => d.role === profile.role);
-      if (defaultValue && (!profile.username || !profile.password)) {
-        changed = true;
-        return {
-          ...profile,
-          username: profile.username || defaultValue.username,
-          password: profile.password || defaultValue.password
-        };
-      }
-      return profile;
-    });
-    if (changed) {
-      this.save('profiles', merged);
-    }
-    return merged;
+    return this.load<Profile[]>('profiles', []);
   }
 
   saveProfile(profile: Profile): void {
     const list = this.getProfiles();
-    const index = list.findIndex(p => p.id === profile.id);
+    const idToFind = profile.uid || profile.id;
+    if (!idToFind) return;
+    const index = list.findIndex(p => p.uid === idToFind || p.id === idToFind);
     if (index > -1) {
       list[index] = profile;
     } else {
@@ -543,8 +648,8 @@ class DatabaseService {
     this.save('profiles', list);
 
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'profiles', profile.id), profile)
-        .catch(err => handleFirestoreError(err, OperationType.WRITE, `profiles/${profile.id}`));
+      this.performCloudWrite(() => setDoc(doc(firestore, 'profiles', idToFind), this.enrichPayload(profile)))
+        .catch(err => handleFirestoreError(err, OperationType.WRITE, `profiles/${idToFind}`));
     }
     window.dispatchEvent(new Event('db_sync'));
   }
@@ -595,7 +700,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'masters', result.id), result)
+      this.performCloudWrite(() => setDoc(doc(firestore, 'masters', result.id), this.enrichPayload(result)))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `masters/${result.id}`));
     }
 
@@ -647,7 +752,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'materials', result.id), result)
+      this.performCloudWrite(() => setDoc(doc(firestore, 'materials', result.id), this.enrichPayload(result)))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `materials/${result.id}`));
     }
 
@@ -686,7 +791,7 @@ class DatabaseService {
         const itemRem = list[existingIdx];
         list.splice(existingIdx, 1);
         if (this.isFirebaseInitialized) {
-          deleteDoc(doc(firestore, 'master_rate_overrides', itemRem.id))
+          this.performCloudWrite(() => deleteDoc(doc(firestore, 'master_rate_overrides', itemRem.id)))
             .catch(err => console.warn(err));
         }
       }
@@ -701,7 +806,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'master_rate_overrides', result.id), result)
+      this.performCloudWrite(() => setDoc(doc(firestore, 'master_rate_overrides', result.id), this.enrichPayload(result)))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `master_rate_overrides/${result.id}`));
     }
 
@@ -721,7 +826,7 @@ class DatabaseService {
       this.save('master_rate_overrides', list);
 
       if (this.isFirebaseInitialized) {
-        deleteDoc(doc(firestore, 'master_rate_overrides', id))
+        this.performCloudWrite(() => deleteDoc(doc(firestore, 'master_rate_overrides', id)))
           .catch(error => handleFirestoreError(error, OperationType.DELETE, `master_rate_overrides/${id}`));
       }
     }
@@ -772,6 +877,21 @@ class DatabaseService {
     const allItemsList = this.getChallanItems();
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
+
+    // Validate stock levels before saving - Aggregate by material_id first
+    const aggregatedQtys: { [matId: string]: number } = {};
+    items.forEach((item) => {
+      if (item.material_id) {
+        aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + item.qty;
+      }
+    });
+
+    Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
+      const mat = materialsList.find(m => m.id === materialId);
+      if (mat && totalQty > mat.current_stock) {
+        throw new Error(`Save blocked: Total requested quantity for ${mat.name} (${totalQty} ${mat.unit}) exceeds available stock (${mat.current_stock.toFixed(1)} ${mat.unit}).`);
+      }
+    });
 
     // Create Challan record
     const nextNo = challan.challan_no || this.getNextChallanNo();
@@ -827,21 +947,24 @@ class DatabaseService {
         const batch = writeBatch(firestore);
         
         // Write Challan
-        batch.set(doc(firestore, 'challans', newChallan.id), newChallan);
+        batch.set(doc(firestore, 'challans', newChallan.id), this.enrichPayload(newChallan));
 
         // Write Challan Items
         savedChallanItems.forEach(item => {
-          batch.set(doc(firestore, 'challan_items', item.id), item);
+          batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
         });
 
         // Write Modified Stocks atomatically using server-side increment to prevent concurrent-write bugs
         items.forEach(item => {
+          const enrichUpdate = this.enrichPayload({});
           batch.update(doc(firestore, 'materials', item.material_id), {
-            current_stock: increment(-item.qty)
+            current_stock: increment(-item.qty),
+            ...enrichUpdate
           });
         });
 
-        batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
+        this.performCloudWrite(() => batch.commit())
+          .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
       } catch (err) {
         console.warn('Batch cloud write failed, logged fallback.', err);
       }
@@ -897,11 +1020,14 @@ class DatabaseService {
           });
           // Update Stocks atomically using server-side increment to prevent concurrent-write bugs
           deletedItems.forEach(item => {
+            const enrichUpdate = this.enrichPayload({});
             batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(item.qty)
+              current_stock: increment(item.qty),
+              ...enrichUpdate
             });
           });
-          batch.commit().catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_void/${challanId}`));
+          this.performCloudWrite(() => batch.commit())
+            .catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_void/${challanId}`));
         } catch (err) {
           console.warn(err);
         }
@@ -918,6 +1044,9 @@ class DatabaseService {
     const idx = challanList.findIndex(c => c.id === challanId);
     if (idx > -1) {
       const challan = challanList[idx];
+      if (challan.status === 'billed') {
+        throw new Error('Completed/Billed challans cannot be deleted unless the bill is first reversed');
+      }
       const masterObj = mastersList.find(m => m.id === challan.master_id);
       const masterName = masterObj ? masterObj.name : 'Unknown';
       const deletedItems = allItemsList.filter(item => item.challan_id === challanId);
@@ -938,7 +1067,8 @@ class DatabaseService {
           deletedItems.forEach(item => {
             batch.delete(doc(firestore, 'challan_items', item.id));
           });
-          batch.commit().catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_delete/${challanId}`));
+          this.performCloudWrite(() => batch.commit())
+            .catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_delete/${challanId}`));
         } catch (err) {
           console.warn(err);
         }
@@ -989,16 +1119,19 @@ class DatabaseService {
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
-          batch.update(doc(firestore, 'challans', challanId), {
+          batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
             status: 'voided',
             notes: challan.notes
-          });
+          }));
           matchingItems.forEach(item => {
+            const enrichUpdate = this.enrichPayload({});
             batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(item.qty)
+              current_stock: increment(item.qty),
+              ...enrichUpdate
             });
           });
-          batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_void/${challanId}`));
+          this.performCloudWrite(() => batch.commit())
+            .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_void/${challanId}`));
         } catch (err) {
           console.warn(err);
         }
@@ -1036,6 +1169,21 @@ class DatabaseService {
         const matIdx = materialsList.findIndex(m => m.id === item.material_id);
         if (matIdx > -1) {
           materialsList[matIdx].current_stock += item.qty;
+        }
+      });
+
+      // Validate stock levels for the newly updated items - Aggregated by material_id
+      const aggregatedQtys: { [matId: string]: number } = {};
+      updatedItems.forEach((item) => {
+        if (item.material_id) {
+          aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + item.qty;
+        }
+      });
+
+      Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
+        const mat = materialsList.find(m => m.id === materialId);
+        if (mat && totalQty > mat.current_stock) {
+          throw new Error(`Edit blocked: Total requested quantity for ${mat.name} (${totalQty} ${mat.unit || 'pc'}) exceeds available stock plus refunded stock (${mat.current_stock.toFixed(1)} ${mat.unit || 'pc'}).`);
         }
       });
 
@@ -1086,9 +1234,9 @@ class DatabaseService {
         try {
           const batch = writeBatch(firestore);
           // Update Challan fields
-          batch.update(doc(firestore, 'challans', challanId), {
+          batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
             notes: challan.notes
-          });
+          }));
           
           // Delete old items on cloud
           previousItems.forEach(item => {
@@ -1097,26 +1245,247 @@ class DatabaseService {
 
           // Upload new items to cloud
           savedChallanItems.forEach(item => {
-            batch.set(doc(firestore, 'challan_items', item.id), item);
+            batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
           });
 
           // Reconcile stocks atomically on Firestore: add back old, subtract new
           previousItems.forEach(item => {
+            const enrichUpdate = this.enrichPayload({});
             batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(item.qty)
+              current_stock: increment(item.qty),
+              ...enrichUpdate
             });
           });
           updatedItems.forEach(item => {
+            const enrichUpdate = this.enrichPayload({});
             batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(-item.qty)
+              current_stock: increment(-item.qty),
+              ...enrichUpdate
             });
           });
 
-          batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_edit/${challanId}`));
+          this.performCloudWrite(() => batch.commit())
+            .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_edit/${challanId}`));
         } catch (err) {
           console.warn(err);
         }
       }
+    }
+  }
+
+  // --- Single Source-of-Truth Ledger Engine ---
+  getTransactions(): LedgerTransaction[] {
+    const manual = this.load<LedgerTransaction[]>('ledger_transactions', []);
+    const list: LedgerTransaction[] = [...manual];
+
+    // 1. Synthesize MATERIAL_ISSUE from active Challans & ChallanItems
+    const challans = this.getChallans();
+    const challanItems = this.getChallanItems();
+    challans.forEach(ch => {
+      if (ch.status === 'issued' || ch.status === 'billed') {
+        const items = challanItems.filter(item => item.challan_id === ch.id);
+        items.forEach(item => {
+          const m = parseInt(ch.issued_date.split('-')[1], 10);
+          const y = parseInt(ch.issued_date.split('-')[0], 10);
+          list.push({
+            id: `gen_mi_${item.id}`,
+            type: 'MATERIAL_ISSUE',
+            date: ch.issued_date,
+            master_id: ch.master_id,
+            material_id: item.material_id,
+            qty: item.qty,
+            rate: item.rate,
+            amount: item.amount, // represents deduction charge to master
+            ref_id: item.id,
+            ref_no: ch.challan_no,
+            notes: ch.notes,
+            created_at: ch.created_at,
+            period_month: m,
+            period_year: y
+          });
+        });
+      } else if (ch.status === 'voided') {
+        const m = parseInt(ch.issued_date.split('-')[1], 10);
+        const y = parseInt(ch.issued_date.split('-')[0], 10);
+        list.push({
+          id: `gen_void_ch_${ch.id}`,
+          type: 'VOID',
+          date: ch.issued_date,
+          master_id: ch.master_id,
+          amount: 0,
+          ref_id: ch.id,
+          ref_no: ch.challan_no,
+          notes: `Voided Challan: ${ch.notes}`,
+          created_at: ch.created_at,
+          period_month: m,
+          period_year: y
+        });
+      }
+    });
+
+    // 2. Synthesize STOCK_INWARD from InwardEntries
+    const inwards = this.getInwardEntries();
+    inwards.forEach(inw => {
+      const m = parseInt(inw.inward_date.split('-')[1], 10);
+      const y = parseInt(inw.inward_date.split('-')[0], 10);
+      list.push({
+        id: `gen_si_${inw.id}`,
+        type: 'STOCK_INWARD',
+        date: inw.inward_date,
+        material_id: inw.material_id,
+        qty: inw.qty_received,
+        amount: 0, // inwards don't affect master accounts directly
+        ref_id: inw.id,
+        ref_no: inw.bill_no,
+        notes: inw.notes,
+        created_at: inw.created_at,
+        period_month: m,
+        period_year: y
+      });
+    });
+
+    // 3. Synthesize BILL_DRAFT / BILL_FINALIZED from Invoices
+    const invoices = this.getInvoices();
+    invoices.forEach(inv => {
+      const isFinal = inv.status === 'finalised';
+      list.push({
+        id: `gen_inv_${inv.id}`,
+        type: isFinal ? 'BILL_FINALIZED' : 'BILL_DRAFT',
+        date: inv.created_at.split('T')[0],
+        master_id: inv.master_id,
+        amount: inv.net_payable, // credits master account
+        ref_id: inv.id,
+        ref_no: inv.invoice_no,
+        notes: `Billing Cycle Summary (${inv.period_month}/${inv.period_year})`,
+        created_at: inv.created_at,
+        work_amount: inv.work_amount,
+        material_deduction: inv.material_deduction,
+        discount: inv.discount,
+        tds_amount: inv.tds_amount,
+        net_payable: inv.net_payable,
+        period_month: inv.period_month,
+        period_year: inv.period_year
+      });
+    });
+
+    // Sort chronologically and then by creation date
+    return list.sort((a, b) => a.date.localeCompare(b.date) || (a.created_at || '').localeCompare(b.created_at || ''));
+  }
+
+  getLedgerSummaryForMasterMonth(masterId: string, month: number, year: number) {
+    const txs = this.getTransactions().filter(tx => 
+      tx.master_id === masterId && 
+      tx.period_month === month && 
+      tx.period_year === year
+    );
+
+    const invoices = txs.filter(tx => tx.type === 'BILL_DRAFT' || tx.type === 'BILL_FINALIZED');
+
+    let material_deduction = 0;
+    let work_credit = 0;
+    let discount = 0;
+    let tds = 0;
+    let net_payable = 0;
+    let is_billed = invoices.length > 0;
+
+    if (is_billed) {
+      // Sum components from invoices belonging to this month
+      invoices.forEach(inv => {
+        material_deduction += inv.material_deduction || 0;
+        work_credit += inv.work_amount || 0;
+        discount += inv.discount || 0;
+        tds += inv.tds_amount || 0;
+        net_payable += inv.net_payable || 0;
+      });
+    } else {
+      // fallback: if no invoices exist, calculate material_deduction from MATERIAL_ISSUE transactions in that month
+      const issues = txs.filter(tx => tx.type === 'MATERIAL_ISSUE');
+      material_deduction = issues.reduce((acc, curr) => acc + curr.amount, 0);
+      work_credit = 0;
+      discount = 0;
+      tds = 0;
+      net_payable = work_credit - material_deduction;
+    }
+
+    // Include other transactions like Payments or Adjustments for that master and month
+    const payments = txs.filter(tx => tx.type === 'PAYMENT').reduce((acc, curr) => acc + curr.amount, 0);
+    const adjustments = txs.filter(tx => tx.type === 'ADJUSTMENT').reduce((acc, curr) => acc + curr.amount, 0);
+
+    return {
+      material_deduction: Math.round(material_deduction),
+      work_credit: Math.round(work_credit),
+      discount: Math.round(discount),
+      tds: Math.round(tds),
+      net_payable: Math.round(net_payable),
+      payments: Math.round(payments),
+      adjustments: Math.round(adjustments),
+      final_balance: Math.round(net_payable - payments + adjustments),
+      is_billed
+    };
+  }
+
+  saveManualTransaction(tx: Partial<LedgerTransaction>): LedgerTransaction {
+    const list = this.load<LedgerTransaction[]>('ledger_transactions', []);
+    const txDate = tx.date || new Date().toISOString().split('T')[0];
+    const parsedM = parseInt(txDate.split('-')[1], 10) || (new Date().getMonth() + 1);
+    const parsedY = parseInt(txDate.split('-')[0], 10) || new Date().getFullYear();
+
+    const newTx: LedgerTransaction = {
+      id: tx.id || generateUUID(),
+      type: tx.type || 'PAYMENT',
+      date: txDate,
+      master_id: tx.master_id,
+      material_id: tx.material_id,
+      qty: tx.qty,
+      rate: tx.rate,
+      amount: tx.amount || 0,
+      ref_id: tx.ref_id || generateUUID(),
+      ref_no: tx.ref_no || 'NA',
+      notes: tx.notes || '',
+      created_at: tx.created_at || new Date().toISOString(),
+      period_month: tx.period_month || parsedM,
+      period_year: tx.period_year || parsedY
+    };
+
+    const idx = list.findIndex(item => item.id === newTx.id);
+    if (idx > -1) {
+      list[idx] = newTx;
+    } else {
+      list.push(newTx);
+    }
+
+    this.save('ledger_transactions', list);
+
+    const currentUser = this.getCurrentUser();
+    this.addAuditLog(currentUser.email, 'Manual Ledger Record Saved', `${newTx.type} recorded for master. Ref: ${newTx.ref_no}, Amount: ₹${newTx.amount}`);
+
+    if (this.isFirebaseInitialized) {
+      const docRef = doc(firestore, 'ledger_transactions', newTx.id);
+      this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(newTx)))
+        .catch(err => console.warn('Firestore err writing manual transaction:', err));
+    }
+
+    window.dispatchEvent(new Event('db_sync'));
+    return newTx;
+  }
+
+  deleteManualTransaction(txId: string): void {
+    const list = this.load<LedgerTransaction[]>('ledger_transactions', []);
+    const idx = list.findIndex(item => item.id === txId);
+    if (idx > -1) {
+      const tx = list[idx];
+      list.splice(idx, 1);
+      this.save('ledger_transactions', list);
+
+      const currentUser = this.getCurrentUser();
+      this.addAuditLog(currentUser.email, 'Manual Ledger Record Deleted', `Removed manual ${tx.type} transaction (${tx.ref_no})`);
+
+      if (this.isFirebaseInitialized) {
+        this.performCloudWrite(() => deleteDoc(doc(firestore, 'ledger_transactions', txId)))
+          .catch(err => console.warn('Firestore err deleting manual transaction:', err));
+      }
+
+      window.dispatchEvent(new Event('db_sync'));
     }
   }
 
@@ -1130,16 +1499,35 @@ class DatabaseService {
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
 
+    // Material must exist in stock settings
+    const matId = entry.material_id || entry.materialId;
+    const mat = materialsList.find(m => m.id === matId);
+    if (!mat) {
+      throw new Error("Create SKU in Material Settings first.");
+    }
+
+    const qty = entry.qty_received !== undefined ? entry.qty_received : (entry.quantity || 0);
+
     const newEntry: InwardEntry = {
       id: generateUUID(),
-      material_id: entry.material_id || '',
-      qty_received: entry.qty_received || 0,
-      supplier_name: entry.supplier_name || 'Generic Supplier',
-      bill_no: entry.bill_no || 'NA',
-      inward_date: entry.inward_date || new Date().toISOString().split('T')[0],
+      material_id: mat.id,
+      qty_received: qty,
+      supplier_name: entry.supplier_name || entry.supplier || 'Generic Supplier',
+      bill_no: entry.bill_no || entry.billNo || 'NA',
+      inward_date: entry.inward_date || entry.date || new Date().toISOString().split('T')[0],
       notes: entry.notes || '',
       created_by: currentUser.name || 'Store Department',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+
+      // New requested properties
+      materialId: mat.id,
+      materialNameSnapshot: mat.name,
+      unit: mat.unit,
+      quantity: qty,
+      rateSnapshot: mat.default_rate,
+      supplier: entry.supplier_name || entry.supplier || 'Generic Supplier',
+      billNo: entry.bill_no || entry.billNo || 'NA',
+      date: entry.inward_date || entry.date || new Date().toISOString().split('T')[0],
     };
 
     list.push(newEntry);
@@ -1152,8 +1540,7 @@ class DatabaseService {
       updatedMaterial = materialsList[matIdx];
     }
 
-    const matName = materialsList.find(m => m.id === newEntry.material_id)?.name || 'Unknown Material';
-    this.addAuditLog(currentUser.email, 'Inward Stock Recorded', `Inward entry recorded for ${matName}: +${newEntry.qty_received} ${materialsList[matIdx]?.unit || ''} from ${newEntry.supplier_name}`);
+    this.addAuditLog(currentUser.email, 'Inward Stock Recorded', `Inward entry recorded for ${mat.name}: +${newEntry.qty_received} ${mat.unit} from ${newEntry.supplier_name}`);
 
     this.save('inward_entries', list);
     this.save('materials', materialsList);
@@ -1162,13 +1549,16 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, 'inward_entries', newEntry.id), newEntry);
+        batch.set(doc(firestore, 'inward_entries', newEntry.id), this.enrichPayload(newEntry));
         if (updatedMaterial) {
+          const enrichUpdate = this.enrichPayload({});
           batch.update(doc(firestore, 'materials', updatedMaterial.id), {
-            current_stock: increment(newEntry.qty_received)
+            current_stock: increment(newEntry.qty_received),
+            ...enrichUpdate
           });
         }
-        batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `inward_entries/${newEntry.id}`));
+        this.performCloudWrite(() => batch.commit())
+          .catch(error => handleFirestoreError(error, OperationType.WRITE, `inward_entries/${newEntry.id}`));
       } catch (err) {
         console.warn(err);
       }
@@ -1190,9 +1580,10 @@ class DatabaseService {
     return list;
   }
 
-  getNextInvoiceNo(): string {
+  getNextInvoiceNo(periodYear?: number): string {
     const list = this.getInvoices();
     let maxNum = 0;
+    const yearStr = periodYear ? String(periodYear) : String(new Date().getFullYear());
     list.forEach(i => {
       const parts = i.invoice_no.split('-');
       if (parts.length === 3) {
@@ -1203,7 +1594,7 @@ class DatabaseService {
       }
     });
     const nextNum = String(maxNum + 1).padStart(4, '0');
-    return `INV-2526-${nextNum}`;
+    return `INV-${yearStr}-${nextNum}`;
   }
 
   saveInvoice(invoice: Partial<Invoice>, challanIds: string[]): Invoice {
@@ -1214,7 +1605,7 @@ class DatabaseService {
 
     const newInvoice: Invoice = {
       id: generateUUID(),
-      invoice_no: this.getNextInvoiceNo(),
+      invoice_no: this.getNextInvoiceNo(invoice.period_year),
       master_id: invoice.master_id || '',
       period_month: invoice.period_month || new Date().getMonth() + 1,
       period_year: invoice.period_year || new Date().getFullYear(),
@@ -1239,7 +1630,7 @@ class DatabaseService {
     const linkedInvoiceChallans: InvoiceChallan[] = [];
     const updatedChallans: Challan[] = [];
 
-    // Save linked challans & update their status to billed
+    // Save linked challans & update their status based on draft/finalised
     challanIds.forEach(id => {
       const bridge = {
         invoice_id: newInvoice.id,
@@ -1251,7 +1642,17 @@ class DatabaseService {
       // Update challan status
       const cIdx = challanList.findIndex(c => c.id === id);
       if (cIdx > -1) {
-        challanList[cIdx].status = 'billed';
+        if (newInvoice.status === 'finalised') {
+          challanList[cIdx].status = 'billed';
+          challanList[cIdx].billedInvoiceId = newInvoice.id;
+          challanList[cIdx].billedAt = new Date().toISOString();
+          challanList[cIdx].billedBy = currentUser.name || currentUser.username || currentUser.email;
+        } else {
+          challanList[cIdx].status = 'issued';
+          delete challanList[cIdx].billedInvoiceId;
+          delete challanList[cIdx].billedAt;
+          delete challanList[cIdx].billedBy;
+        }
         updatedChallans.push(challanList[cIdx]);
       }
     });
@@ -1269,20 +1670,21 @@ class DatabaseService {
         const batch = writeBatch(firestore);
         
         // Write Invoice
-        batch.set(doc(firestore, 'invoices', newInvoice.id), newInvoice);
+        batch.set(doc(firestore, 'invoices', newInvoice.id), this.enrichPayload(newInvoice));
 
         // Write Linked entries
         linkedInvoiceChallans.forEach(bridge => {
           const idHash = `${bridge.invoice_id}_${bridge.challan_id}`;
-          batch.set(doc(firestore, 'invoice_challans', idHash), bridge);
+          batch.set(doc(firestore, 'invoice_challans', idHash), this.enrichPayload(bridge));
         });
 
         // Update Challans
         updatedChallans.forEach(ch => {
-          batch.set(doc(firestore, 'challans', ch.id), ch);
+          batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
         });
 
-        batch.commit().catch(error => handleFirestoreError(error, OperationType.WRITE, `invoices/${newInvoice.id}`));
+        this.performCloudWrite(() => batch.commit())
+          .catch(error => handleFirestoreError(error, OperationType.WRITE, `invoices/${newInvoice.id}`));
       } catch (err) {
         console.warn(err);
       }
@@ -1291,7 +1693,102 @@ class DatabaseService {
     return newInvoice;
   }
 
-  deleteInvoice(invoiceId: string): void {
+  editInvoice(invoiceId: string, fields: Partial<Invoice>): Invoice {
+    const invoiceList = this.getInvoices();
+    const currentUser = this.getCurrentUser();
+    
+    const idx = invoiceList.findIndex(inv => inv.id === invoiceId);
+    if (idx === -1) {
+      throw new Error(`Invoice with ID ${invoiceId} not found.`);
+    }
+
+    const original = invoiceList[idx];
+    const updatedInvoice: Invoice = {
+      ...original,
+      ...fields,
+      work_amount: fields.work_amount !== undefined ? fields.work_amount : original.work_amount,
+      material_deduction: fields.material_deduction !== undefined ? fields.material_deduction : original.material_deduction,
+      discount: fields.discount !== undefined ? fields.discount : original.discount,
+      pcs: fields.pcs !== undefined ? fields.pcs : original.pcs,
+    };
+
+    // Recompute accounting values
+    const subTotal = updatedInvoice.work_amount - updatedInvoice.material_deduction - updatedInvoice.discount;
+    updatedInvoice.tds_amount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
+    updatedInvoice.grand_total = subTotal - updatedInvoice.tds_amount;
+    updatedInvoice.net_payable = Math.round(updatedInvoice.grand_total);
+
+    invoiceList[idx] = updatedInvoice;
+    this.save('invoices', invoiceList);
+
+    // Sync challan states if the invoice transitions between draft and finalised
+    if (original.status !== updatedInvoice.status) {
+      const invoiceChallanList = this.getInvoiceChallans();
+      const linkedChallanIds = invoiceChallanList
+        .filter(ic => ic.invoice_id === invoiceId)
+        .map(ic => ic.challan_id);
+
+      const challanList = this.getChallans();
+      const updatedChallans: Challan[] = [];
+
+      linkedChallanIds.forEach(cid => {
+        const cIdx = challanList.findIndex(c => c.id === cid);
+        if (cIdx > -1) {
+          if (updatedInvoice.status === 'finalised') {
+            challanList[cIdx].status = 'billed';
+            challanList[cIdx].billedInvoiceId = invoiceId;
+            challanList[cIdx].billedAt = new Date().toISOString();
+            challanList[cIdx].billedBy = currentUser.name || currentUser.username || currentUser.email;
+          } else {
+            challanList[cIdx].status = 'issued';
+            delete challanList[cIdx].billedInvoiceId;
+            delete challanList[cIdx].billedAt;
+            delete challanList[cIdx].billedBy;
+          }
+          updatedChallans.push(challanList[cIdx]);
+        }
+      });
+
+      this.save('challans', challanList);
+
+      if (this.isFirebaseInitialized) {
+        try {
+          const batch = writeBatch(firestore);
+          updatedChallans.forEach(ch => {
+            batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
+          });
+          this.performCloudWrite(() => batch.commit())
+            .catch(err => console.warn('Error updating challan states on invoice edit:', err));
+        } catch (err) {
+          console.warn('Error updating challan states on invoice edit Firestore:', err);
+        }
+      }
+    }
+
+    const masterName = this.getMasters().find(m => m.id === updatedInvoice.master_id)?.name || 'Unknown Master';
+    this.addAuditLog(
+      currentUser.email,
+      'Invoice Edited',
+      `Modified Invoice ${updatedInvoice.invoice_no} for Master ${masterName}. Revised Net Payable: ₹${updatedInvoice.net_payable}`
+    );
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const docRef = doc(firestore, 'invoices', invoiceId);
+        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(updatedInvoice)))
+          .catch(err => console.warn('Error updating edited invoice in Firestore:', err));
+      } catch (err) {
+        console.warn('Error updating edited invoice in Firestore:', err);
+      }
+    }
+
+    // Dispatch global event so UI knows data updated
+    window.dispatchEvent(new Event('db_sync'));
+
+    return updatedInvoice;
+  }
+
+  deleteInvoice(invoiceId: string, reason?: string): void {
     const invoiceList = this.getInvoices();
     const invoiceChallanList = this.getInvoiceChallans();
     const challanList = this.getChallans();
@@ -1303,11 +1800,14 @@ class DatabaseService {
       const linkedChallans = invoiceChallanList.filter(ic => ic.invoice_id === invoiceId);
       const updatedChallans: Challan[] = [];
 
-      // Revert challan status back to 'issued'
+      // Revert challan status back to 'issued' and clear billed meta
       linkedChallans.forEach(ic => {
         const cIdx = challanList.findIndex(c => c.id === ic.challan_id);
         if (cIdx > -1) {
           challanList[cIdx].status = 'issued';
+          delete challanList[cIdx].billedInvoiceId;
+          delete challanList[cIdx].billedAt;
+          delete challanList[cIdx].billedBy;
           updatedChallans.push(challanList[cIdx]);
         }
       });
@@ -1315,7 +1815,8 @@ class DatabaseService {
       // Remove links
       const newLinks = invoiceChallanList.filter(ic => ic.invoice_id !== invoiceId);
       
-      this.addAuditLog(currentUser.email, 'Invoice Deleted', `Voided Invoice ${invoice.invoice_no} (Value: ₹${invoice.net_payable}) and restored included challans to pending status`);
+      const reasonMsg = reason ? ` Audit Reason: ${reason}.` : '';
+      this.addAuditLog(currentUser.email, 'Invoice Deleted / Reversed', `Voided/Reversed Invoice ${invoice.invoice_no} (Value: ₹${invoice.net_payable}).${reasonMsg} Restored included challans to pending status.`);
 
       invoiceList.splice(idx, 1);
 
@@ -1338,10 +1839,11 @@ class DatabaseService {
 
           // Revert challan states
           updatedChallans.forEach(ch => {
-            batch.set(doc(firestore, 'challans', ch.id), ch);
+            batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
           });
 
-          batch.commit().catch(error => handleFirestoreError(error, OperationType.DELETE, `invoices/${invoiceId}`));
+          this.performCloudWrite(() => batch.commit())
+            .catch(error => handleFirestoreError(error, OperationType.DELETE, `invoices/${invoiceId}`));
         } catch (err) {
           console.warn(err);
         }
@@ -1359,7 +1861,7 @@ class DatabaseService {
       this.addAuditLog(currentUser.email, 'Invoice State Modified', `Invoice ${list[idx].invoice_no} status changed to ${status}`);
 
       if (this.isFirebaseInitialized) {
-        setDoc(doc(firestore, 'invoices', invoiceId), list[idx])
+        this.performCloudWrite(() => setDoc(doc(firestore, 'invoices', invoiceId), this.enrichPayload(list[idx])))
           .catch(error => handleFirestoreError(error, OperationType.UPDATE, `invoices/${invoiceId}`));
       }
     }
@@ -1383,7 +1885,7 @@ class DatabaseService {
     this.save('audit_logs', logs.slice(0, 1000)); // Maintain last 1000 logs in local cache
 
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'audit_logs', record.id), record)
+      this.performCloudWrite(() => setDoc(doc(firestore, 'audit_logs', record.id), this.enrichPayload(record)))
         .catch(err => console.warn('Cloud audit log skip:', err));
     }
   }
@@ -1407,7 +1909,7 @@ class DatabaseService {
     this.save('rate_history', history);
 
     if (this.isFirebaseInitialized) {
-      setDoc(doc(firestore, 'rate_history', record.id), record)
+      this.performCloudWrite(() => setDoc(doc(firestore, 'rate_history', record.id), this.enrichPayload(record)))
         .catch(err => console.warn('Cloud rate history log skip:', err));
     }
   }
@@ -1565,15 +2067,15 @@ class DatabaseService {
         
         // Add all masters to batch
         updatedMasters.forEach(master => {
-          batch.set(doc(firestore, 'masters', master.id), master);
+          batch.set(doc(firestore, 'masters', master.id), this.enrichPayload(master));
         });
 
         // Add all materials to batch
         updatedMaterials.forEach(material => {
-          batch.set(doc(firestore, 'materials', material.id), material);
+          batch.set(doc(firestore, 'materials', material.id), this.enrichPayload(material));
         });
 
-        await batch.commit();
+        await this.performCloudWrite(() => batch.commit());
         syncedToCloud = true;
         
         this.addAuditLog(this.getCurrentUser().email, 'Database Seeding', `Successfully seeded ${updatedMasters.length} masters and ${updatedMaterials.length} materials directly to Firestore.`);
