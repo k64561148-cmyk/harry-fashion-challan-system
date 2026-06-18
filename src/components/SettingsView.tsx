@@ -21,6 +21,7 @@ import {
   Edit, 
   UserPlus, 
   AlertCircle,
+  AlertTriangle,
   ToggleLeft,
   ToggleRight,
   Trash2,
@@ -109,6 +110,10 @@ export const SettingsView: React.FC = () => {
   const [masterCode, setMasterCode] = useState<string>('');
   const [masterType, setMasterType] = useState<'jacket' | 'pant'>('jacket');
   const [editingMasterId, setEditingMasterId] = useState<string | null>(null);
+
+  // Master Merge States
+  const [mergeSourceId, setMergeSourceId] = useState<string>('');
+  const [mergeTargetId, setMergeTargetId] = useState<string>('');
 
   // Multiple PAN and bank details management state
   const [panAccounts, setPanAccounts] = useState<MasterPanAccount[]>([]);
@@ -554,6 +559,40 @@ export const SettingsView: React.FC = () => {
         is_active: !m.is_active
       });
       showFeedback(`Master state changed! Active status: ${!m.is_active}`);
+      reloadAllData();
+    } catch (err: any) {
+      showFeedback(err.message, true);
+    }
+  };
+
+  const handleMergeMasters = () => {
+    if (!mergeSourceId || !mergeTargetId) {
+      showFeedback('Select both duplicate and target masters to proceed.', true);
+      return;
+    }
+    if (mergeSourceId === mergeTargetId) {
+      showFeedback('Cannot merge a master into itself.', true);
+      return;
+    }
+
+    const source = masters.find(m => m.id === mergeSourceId);
+    const target = masters.find(m => m.id === mergeTargetId);
+    if (!source || !target) {
+      showFeedback('Source or target master was not found.', true);
+      return;
+    }
+
+    const confirmMerge = window.confirm(
+      `CRITICAL DATA OPERATION:\n\nAre you sure you want to merge Master "${source.name}" (${source.code}) into "${target.name}" (${target.code})?\n\nThis will re-link all associated challans, invoices, rate overrides, ledger details, and audit entries to "${target.name}", and permanently delete "${source.name}".`
+    );
+
+    if (!confirmMerge) return;
+
+    try {
+      db.mergeMasters(mergeSourceId, mergeTargetId);
+      showFeedback(`Successfully merged Master "${source.name}" into "${target.name}"!`);
+      setMergeSourceId('');
+      setMergeTargetId('');
       reloadAllData();
     } catch (err: any) {
       showFeedback(err.message, true);
@@ -1048,6 +1087,61 @@ export const SettingsView: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          {/* MASTER MERGE UTILITY TOOL (Item 5) */}
+          <div className="lg:col-span-12">
+            <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-4 pb-2.5 border-b border-slate-100">
+                <AlertTriangle className="w-4 h-4 text-emerald-600 animate-pulse" />
+                <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">DUPLICATE CONSOLIDATION &amp; MERGER ENGINE</h3>
+              </div>
+              <p className="text-slate-500 text-xs leading-relaxed mb-4">
+                Consolidate redundant or duplicate master stitchers (e.g. double entries).
+                This tool safely migrates and re-links all historical <strong>challans, settling monthly bills, ledger balance transactions, and rate overrides</strong> to your target master, merges stored PAN bank profile details, and de-registers the duplicate record from the active craftsman directory.
+              </p>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 items-end">
+                <div>
+                  <label className="block text-[10px] font-bold text-rose-700 uppercase mb-1">REDUNADANT / DUPLICATE (TO DELETE)</label>
+                  <select 
+                    value={mergeSourceId} 
+                    onChange={(e) => setMergeSourceId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-2 text-xs font-semibold text-slate-850"
+                  >
+                    <option value="">-- Choose Duplicate to De-register --</option>
+                    {masters.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} ({m.code})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-green-700 uppercase mb-1">PRESERVED TARGET CRAFTSMAN (TO KEEP)</label>
+                  <select
+                    value={mergeTargetId}
+                    onChange={(e) => setMergeTargetId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-2 text-xs font-semibold text-slate-850"
+                  >
+                    <option value="">-- Choose Target Master to Preserve --</option>
+                    {masters.map(m => (
+                      <option key={m.id} value={m.id}>{m.name} ({m.code})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <button
+                    type="button"
+                    disabled={!mergeSourceId || !mergeTargetId || mergeSourceId === mergeTargetId}
+                    onClick={handleMergeMasters}
+                    className="w-full bg-[#1A2E4A] hover:bg-[#14233a] disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-lg text-xs cursor-pointer transition flex items-center justify-center gap-1 uppercase"
+                  >
+                    Consolidate and Merge Records
+                  </button>
+                </div>
               </div>
             </div>
           </div>

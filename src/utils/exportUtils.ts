@@ -380,6 +380,11 @@ export async function generateChallanPDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
+  if (materials.some(m => m.current_stock < 0)) {
+    const errMsg = "Stock trust blocked until negative stock is corrected.";
+    showPDFError(errMsg);
+    throw new Error(errMsg);
+  }
   const dismiss = showPDFLoading(`Preparing Challan ${challan.challan_no}...`);
   try {
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -666,6 +671,11 @@ export async function generateInvoicePDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
+  if (materials.some(m => m.current_stock < 0)) {
+    const errMsg = "Stock trust blocked until negative stock is corrected.";
+    showPDFError(errMsg);
+    throw new Error(errMsg);
+  }
   const dismiss = showPDFLoading(`Preparing Invoice ${invoice.invoice_no}...`);
   try {
     await new Promise(resolve => setTimeout(resolve, 150));

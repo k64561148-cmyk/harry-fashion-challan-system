@@ -745,6 +745,23 @@ class DatabaseService {
     const currentUser = this.getCurrentUser();
     let result: Master;
 
+    // Validate duplicates
+    const nameCheck = (master.name || '').trim().toLowerCase();
+    const codeCheck = (master.code || '').trim().toLowerCase();
+
+    if (nameCheck) {
+      const duplicateName = list.find(m => m.id !== master.id && m.name.trim().toLowerCase() === nameCheck);
+      if (duplicateName) {
+        throw new Error(`Master insertion/update failed: A Master with the name "${duplicateName.name}" already exists.`);
+      }
+    }
+    if (codeCheck) {
+      const duplicateCode = list.find(m => m.id !== master.id && m.code.trim().toLowerCase() === codeCheck);
+      if (duplicateCode) {
+        throw new Error(`Master insertion/update failed: A Master with the short code "${duplicateCode.code}" already exists.`);
+      }
+    }
+
     if (master.id) {
       // Edit
       const index = list.findIndex(m => m.id === master.id);
@@ -781,9 +798,109 @@ class DatabaseService {
     return result;
   }
 
+  mergeMasters(sourceId: string, targetId: string): void {
+    if (sourceId === targetId) {
+      throw new Error("Cannot merge a master into itself.");
+    }
+
+    const masters = this.getMasters();
+    const sourceMaster = masters.find(m => m.id === sourceId);
+    const targetMaster = masters.find(m => m.id === targetId);
+
+    if (!sourceMaster || !targetMaster) {
+      throw new Error("Source or target master not found.");
+    }
+
+    const currentUser = this.getCurrentUser();
+
+    // 1. Migrate Challans
+    const challanList = this.getChallans();
+    let migratedChallansCount = 0;
+    challanList.forEach(ch => {
+      if (ch.master_id === sourceId) {
+        ch.master_id = targetId;
+        migratedChallansCount++;
+      }
+    });
+
+    // 2. Migrate Invoices
+    const invoiceList = this.getInvoices();
+    let migratedInvoicesCount = 0;
+    invoiceList.forEach(inv => {
+      if (inv.master_id === sourceId) {
+        inv.master_id = targetId;
+        migratedInvoicesCount++;
+      }
+    });
+
+    // 3. Migrate Ledger Transactions
+    const ledgerTransList = this.getTransactions();
+    let migratedLedgerCount = 0;
+    ledgerTransList.forEach(tx => {
+      if (tx.master_id === sourceId) {
+        tx.master_id = targetId;
+        migratedLedgerCount++;
+      }
+    });
+
+    // 4. Migrate Rate Overrides
+    const overridesList = this.getMasterRateOverrides();
+    overridesList.forEach(o => {
+      if (o.master_id === sourceId) {
+        // check if target already has an override for the same material
+        const exists = overridesList.some(tg => tg.master_id === targetId && tg.material_id === o.material_id);
+        if (!exists) {
+          o.master_id = targetId;
+        }
+      }
+    });
+
+    // 5. Merge pan_accounts of source master into target master if not present
+    const sourcePANs = sourceMaster.pan_accounts || [];
+    const targetPANs = targetMaster.pan_accounts || [];
+    sourcePANs.forEach(span => {
+      const exists = targetPANs.some(tpan => tpan.pan_no.toLowerCase() === span.pan_no.toLowerCase());
+      if (!exists) {
+        targetPANs.push(span);
+      }
+    });
+    targetMaster.pan_accounts = targetPANs;
+
+    // 6. Delete source master
+    const filteredMasters = masters.filter(m => m.id !== sourceId);
+
+    // Save lists
+    this.save('masters', filteredMasters);
+    this.save('challans', challanList);
+    this.save('invoices', invoiceList);
+    this.save('transactions', ledgerTransList);
+    this.save('master_rate_overrides', overridesList);
+
+    // Write audit log
+    this.addAuditLog(
+      currentUser.email,
+      'Master Merged',
+      `Merged Master "${sourceMaster.name}" (${sourceMaster.code}) into "${targetMaster.name}" (${targetMaster.code}). Migrated ${migratedChallansCount} challans, ${migratedInvoicesCount} invoices, and ${migratedLedgerCount} ledger entries.`
+    );
+
+    // Sync changes to cloud if initialized
+    if (this.isFirebaseInitialized) {
+      // update target
+      this.performCloudWrite(() => setDoc(doc(firestore, 'masters', targetId), this.enrichPayload(targetMaster)))
+        .catch(err => console.error("Cloud write target master failed in merge:", err));
+      // delete source
+      this.performCloudWrite(() => deleteDoc(doc(firestore, 'masters', sourceId)))
+        .catch(err => console.error("Cloud write source delete failed in merge:", err));
+    }
+  }
+
   // --- Materials ---
   getMaterials(): Material[] {
     return this.load<Material[]>('materials', []);
+  }
+
+  hasNegativeStock(): boolean {
+    return this.getMaterials().some(m => m.current_stock < 0);
   }
 
   saveMaterial(material: Partial<Material>): Material {
@@ -951,6 +1068,9 @@ class DatabaseService {
   }
 
   saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Challan {
+    if (this.hasNegativeStock()) {
+      throw new Error("Stock trust blocked until negative stock is corrected.");
+    }
     const challanList = this.getChallans();
     const allItemsList = this.getChallanItems();
     const materialsList = this.getMaterials();
@@ -1684,6 +1804,9 @@ class DatabaseService {
   }
 
   saveInvoice(invoice: Partial<Invoice>, challanIds: string[]): Invoice {
+    if (this.hasNegativeStock()) {
+      throw new Error("Stock trust blocked until negative stock is corrected.");
+    }
     const invoiceList = this.getInvoices();
     const invoiceChallanList = this.getInvoiceChallans();
     const challanList = this.getChallans();
@@ -1780,6 +1903,9 @@ class DatabaseService {
   }
 
   editInvoice(invoiceId: string, fields: Partial<Invoice>): Invoice {
+    if (this.hasNegativeStock()) {
+      throw new Error("Stock trust blocked until negative stock is corrected.");
+    }
     const invoiceList = this.getInvoices();
     const currentUser = this.getCurrentUser();
     

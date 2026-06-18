@@ -12,6 +12,7 @@ import InwardEntryView from './components/InwardEntryView';
 import BillingView from './components/BillingView';
 import ReportsView from './components/ReportsView';
 import SettingsView from './components/SettingsView';
+import ChecklistView from './components/ChecklistView';
 import LoginGate from './components/LoginGate';
 import { 
   LayoutDashboard, 
@@ -284,6 +285,28 @@ export default function App() {
               </div>
             )}
 
+            {/* Go-Live Diagnostics tab */}
+            {hasAccess('billing') ? (
+              <button
+                onClick={() => handleTabTrigger('checklist')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  activeTab === 'checklist' ? 'bg-[#2D3E5D] text-white' : 'hover:bg-[#2D3E5D] text-slate-400 hover:text-white'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" /> Go-Live Diagnostics
+                </span>
+                <span className="text-[9px] bg-[#14233a] text-emerald-400 px-1.5 py-0.2 rounded-full font-bold">HEALTH</span>
+              </button>
+            ) : (
+              <div className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold text-slate-500 opacity-40 cursor-not-allowed">
+                <span className="flex items-center gap-3">
+                  <ShieldCheck className="w-4 h-4" /> Go-Live Diagnostics
+                </span>
+                <Lock className="w-3.5 h-3.5" />
+              </div>
+            )}
+
             {/* Admin Settings manager */}
             {hasAccess('settings') ? (
               <button
@@ -425,6 +448,7 @@ export default function App() {
                 {activeTab === 'inward_entry' && 'Stock Inward Register Form'}
                 {activeTab === 'billing' && 'Billing & Stitched Settlements Table'}
                 {activeTab === 'reports' && 'Executive Analytics & Ledger Reports'}
+                {activeTab === 'checklist' && 'Go-Live Diagnostics & Security Audits'}
                 {activeTab === 'settings' && 'System Settings & Access Controls'}
               </h2>
               <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 rounded-full text-[10px] font-bold tracking-wide uppercase border border-blue-100">
@@ -523,6 +547,8 @@ export default function App() {
             {activeTab === 'billing' && <BillingView />}
             
             {activeTab === 'reports' && <ReportsView />}
+            
+            {activeTab === 'checklist' && <ChecklistView />}
             
             {activeTab === 'settings' && <SettingsView />}
 

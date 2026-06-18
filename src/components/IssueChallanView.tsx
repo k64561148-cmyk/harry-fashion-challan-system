@@ -385,6 +385,16 @@ export const IssueChallanView: React.FC = () => {
         </div>
       </div>
 
+      {db.hasNegativeStock() && (
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold flex items-center gap-3 mb-6 animate-pulse">
+          <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+          <div>
+            <h4 className="font-bold text-sm text-rose-900 leading-none mb-1">Global Business Lock Active</h4>
+            <p className="text-rose-700">Stock trust blocked until negative stock is corrected. Issue Challan finalization, Billing finalization, and PDF downloads are disabled.</p>
+          </div>
+        </div>
+      )}
+
       {successChallan ? (
         /* Success Screen */
         <div className="text-center py-10 space-y-6 max-w-md mx-auto">
@@ -712,7 +722,7 @@ export const IssueChallanView: React.FC = () => {
               
               <button
                 type="submit"
-                disabled={loading || hasOverStockError}
+                disabled={loading || hasOverStockError || db.hasNegativeStock()}
                 className="flex-1 sm:flex-initial bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition"
               >
                 {loading ? 'Processing...' : 'Issue Challan & Print'}

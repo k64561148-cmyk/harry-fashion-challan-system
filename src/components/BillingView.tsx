@@ -16,11 +16,13 @@ import {
   Trash2, 
   FileCheck, 
   AlertCircle,
+  AlertTriangle,
   Clock,
   Printer,
   Download,
   Edit3,
-  Search
+  Search,
+  X
 } from 'lucide-react';
 
 interface GroupedItem {
@@ -90,6 +92,11 @@ export const BillingView: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [successInvoice, setSuccessInvoice] = useState<Invoice | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [pdfActionStatus, setPdfActionStatus] = useState<{ text: string; isError?: boolean } | null>(null);
+
+  // Owner override states for negative net payable
+  const [ownerOverride, setOwnerOverride] = useState<boolean>(false);
+  const [overrideReason, setOverrideReason] = useState<string>('');
 
   // Auto-fill bank and PAN details when master or specific PAN selection changes.
   useEffect(() => {
@@ -245,6 +252,29 @@ export const BillingView: React.FC = () => {
   const preciseGrandTotal = subTotal - tdsAmount;
   const roundedOffGrandTotal = Math.round(preciseGrandTotal);
 
+  const activeChallanIds = Object.keys(selectedChallanIds).filter(id => selectedChallanIds[id]);
+  const isMasterSelected = !!selectedMasterId;
+  const isAnyChallanSelected = activeChallanIds.length > 0;
+  const isPcsValid = pcs > 0;
+  const isEarningValid = workAmount > 0;
+
+  const isPanValid = panNo.trim().length === 10;
+  const isIfscValid = ifscCode.trim().length === 11;
+  const isAccountValid = accountNo.trim().length >= 9;
+  const isBankValid = bankName.trim().length >= 2;
+  const isBankPanValid = isPanValid && isIfscValid && isAccountValid && isBankValid;
+
+  const isNetPayableNegative = roundedOffGrandTotal < 0;
+  const isOverrideApproved = !isNetPayableNegative || (ownerOverride && overrideReason.trim().length >= 5);
+
+  const isBillingValid = 
+    isMasterSelected && 
+    isAnyChallanSelected && 
+    isPcsValid && 
+    isEarningValid && 
+    isBankPanValid && 
+    isOverrideApproved;
+
   const handleChallanToggle = (id: string) => {
     setSelectedChallanIds(prev => ({
       ...prev,
@@ -280,9 +310,35 @@ export const BillingView: React.FC = () => {
       setErrorMsg('');
       setLoading(true);
 
-      if (status === 'finalised' && db.isSyncFailed()) {
-        setErrorMsg('Sync failed! Cloud write permission failure has blocked finalisation. Resolve permissions or cloud connection to proceed.');
-        return;
+      if (status === 'finalised') {
+        if (db.isSyncFailed()) {
+          setErrorMsg('Sync failed! Cloud write permission failure has blocked finalisation. Resolve permissions or cloud connection to proceed.');
+          return;
+        }
+        if (!isMasterSelected) {
+          setErrorMsg('Stitching Master must be selected.');
+          return;
+        }
+        if (!isAnyChallanSelected) {
+          setErrorMsg('At least one material challan must be selected.');
+          return;
+        }
+        if (!isPcsValid) {
+          setErrorMsg('Total pieces finished must be greater than zero.');
+          return;
+        }
+        if (!isEarningValid) {
+          setErrorMsg('Stitching earning amount (Work Amount) must be greater than zero.');
+          return;
+        }
+        if (!isBankPanValid) {
+          setErrorMsg('PAN / Bank details are invalid or incomplete. PAN must be 10 alphanumeric characters. Bank Name must be >= 2 characters. Account No must be >= 9 digits. IFSC Code must be 11 characters.');
+          return;
+        }
+        if (isNetPayableNegative && !isOverrideApproved) {
+          setErrorMsg('Net payable is negative and requires owner override confirmation and reason (min 5 chars).');
+          return;
+        }
       }
 
       const activeChallanIds = Object.keys(selectedChallanIds).filter(id => selectedChallanIds[id]);
@@ -436,35 +492,59 @@ export const BillingView: React.FC = () => {
 
   // Re-download PDF helper from list
   const triggerListPDFDownload = async (inv: Invoice) => {
+    setPdfActionStatus({ text: `Compiling PDF bin for Invoice Settle Bill ${inv.invoice_no}... Please wait.` });
     try {
       const masterObj = db.getMasters().find(m => m.id === inv.master_id);
       if (!masterObj) {
-        alert("Master profile not found in database.");
+        setPdfActionStatus({ text: 'Error: Master profile not found in database.', isError: true });
         return;
       }
       const icList = db.getInvoiceChallans(inv.id).map(ic => ic.challan_id);
       const chList = db.getChallans().filter(c => icList.includes(c.id));
       const allItems = db.getChallanItems();
-      await generateInvoicePDF(inv, chList, allItems, masterObj, materials, true, false);
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Invoice PDF generation timed out (15 second limit). Please try again.')), 15000)
+      );
+
+      await Promise.race([
+        generateInvoicePDF(inv, chList, allItems, masterObj, materials, true, false),
+        timeoutPromise
+      ]);
+
+      setPdfActionStatus({ text: `Invoice ${inv.invoice_no} successfully downloaded.` });
     } catch (err: any) {
-      alert("Failed generating document download: " + err.message);
+      console.error(err);
+      setPdfActionStatus({ text: `Failed generating document download: ${err.message || err}`, isError: true });
     }
   };
 
   // Direct print PDF helper from list
   const triggerListPDFPrint = async (inv: Invoice) => {
+    setPdfActionStatus({ text: `Compiling layout print preview for Invoice ${inv.invoice_no}... Please wait.` });
     try {
       const masterObj = db.getMasters().find(m => m.id === inv.master_id);
       if (!masterObj) {
-        alert("Master profile not found in database.");
+        setPdfActionStatus({ text: 'Error: Master profile not found in database.', isError: true });
         return;
       }
       const icList = db.getInvoiceChallans(inv.id).map(ic => ic.challan_id);
       const chList = db.getChallans().filter(c => icList.includes(c.id));
       const allItems = db.getChallanItems();
-      await generateInvoicePDF(inv, chList, allItems, masterObj, materials, false, true);
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Invoice print preview layout timed out (15 second limit). Please try again.')), 15000)
+      );
+
+      await Promise.race([
+        generateInvoicePDF(inv, chList, allItems, masterObj, materials, false, true),
+        timeoutPromise
+      ]);
+
+      setPdfActionStatus({ text: `Invoice ${inv.invoice_no} sent to printer queue.` });
     } catch (err: any) {
-      alert("Failed triggering direct print dialog: " + err.message);
+      console.error(err);
+      setPdfActionStatus({ text: `Failed triggering direct print dialog: ${err.message || err}`, isError: true });
     }
   };
 
@@ -506,6 +586,18 @@ export const BillingView: React.FC = () => {
           <FileCheck className="w-4.5 h-4.5" /> Manage & Settle Registers
         </button>
       </div>
+
+      {pdfActionStatus && (
+        <div className={`border rounded-xl p-4 flex gap-2.5 items-start ${pdfActionStatus.isError ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-blue-50 border-blue-200 text-blue-800'}`}>
+          <AlertCircle className={`w-4 h-4 mt-0.5 flex-shrink-0 ${pdfActionStatus.isError ? 'text-rose-600' : 'text-blue-600'}`} />
+          <div className="text-xs font-semibold">
+            {pdfActionStatus.text}
+          </div>
+          <button onClick={() => setPdfActionStatus(null)} className={`ml-auto cursor-pointer transition ${pdfActionStatus.isError ? 'text-rose-500 hover:text-rose-800' : 'text-blue-500 hover:text-blue-800'}`}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {activeBillingTab === 'create' ? (
         <>
@@ -966,6 +1058,85 @@ export const BillingView: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Validation Checker Visual Slate */}
+                  <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-xs">
+                    <p className="font-bold text-[#1A2E4A] uppercase tracking-wider text-[10px] flex items-center justify-between border-b pb-1">
+                      <span>PRE-FLIGHT BILL VALIDATION</span>
+                      <span className={isBillingValid && !db.hasNegativeStock() ? "text-green-600 font-extrabold" : "text-rose-500 font-extrabold"}>
+                        {isBillingValid && !db.hasNegativeStock() ? "PASS" : "ATTENTION REQUIRED"}
+                      </span>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-650">
+                      <div className="flex items-center gap-1.5">
+                        <span className={isMasterSelected ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
+                          {isMasterSelected ? "✓" : "✗"}
+                        </span>
+                        Master Selected
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={isAnyChallanSelected ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
+                          {isAnyChallanSelected ? "✓" : "✗"}
+                        </span>
+                        Challan Checked ({activeChallanIds.length})
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={isPcsValid ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
+                          {isPcsValid ? "✓" : "✗"}
+                        </span>
+                        Pieces ({pcs || 0}) &gt; 0
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={isEarningValid ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
+                          {isEarningValid ? "✓" : "✗"}
+                        </span>
+                        Job Wages ({formatINR(workAmount)}) &gt; 0
+                      </div>
+                      <div className="sm:col-span-2 flex items-center gap-1.5 border-t border-slate-200/60 pt-1.5">
+                        <span className={isBankPanValid ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
+                          {isBankPanValid ? "✓" : "✗"}
+                        </span>
+                        PAN (10 chars uppercase) &amp; Bank Info (IFSC 11 chars, A/C &ge; 9 digits)
+                      </div>
+                    </div>
+
+                    {isNetPayableNegative && (
+                      <div className="border border-amber-200 bg-amber-50/70 p-3 rounded-lg space-y-2 mt-2">
+                        <p className="text-amber-800 font-bold flex items-center gap-1 leading-none text-xs">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" /> NEGATIVE BALANCE DETECTED ({formatINR(roundedOffGrandTotal)})
+                        </p>
+                        <p className="text-slate-600 text-xs">This settlement results in a negative payable. Explicit owner check override with target reason is mandatory to finalise.</p>
+                        <label className="flex items-center gap-2 text-slate-800 font-bold select-none cursor-pointer text-xs">
+                          <input 
+                            type="checkbox" 
+                            checked={ownerOverride} 
+                            onChange={(e) => setOwnerOverride(e.target.checked)} 
+                            className="rounded border-slate-300 focus:ring-0 w-3.5 h-3.5"
+                          />
+                          Tick to confirm owner override approval
+                        </label>
+                        {ownerOverride && (
+                          <div className="space-y-1">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase">Input Authorization Reason (min 5 chars):</label>
+                            <input 
+                              type="text" 
+                              placeholder="E.g. Approved adjustment for tailoring advances or credits..." 
+                              value={overrideReason}
+                              onChange={(e) => setOverrideReason(e.target.value)}
+                              className="bg-white border border-slate-200 rounded p-1.5 text-xs w-full text-slate-850 font-medium focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {db.hasNegativeStock() && (
+                      <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 animate-pulse mt-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                        <span>Stock trust blocked until negative stock is corrected. Finalisation is disabled.</span>
+                      </div>
+                    )}
+                  </div>
+
                   {errorMsg && (
                     <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-semibold flex items-center gap-1">
                       <AlertCircle className="w-4 h-4 text-rose-650" /> {errorMsg}
@@ -975,17 +1146,17 @@ export const BillingView: React.FC = () => {
                   <div className="flex gap-2.5 pt-2">
                     <button
                       type="button"
-                      disabled={loading}
+                      disabled={loading || db.hasNegativeStock()}
                       onClick={() => handleGenerateInvoice('draft')}
-                      className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2.5 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
+                      className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-800 font-bold py-2.5 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
                     >
                       Save Draft Bill
                     </button>
                     <button
                       type="button"
-                      disabled={loading}
+                      disabled={loading || !isBillingValid || db.hasNegativeStock()}
                       onClick={() => handleGenerateInvoice('finalised')}
-                      className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-2.5 px-4 rounded-lg text-xs shadow-sm cursor-pointer transition uppercase tracking-wider"
+                      className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-lg text-xs shadow-sm cursor-pointer transition uppercase tracking-wider"
                     >
                       Finalise & Print Bill
                     </button>

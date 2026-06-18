@@ -28,7 +28,8 @@ import {
   Minus,
   Check,
   AlertCircle,
-  Lock
+  Lock,
+  ShieldCheck
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -152,28 +153,58 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   };
 
   const handleDownloadChallan = async (c: Challan) => {
+    setAlertMsg({ text: `Compiling PDF binary for Challan ${c.challan_no}... Please wait.` });
     try {
       const masters = db.getMasters();
       const materials = db.getMaterials();
       const masterObj = masters.find(m => m.id === c.master_id);
-      if (!masterObj) return;
+      if (!masterObj) {
+        setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
+        return;
+      }
       const items = db.getChallanItems(c.id);
-      await generateChallanPDF(c, items, masterObj, materials, true, false);
-    } catch (e) {
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('PDF download timed out (15 seconds limit). Please check your browser connection.')), 15000)
+      );
+
+      await Promise.race([
+        generateChallanPDF(c, items, masterObj, materials, true, false),
+        timeoutPromise
+      ]);
+
+      setAlertMsg({ text: `Challan ${c.challan_no} successfully downloaded as structured PDF.` });
+    } catch (e: any) {
       console.error('Failed to trigger download', e);
+      setAlertMsg({ text: `Failed to compile PDF for Challan ${c.challan_no}: ${e.message || e}`, isError: true });
     }
   };
 
   const handlePrintChallan = async (c: Challan) => {
+    setAlertMsg({ text: `Compiling print preview layout for Challan ${c.challan_no}... Please wait.` });
     try {
       const masters = db.getMasters();
       const materials = db.getMaterials();
       const masterObj = masters.find(m => m.id === c.master_id);
-      if (!masterObj) return;
+      if (!masterObj) {
+        setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
+        return;
+      }
       const items = db.getChallanItems(c.id);
-      await generateChallanPDF(c, items, masterObj, materials, false, true);
-    } catch (e) {
+
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Print layout generation timed out (15 seconds limit). Please try again.')), 15000)
+      );
+
+      await Promise.race([
+        generateChallanPDF(c, items, masterObj, materials, false, true),
+        timeoutPromise
+      ]);
+
+      setAlertMsg({ text: `Challan ${c.challan_no} ready in browser print queue.` });
+    } catch (e: any) {
       console.error('Failed to print challan', e);
+      setAlertMsg({ text: `Failed to print Challan ${c.challan_no}: ${e.message || e}`, isError: true });
     }
   };
 
@@ -520,11 +551,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <button 
                 onClick={() => onNavigate('billing')}
                 disabled={currentUser.role === 'issue_dept'}
-                className="flex flex-col items-center justify-center p-4 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 text-slate-700 transition group text-center disabled:opacity-50 disabled:pointer-events-none cursor-pointer"
+                className="flex flex-col items-center justify-center p-4 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 text-slate-700 transition group text-center disabled:opacity-50 disabled:pointer-events-none cursor-pointer hover:border-[#2D3E5D]/30"
               >
                 <Receipt className="w-6 h-6 text-[#2D3E5D] mb-2 group-hover:scale-110 transition" />
                 <span className="text-xs font-bold">Billing Module</span>
                 <span className="text-[10px] text-slate-400 mt-1">Stitching Settlements</span>
+              </button>
+
+              <button 
+                onClick={() => onNavigate('checklist')}
+                disabled={currentUser.role === 'issue_dept'}
+                className="flex flex-col items-center justify-center p-4 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 text-slate-700 transition group text-center disabled:opacity-50 disabled:pointer-events-none cursor-pointer hover:border-emerald-300"
+              >
+                <ShieldCheck className="w-6 h-6 text-emerald-650 mb-2 group-hover:scale-110 transition" />
+                <span className="text-xs font-bold">Go-Live System</span>
+                <span className="text-[10px] text-slate-400 mt-1">Operational Diagnostics</span>
               </button>
 
             </div>
@@ -532,12 +573,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
           {/* Feedback messages */}
           {alertMsg && (
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex gap-2.5 items-start">
-              <AlertCircle className="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0" />
-              <div className="text-xs font-semibold text-blue-800">
+            <div className={`border rounded-xl p-4 flex gap-2.5 items-start ${alertMsg.isError ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-blue-50 border-blue-200 text-blue-800'}`}>
+              <AlertCircle className={`w-4 h-4 mt-0.5 flex-shrink-0 ${alertMsg.isError ? 'text-rose-600' : 'text-blue-600'}`} />
+              <div className="text-xs font-semibold">
                 {alertMsg.text}
               </div>
-              <button onClick={() => setAlertMsg(null)} className="ml-auto text-blue-500 hover:text-blue-800">
+              <button onClick={() => setAlertMsg(null)} className={`ml-auto cursor-pointer transition ${alertMsg.isError ? 'text-rose-500 hover:text-rose-800' : 'text-blue-500 hover:text-blue-800'}`}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -672,13 +713,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                           </button>
                                         </>
                                       )}
-                                      <button
-                                        onClick={() => triggerDelete(c)}
-                                        title="Permanently Delete Challan Document"
-                                        className="p-1 hover:bg-rose-50 text-rose-600 border border-transparent hover:border-rose-200 rounded transition cursor-pointer flex items-center justify-center"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
+                                      {c.status === 'voided' && (
+                                        <button
+                                          onClick={() => triggerDelete(c)}
+                                          title="[Owner Only] Permanently Purge Voided Challan Record"
+                                          className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                          <span className="text-[10px] font-bold ml-1 hidden lg:inline">PURGE RECORD</span>
+                                        </button>
+                                      )}
                                     </>
                                   )}
                                 </>
