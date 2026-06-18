@@ -8,6 +8,189 @@ import * as XLSX from 'xlsx';
 import { Challan, ChallanItem, Material, Master, Invoice, InwardEntry, AuditLog } from '../types';
 import { smartSavePDF, getFolderChallanDateText, getFolderInvoiceDateText } from './smartDownloader';
 
+let activeOverlay: HTMLDivElement | null = null;
+
+export function showPDFLoading(message = "Preparing PDF..."): () => void {
+  if (activeOverlay) {
+    return () => {
+      if (activeOverlay && activeOverlay.parentNode) {
+        activeOverlay.parentNode.removeChild(activeOverlay);
+        activeOverlay = null;
+      }
+    };
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'pdf-loading-overlay';
+  overlay.style.position = 'fixed';
+  overlay.style.inset = '0';
+  overlay.style.backgroundColor = 'rgba(15, 23, 42, 0.45)';
+  overlay.style.backdropFilter = 'blur(4px)';
+  overlay.style.display = 'flex';
+  overlay.style.alignItems = 'center';
+  overlay.style.justifyContent = 'center';
+  overlay.style.zIndex = '99999';
+  overlay.style.transition = 'opacity 0.3s ease';
+
+  const card = document.createElement('div');
+  card.style.backgroundColor = '#ffffff';
+  card.style.borderRadius = '16px';
+  card.style.boxShadow = '0 25px 50px -12px rgba(0, 0, 0, 0.25)';
+  card.style.padding = '24px';
+  card.style.maxWidth = '320px';
+  card.style.width = '100%';
+  card.style.margin = '0 16px';
+  card.style.border = '1px solid #f1f5f9';
+  card.style.display = 'flex';
+  card.style.flexDirection = 'column';
+  card.style.alignItems = 'center';
+  card.style.textAlign = 'center';
+
+  const spinnerContainer = document.createElement('div');
+  spinnerContainer.style.position = 'relative';
+  spinnerContainer.style.width = '64px';
+  spinnerContainer.style.height = '64px';
+  spinnerContainer.style.marginBottom = '16px';
+  spinnerContainer.style.display = 'flex';
+  spinnerContainer.style.alignItems = 'center';
+  spinnerContainer.style.justifyContent = 'center';
+
+  const outerRing = document.createElement('div');
+  outerRing.style.position = 'absolute';
+  outerRing.style.inset = '0';
+  outerRing.style.border = '4px solid #f1f5f9';
+  outerRing.style.borderTopColor = '#4f46e5';
+  outerRing.style.borderRadius = '9999px';
+  outerRing.style.animation = 'spin 1s linear infinite';
+
+  const innerRing = document.createElement('div');
+  innerRing.style.position = 'absolute';
+  innerRing.style.inset = '8px';
+  innerRing.style.border = '4px solid #f1f5f9';
+  innerRing.style.borderBottomColor = '#10b981';
+  innerRing.style.borderRadius = '9999px';
+  innerRing.style.animation = 'spin-back 0.8s linear infinite';
+
+  const centerText = document.createElement('div');
+  centerText.style.fontFamily = 'system-ui, sans-serif';
+  centerText.style.fontWeight = 'bold';
+  centerText.style.fontSize = '12px';
+  centerText.style.color = '#4f46e5';
+  centerText.innerText = 'PDF';
+
+  spinnerContainer.appendChild(outerRing);
+  spinnerContainer.appendChild(innerRing);
+  spinnerContainer.appendChild(centerText);
+
+  const heading = document.createElement('h3');
+  heading.style.margin = '0 0 4px 0';
+  heading.style.fontFamily = 'system-ui, sans-serif';
+  heading.style.fontSize = '16px';
+  heading.style.fontWeight = '600';
+  heading.style.color = '#0f172a';
+  heading.innerText = message;
+
+  const subtext = document.createElement('p');
+  subtext.style.margin = '0';
+  subtext.style.fontFamily = 'system-ui, sans-serif';
+  subtext.style.fontSize = '12px';
+  subtext.style.color = '#64748b';
+  subtext.innerText = 'Formatting layout & structure...';
+
+  if (!document.getElementById('pdf-spinner-styles')) {
+    const styleSheet = document.createElement('style');
+    styleSheet.id = 'pdf-spinner-styles';
+    styleSheet.innerText = `
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes spin-back {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(-360deg); }
+      }
+    `;
+    document.head.appendChild(styleSheet);
+  }
+
+  card.appendChild(spinnerContainer);
+  card.appendChild(heading);
+  card.appendChild(subtext);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  activeOverlay = overlay;
+
+  return () => {
+    if (overlay && overlay.parentNode) {
+      overlay.parentNode.removeChild(overlay);
+    }
+    if (activeOverlay === overlay) {
+      activeOverlay = null;
+    }
+  };
+}
+
+export function showPDFError(message = "An error occurred during PDF compiling.") {
+  const toast = document.createElement('div');
+  toast.style.position = 'fixed';
+  toast.style.bottom = '24px';
+  toast.style.right = '24px';
+  toast.style.backgroundColor = '#fff1f2';
+  toast.style.border = '1px solid #fecdd3';
+  toast.style.color = '#9f1239';
+  toast.style.borderRadius = '12px';
+  toast.style.padding = '16px';
+  toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)';
+  toast.style.display = 'flex';
+  toast.style.alignItems = 'center';
+  toast.style.gap = '12px';
+  toast.style.zIndex = '999999';
+  toast.style.maxWidth = '360px';
+  toast.style.fontFamily = 'system-ui, sans-serif';
+
+  const iconSpan = document.createElement('span');
+  iconSpan.style.display = 'flex';
+  iconSpan.style.alignItems = 'center';
+  iconSpan.style.justifyContent = 'center';
+  iconSpan.style.backgroundColor = '#ffe4e6';
+  iconSpan.style.borderRadius = '9999px';
+  iconSpan.style.padding = '6px';
+  iconSpan.innerHTML = `
+    <svg style="width: 20px; height: 20px; color: #f43f5e" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+    </svg>
+  `;
+
+  const textDiv = document.createElement('div');
+  const title = document.createElement('div');
+  title.style.fontWeight = '600';
+  title.style.fontSize = '14px';
+  title.style.color = '#9f1239';
+  title.innerText = 'PDF Error';
+
+  const desc = document.createElement('div');
+  desc.style.fontSize = '12px';
+  desc.style.color = '#e11d48';
+  desc.style.marginTop = '2px';
+  desc.innerText = message;
+
+  textDiv.appendChild(title);
+  textDiv.appendChild(desc);
+
+  toast.appendChild(iconSpan);
+  textDiv.appendChild(desc);
+  toast.appendChild(textDiv);
+
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    if (toast && toast.parentNode) {
+      toast.parentNode.removeChild(toast);
+    }
+  }, 4550);
+}
+
 // Helper to format currency in INR style (Indian Rupees with commas)
 export function formatINR(num: number): string {
   // Handles Indian numbering system (e.g., Lakhs and Crores)
@@ -197,7 +380,10 @@ export async function generateChallanPDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
-  const doc = new jsPDF({
+  const dismiss = showPDFLoading(`Preparing Challan ${challan.challan_no}...`);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4'
@@ -460,6 +646,12 @@ export async function generateChallanPDF(
   console.log(`Saved PDF using Smart Folder System / Cloud: /challans/${yr}-${mo}/CHALLAN_${challan.challan_no}.pdf`);
 
   return pdfBlob;
+  } catch (err: any) {
+    showPDFError(err.message || `Failed to compile Challan ${challan.challan_no}.`);
+    throw err;
+  } finally {
+    dismiss();
+  }
 }
 
 /**
@@ -474,7 +666,10 @@ export async function generateInvoicePDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
-  const doc = new jsPDF({
+  const dismiss = showPDFLoading(`Preparing Invoice ${invoice.invoice_no}...`);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4'
@@ -765,12 +960,18 @@ export async function generateInvoicePDF(
   console.log(`Saved Invoice PDF using Smart Folder System / Cloud: /invoices/${yr}-${mo}/INVOICE_${invoice.invoice_no}.pdf`);
 
   return pdfBlob;
+  } catch (err: any) {
+    showPDFError(err.message || `Failed to compile Invoice ${invoice.invoice_no || ''}.`);
+    throw err;
+  } finally {
+    dismiss();
+  }
 }
 
 /**
  * REPORTS MODULE - Master Ledger Statement
  */
-export function generateMasterLedgerPDF(
+export async function generateMasterLedgerPDF(
   master: Master,
   dateRange: { start: string; end: string },
   ledgerRows: { date: string; ref: string; type: 'issue' | 'work' | 'adjust'; material: string; qty: number; value: number }[],
@@ -778,7 +979,10 @@ export function generateMasterLedgerPDF(
   totalEarned: number,
   netBalance: number
 ) {
-  const doc = new jsPDF();
+  const dismiss = showPDFLoading(`Preparing Ledger Report: ${master.name}...`);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF();
   drawLetterhead(doc, `Master Ledger Report: ${master.name}`);
 
   // Date limit tags
@@ -853,17 +1057,25 @@ export function generateMasterLedgerPDF(
 
   drawFooter(doc, 1, 1);
   doc.save(`LEDGER_MASTER_${master.code.toUpperCase()}.pdf`);
+  } catch (err: any) {
+    showPDFError(err.message || "Failed to generate Master Ledger Report.");
+  } finally {
+    dismiss();
+  }
 }
 
 /**
  * REPORTS MODULE - Material Stock/Movement Ledger
  */
-export function generateMaterialLedgerPDF(
+export async function generateMaterialLedgerPDF(
   material: Material,
   dateRange: { start: string; end: string },
   events: { date: string; bill_ref: string; type: 'stock_in' | 'stock_out'; party: string; qty: number; balance: number }[]
 ) {
-  const doc = new jsPDF();
+  const dismiss = showPDFLoading(`Preparing Stock Movement Ledger: ${material.name}...`);
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF();
   drawLetterhead(doc, `Material Stock Movement: ${material.name}`);
 
   doc.setTextColor(20, 30, 40);
@@ -925,13 +1137,21 @@ export function generateMaterialLedgerPDF(
 
   drawFooter(doc, 1, 1);
   doc.save(`MATERIAL_LEDGER_${material.name.replace(/\//g, '_')}.pdf`);
+  } catch (err: any) {
+    showPDFError(err.message || "Failed to generate Material Stock Movement Report.");
+  } finally {
+    dismiss();
+  }
 }
 
 /**
  * REPORTS MODULE - Inventory/Stock Status Positions
  */
-export function generateStockPositionPDF(materialsList: Material[]) {
-  const doc = new jsPDF();
+export async function generateStockPositionPDF(materialsList: Material[]) {
+  const dismiss = showPDFLoading("Preparing Stock Status Report...");
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF();
   drawLetterhead(doc, 'Current Material Stock Status Report');
 
   doc.setTextColor(20, 30, 40);
@@ -991,17 +1211,25 @@ export function generateStockPositionPDF(materialsList: Material[]) {
 
   drawFooter(doc, 1, 1);
   doc.save(`STOCK_POSITION_${new Date().toISOString().split('T')[0]}.pdf`);
+  } catch (err: any) {
+    showPDFError(err.message || "Failed to generate Stock Position Report.");
+  } finally {
+    dismiss();
+  }
 }
 
 /**
  * REPORTS MODULE - Monthly summary overview PDF
  */
-export function generateMonthlySummaryPDF(
+export async function generateMonthlySummaryPDF(
   month: number,
   year: number,
   summary: { masterName: string; type: string; totalIssuedVal: number; workEarned: number; netPaid: number }[]
 ) {
-  const doc = new jsPDF();
+  const dismiss = showPDFLoading("Preparing Monthly Statement...");
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF();
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   drawLetterhead(doc, `Garment Production Monthly Executive Summary: ${months[month - 1]} ${year}`);
 
@@ -1078,6 +1306,11 @@ export function generateMonthlySummaryPDF(
 
   drawFooter(doc, 1, 1);
   doc.save(`SUMMARY_MONTHLY_${months[month-1].toUpperCase()}_${year}.pdf`);
+  } catch (err: any) {
+    showPDFError(err.message || "Failed to generate Monthly Summary Report.");
+  } finally {
+    dismiss();
+  }
 }
 
 /**
@@ -1100,8 +1333,11 @@ export function exportToExcel(data: any[], fileName: string, sheetName = 'Harry 
 /**
  * GENERATE AUDIT TRAIL REPORTS (PDF / PRINT)
  */
-export function generateAuditTrailPDF(audits: AuditLog[], triggerDownload = true, triggerPrint = false) {
-  const doc = new jsPDF({
+export async function generateAuditTrailPDF(audits: AuditLog[], triggerDownload = true, triggerPrint = false) {
+  const dismiss = showPDFLoading("Preparing Audit Trail Report...");
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4'
@@ -1186,5 +1422,10 @@ export function generateAuditTrailPDF(audits: AuditLog[], triggerDownload = true
     printPDFDoc(doc);
   } else if (triggerDownload) {
     doc.save(`audit_trail_${new Date().toISOString().split('T')[0]}.pdf`);
+  }
+  } catch (err: any) {
+    showPDFError(err.message || "Failed to generate Audit Trail Report.");
+  } finally {
+    dismiss();
   }
 }

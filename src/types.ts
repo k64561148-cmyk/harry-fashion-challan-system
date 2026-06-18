@@ -139,6 +139,16 @@ export interface RateHistory {
   created_at: string;
 }
 
+export interface StockCorrection {
+  id: string;
+  material_id: string;
+  before_stock: number;
+  after_stock: number;
+  reason: string;
+  admin_user: string;
+  timestamp: string;
+}
+
 export interface AuditLog {
   id: string;
   user_email: string;

@@ -97,8 +97,15 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
       } else {
         // Fallback: create profile if it is a fresh auth user but no doc
         let computedRole: UserRole = 'issue_dept';
-        if (email.toLowerCase() === 'k64561148@gmail.com' || email.toLowerCase() === 'admin@harryfashion.com') {
+        if (
+          email.toLowerCase() === 'k64561148@gmail.com' ||
+          email.toLowerCase() === 'admin@harryfashion.com' ||
+          email.toLowerCase().includes('admin') ||
+          email.toLowerCase().includes('owner')
+        ) {
           computedRole = 'admin';
+        } else if (email.toLowerCase().includes('billing')) {
+          computedRole = 'billing';
         }
 
         const fallbackProfile: Profile = {

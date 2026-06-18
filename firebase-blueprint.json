@@ -162,6 +162,41 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "role", "username", "active", "createdAt", "updatedAt"]
+    },
+    "LedgerTransaction": {
+      "title": "LedgerTransaction",
+      "description": "Double-entry accounting transaction records for tailors",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "date": { "type": "string" },
+        "master_id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "qty": { "type": "number" },
+        "rate": { "type": "number" },
+        "amount": { "type": "number" },
+        "ref_id": { "type": "string" },
+        "ref_no": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "date", "amount", "ref_id", "ref_no", "created_at"]
+    },
+    "StockCorrection": {
+      "title": "StockCorrection",
+      "description": "Admin stock corrections for negative values",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "material_id": { "type": "string" },
+        "before_stock": { "type": "number" },
+        "after_stock": { "type": "number" },
+        "reason": { "type": "string" },
+        "admin_user": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "material_id", "before_stock", "after_stock", "reason", "admin_user", "timestamp"]
     }
   },
   "firestore": {
@@ -208,6 +243,14 @@
     "/audit_logs/{logId}": {
       "schema": "AuditLog",
       "description": "Audit trails for compliance tracking"
+    },
+    "/ledger_transactions/{txId}": {
+      "schema": "LedgerTransaction",
+      "description": "Ledger transactions for accounts clearing"
+    },
+    "/stock_corrections/{correctionId}": {
+      "schema": "StockCorrection",
+      "description": "Stock correction logs"
     }
   }
 }

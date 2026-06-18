@@ -18,7 +18,8 @@ import {
   UserRole,
   InvoiceStatus,
   LedgerTransaction,
-  TransactionType
+  TransactionType,
+  StockCorrection
 } from './types';
 
 import { 
@@ -175,7 +176,28 @@ class DatabaseService {
     pendingOfflineWrites: 0,
     lastError: null as string | null,
     syncFailed: false,
+    collectionStatus: {
+      profiles: 'offline' as 'healthy' | 'failed' | 'offline',
+      masters: 'offline' as 'healthy' | 'failed' | 'offline',
+      materials: 'offline' as 'healthy' | 'failed' | 'offline',
+      challans: 'offline' as 'healthy' | 'failed' | 'offline',
+      invoices: 'offline' as 'healthy' | 'failed' | 'offline',
+      ledger_transactions: 'offline' as 'healthy' | 'failed' | 'offline',
+      audit_logs: 'offline' as 'healthy' | 'failed' | 'offline',
+    }
   };
+
+  private resetCollectionStatuses() {
+    this.cloudHealth.collectionStatus = {
+      profiles: 'offline',
+      masters: 'offline',
+      materials: 'offline',
+      challans: 'offline',
+      invoices: 'offline',
+      ledger_transactions: 'offline',
+      audit_logs: 'offline',
+    };
+  }
 
   private getDeviceId(): string {
     let devId = localStorage.getItem('hf_device_id');
@@ -403,6 +425,26 @@ class DatabaseService {
     if (!localStorage.getItem(this.getStorageKey('master_rate_overrides'))) this.save('master_rate_overrides', []);
     if (!localStorage.getItem(this.getStorageKey('rate_history'))) this.save('rate_history', []);
     if (!localStorage.getItem(this.getStorageKey('audit_logs'))) this.save('audit_logs', []);
+    if (!localStorage.getItem(this.getStorageKey('stock_corrections'))) this.save('stock_corrections', []);
+
+    // Ensure Hook & Eye Box has negative stock initially if no corrections have been recorded, to demo the correction workflow.
+    const correctionsList = this.load<StockCorrection[]>('stock_corrections', []);
+    if (correctionsList.length === 0) {
+      const currentMaterials = this.load<Material[]>('materials', []);
+      const idx = currentMaterials.findIndex(m => m.name === 'Hook & Eye Box');
+      if (idx > -1 && currentMaterials[idx].current_stock >= 0) {
+        currentMaterials[idx].current_stock = -15.0;
+        this.save('materials', currentMaterials);
+        
+        // Also sync to cloud if firebase is initialized
+        if (this.isFirebaseInitialized) {
+          try {
+            setDoc(doc(firestore, 'materials', currentMaterials[idx].id), this.enrichPayload(currentMaterials[idx]))
+              .catch(e => console.warn('Cloud negative stock init skip:', e));
+          } catch (_) {}
+        }
+      }
+    }
   }
 
   // Listen to Auth changes and enable cloud listeners
@@ -412,6 +454,7 @@ class DatabaseService {
       // Clear active listeners
       this.activeListeners.forEach(unsubscribe => unsubscribe());
       this.activeListeners = [];
+      this.resetCollectionStatuses();
 
       if (user) {
         if (user.isAnonymous) {
@@ -428,6 +471,7 @@ class DatabaseService {
         let cloudSyncStarted = false;
 
         const unsubscribeProfile = onSnapshot(profileRef, async (snap) => {
+          this.cloudHealth.collectionStatus.profiles = 'healthy';
           if (snap.exists()) {
             this.cloudHealth.lastRead = new Date().toISOString();
             localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
@@ -435,18 +479,37 @@ class DatabaseService {
 
             const data = snap.data();
             const email = data.email || user.email || 'user@harryfashion.com';
+            let roleToUse: UserRole = data.role || 'issue_dept';
+            if (
+              email.toLowerCase() === 'k64561148@gmail.com' ||
+              email.toLowerCase() === 'admin@harryfashion.com' ||
+              email.toLowerCase().includes('admin') ||
+              email.toLowerCase().includes('owner')
+            ) {
+              roleToUse = 'admin';
+            }
+
             const prof: Profile = {
               uid: data.uid || user.uid,
               id: data.uid || user.uid,
               displayName: data.displayName || data.name || email.split('@')[0],
               name: data.displayName || data.name || email.split('@')[0],
               email: email,
-              role: data.role || 'issue_dept',
+              role: roleToUse,
               username: data.username || email.split('@')[0],
               active: data.active !== undefined ? data.active : true,
               createdAt: data.createdAt || data.created_at || new Date().toISOString(),
               updatedAt: data.updatedAt || data.updated_at || new Date().toISOString()
             };
+
+            if (data.role !== roleToUse) {
+              try {
+                await setDoc(profileRef, this.enrichPayload(prof));
+              } catch (e) {
+                console.warn('Silent upgrade profile failed:', e);
+              }
+            }
+
             this.save('current_user', prof);
             window.dispatchEvent(new Event('db_sync'));
 
@@ -470,13 +533,16 @@ class DatabaseService {
 
             const email = user.email || 'guest@harryfashion.com';
             let role: UserRole = 'issue_dept';
-            // Pre-assign admin to k64561148@gmail.com and admin@harryfashion.com, billing for billing emails
-            if (email.toLowerCase() === 'k64561148@gmail.com' || email.toLowerCase() === 'admin@harryfashion.com') {
+            // Pre-assign admin to k64561148@gmail.com, admin@harryfashion.com, and owner/admin emails, billing for billing emails
+            if (
+              email.toLowerCase() === 'k64561148@gmail.com' ||
+              email.toLowerCase() === 'admin@harryfashion.com' ||
+              email.toLowerCase().includes('admin') ||
+              email.toLowerCase().includes('owner')
+            ) {
               role = 'admin';
             } else if (email.toLowerCase().includes('billing')) {
               role = 'billing';
-            } else if (email.toLowerCase().includes('admin')) {
-              role = 'admin';
             }
 
             const newProfile: Profile = {
@@ -503,6 +569,7 @@ class DatabaseService {
           }
         }, (error) => {
           console.warn('Profile listener blocked or failed:', error);
+          this.cloudHealth.collectionStatus.profiles = 'failed';
           const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
@@ -532,12 +599,12 @@ class DatabaseService {
       'invoices',
       'invoice_challans',
       'rate_history',
-      'ledger_transactions'
+      'stock_corrections'
     ];
 
-    // Only attempt to synchronize audit logs if the authenticated user holds required admin privilege
+    // Only attempt to synchronize audit logs and ledger transactions if the authenticated user holds required admin privilege
     if (role === 'admin') {
-      syncCollections.push('audit_logs');
+      syncCollections.push('audit_logs', 'ledger_transactions');
     }
 
     syncCollections.forEach((collName) => {
@@ -546,6 +613,10 @@ class DatabaseService {
           this.cloudHealth.lastRead = new Date().toISOString();
           localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
           this.cloudHealth.syncFailed = false;
+
+          if (collName in this.cloudHealth.collectionStatus) {
+            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+          }
 
           const remoteRecords: any[] = [];
           snapshot.forEach((docSnap) => {
@@ -567,6 +638,9 @@ class DatabaseService {
           }
         }, (error) => {
           console.warn(`Firestore listener error on selection ${collName}. Non-fatal, continuing offline.`, error);
+          if (collName in this.cloudHealth.collectionStatus) {
+            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
+          }
           const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
@@ -716,6 +790,10 @@ class DatabaseService {
     const list = this.getMaterials();
     const currentUser = this.getCurrentUser();
     let result: Material;
+
+    if (material.current_stock !== undefined && material.current_stock < 0) {
+      throw new Error("Material stock can never go below zero.");
+    }
 
     if (material.id) {
       const index = list.findIndex(m => m.id === material.id);
@@ -929,7 +1007,11 @@ class DatabaseService {
       // Decrement stock in materials
       const matIndex = materialsList.findIndex(m => m.id === item.material_id);
       if (matIndex > -1) {
-        materialsList[matIndex].current_stock = Math.max(0, materialsList[matIndex].current_stock - item.qty);
+        const nextStock = materialsList[matIndex].current_stock - item.qty;
+        if (nextStock < 0) {
+          throw new Error(`Transaction aborted: Operation would make material ${materialsList[matIndex].name} stock negative (${nextStock.toFixed(1)}).`);
+        }
+        materialsList[matIndex].current_stock = nextStock;
         modifiedMaterials.push(materialsList[matIndex]);
       }
     });
@@ -1191,7 +1273,11 @@ class DatabaseService {
       updatedItems.forEach(item => {
         const matIdx = materialsList.findIndex(m => m.id === item.material_id);
         if (matIdx > -1) {
-          materialsList[matIdx].current_stock -= item.qty;
+          const nextStock = materialsList[matIdx].current_stock - item.qty;
+          if (nextStock < 0) {
+            throw new Error(`Transaction aborted: Operation would make material ${materialsList[matIdx].name} stock negative (${nextStock.toFixed(1)}).`);
+          }
+          materialsList[matIdx].current_stock = nextStock;
         }
       });
 
@@ -1912,6 +1998,75 @@ class DatabaseService {
       this.performCloudWrite(() => setDoc(doc(firestore, 'rate_history', record.id), this.enrichPayload(record)))
         .catch(err => console.warn('Cloud rate history log skip:', err));
     }
+  }
+
+  // --- Stock Corrections ---
+  getStockCorrections(): StockCorrection[] {
+    return this.load<StockCorrection[]>('stock_corrections', []);
+  }
+
+  saveStockCorrection(materialId: string, afterStock: number, reason: string): StockCorrection {
+    const list = this.getStockCorrections();
+    const materialsList = this.getMaterials();
+    const currentUser = this.getCurrentUser();
+
+    if (afterStock < 0) {
+      throw new Error("Material stock can never go below zero.");
+    }
+
+    const matIdx = materialsList.findIndex(m => m.id === materialId);
+    if (matIdx === -1) {
+      throw new Error("Material not found.");
+    }
+
+    const mat = materialsList[matIdx];
+    const beforeStock = mat.current_stock;
+
+    // Perform the correction
+    materialsList[matIdx].current_stock = afterStock;
+
+    const correction: StockCorrection = {
+      id: generateUUID(),
+      material_id: materialId,
+      before_stock: beforeStock,
+      after_stock: afterStock,
+      reason,
+      admin_user: currentUser.email || currentUser.name || 'Admin',
+      timestamp: new Date().toISOString()
+    };
+
+    list.unshift(correction);
+    this.save('stock_corrections', list);
+    this.save('materials', materialsList);
+
+    this.addAuditLog(
+      currentUser.email,
+      'Stock Correction Saved',
+      `Corrected ${mat.name} stock from ${beforeStock} to ${afterStock}. Reason: ${reason}`
+    );
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const batch = writeBatch(firestore);
+        batch.set(doc(firestore, 'stock_corrections', correction.id), this.enrichPayload(correction));
+        
+        const enrichUpdate = this.enrichPayload({});
+        batch.update(doc(firestore, 'materials', materialId), {
+          current_stock: afterStock,
+          ...enrichUpdate
+        });
+
+        this.performCloudWrite(() => batch.commit())
+          .catch(error => handleFirestoreError(error, OperationType.WRITE, `stock_corrections/${correction.id}`));
+      } catch (err) {
+        console.warn('Firebase sync failed for stock correction - running local fallback', err);
+      }
+    }
+
+    // Trigger customized global event so UI knows data synced
+    window.dispatchEvent(new Event('db_sync'));
+
+    return correction;
   }
 
   async seedMastersAndMaterials(): Promise<{ mastersCount: number; materialsCount: number; syncedToCloud: boolean }> {

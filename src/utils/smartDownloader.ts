@@ -210,14 +210,17 @@ export async function smartSavePDF({
     cloudPath = `invoices/${dateText}/${masterClean}/${localFileName}`;
   }
 
-  // 3. Perform Cloud Backup asynchronously so it doesn't block local saving
+  // 3. Perform Cloud Backup asynchronously in the background so it doesn't block local saving
   let savedCloud = false;
-  try {
-    await uploadToCloudStorage(cloudPath, blob);
-    savedCloud = true;
-  } catch (cloudErr) {
-    console.error('Cloud storage fails:', cloudErr);
-  }
+  uploadToCloudStorage(cloudPath, blob)
+    .then((resultPath) => {
+      if (resultPath) {
+        console.log(`Cloud backup upload complete in background: ${resultPath}`);
+      }
+    })
+    .catch((cloudErr) => {
+      console.warn('Firebase storage cloud backup failed:', cloudErr);
+    });
 
   // 4. Try smart saving via File System Access API
   let savedLocal = false;
@@ -228,11 +231,8 @@ export async function smartSavePDF({
     try {
       let baseDirHandle = await getStoredDirectoryHandle();
       
-      // If we don't have a handle, prompt the user for permission on activation
-      if (!baseDirHandle) {
-        baseDirHandle = await promptForBaseDirectory();
-      }
-
+      // ONLY attempt directory operations if the folder has already been linked and saved via settings.
+      // Do NOT automatically show directory picker to unconfigured/sandboxed iframe users.
       if (baseDirHandle) {
         const hasPerms = await verifyPermission(baseDirHandle);
         if (hasPerms) {

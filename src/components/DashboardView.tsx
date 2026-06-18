@@ -43,6 +43,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [recentChallans, setRecentChallans] = useState<Challan[]>([]);
   const currentUser = db.getCurrentUser();
 
+  // Stock correction states
+  const [negativeStockMaterials, setNegativeStockMaterials] = useState<Material[]>([]);
+  const [selectedMaterialToCorrect, setSelectedMaterialToCorrect] = useState<string>('');
+  const [correctedValue, setCorrectedValue] = useState<number>(0);
+  const [correctionReason, setCorrectionReason] = useState<string>('');
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+
   // Search, filter, and view toggles
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'issued' | 'billed' | 'voided'>('all');
@@ -89,10 +96,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     const alerts = materialsList.filter(m => m.is_active && m.current_stock < 15);
     setLowStockAlerts(alerts);
 
+    // 4b. Find and track existing negative stock items
+    const negatives = materialsList.filter(m => m.current_stock < 0);
+    setNegativeStockMaterials(negatives);
+    if (negatives.length > 0) {
+      setSelectedMaterialToCorrect(prev => {
+        const stillInNegatives = negatives.some(n => n.id === prev);
+        return stillInNegatives ? prev : negatives[0].id;
+      });
+    }
+
     // 5. Recent Challans
     // Sort challans chronologically desc, so fresh ones appear first
     const sortedChallans = [...challans].sort((a, b) => b.created_at.localeCompare(a.created_at));
     setRecentChallans(sortedChallans);
+  };
+
+  const handleApplyCorrection = (e: React.FormEvent) => {
+    e.preventDefault();
+    setCorrectionError(null);
+
+    if (!selectedMaterialToCorrect) {
+      setCorrectionError("Please select a material to correct.");
+      return;
+    }
+    if (correctedValue < 0) {
+      setCorrectionError("Corrected stock level must be non-negative (0 or higher).");
+      return;
+    }
+    if (!correctionReason.trim()) {
+      setCorrectionError("Please describe a valid reason or error explanation for this correction.");
+      return;
+    }
+
+    try {
+      db.saveStockCorrection(selectedMaterialToCorrect, correctedValue, correctionReason.trim());
+      setCorrectionReason('');
+      setCorrectedValue(0);
+      setAlertMsg({ text: "Stock correction saved successfully. Material counts and audit logs consolidated." });
+      loadDashboardData();
+    } catch (err: any) {
+      setCorrectionError(err.message || "Failed to submit correction.");
+    }
   };
 
   useEffect(() => {
@@ -290,6 +335,105 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </div>
         </div>
       </div>
+
+      {/* Stock Correction Needed Panel */}
+      {negativeStockMaterials.length > 0 && (
+        <div id="stock-correction-banner" className="bg-rose-50 border border-rose-200 rounded-xl p-5 shadow-sm space-y-4 animate-fade-in">
+          <div className="flex items-center gap-2.5 text-rose-800">
+            <AlertTriangle className="w-5 h-5 text-rose-600 animate-bounce flex-shrink-0" />
+            <div>
+              <h3 className="text-sm font-bold tracking-tight uppercase">Stock Correction Required</h3>
+              <p className="text-xs text-rose-700 mt-0.5">
+                The warehouse system has detected {negativeStockMaterials.length} material(s) with an impossible negative stock level. Stock trust validation is paused until corrected.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* List of Negative Stocks */}
+            <div className="space-y-2 bg-white p-3 rounded-lg border border-rose-150">
+              <p className="text-[10px] uppercase font-bold tracking-widest text-slate-450 border-b pb-1.5 mb-2 font-sans">Negative Inventory Items</p>
+              <div className="divide-y divide-rose-50 max-h-[140px] overflow-y-auto pr-1">
+                {negativeStockMaterials.map(m => (
+                  <div key={m.id} className="py-2 flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-800">{m.name}</span>
+                    <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full font-mono">
+                      {m.current_stock.toFixed(1)} {m.unit}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Quick Correction Panel (Admins Only) */}
+            <div className="bg-white p-3 rounded-lg border border-rose-150 flex flex-col justify-between">
+              {currentUser.role === 'admin' ? (
+                <form onSubmit={handleApplyCorrection} className="space-y-3">
+                  <p className="text-[10px] uppercase font-bold tracking-widest text-slate-450 border-b pb-1.5 font-sans">Admin Correction Portal</p>
+                  
+                  {correctionError && (
+                    <p className="text-[10px] font-bold text-rose-600 bg-rose-50/50 p-1.5 rounded">{correctionError}</p>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1 font-sans">Target Material</label>
+                      <select
+                        value={selectedMaterialToCorrect}
+                        onChange={(e) => setSelectedMaterialToCorrect(e.target.value)}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none font-semibold text-slate-700 focus:border-rose-450"
+                      >
+                        {negativeStockMaterials.map(m => (
+                          <option key={m.id} value={m.id}>{m.name} ({m.current_stock.toFixed(1)} {m.unit})</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1 font-sans">New Stock Level</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={correctedValue || ''}
+                        onChange={(e) => setCorrectedValue(parseFloat(e.target.value) || 0)}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none font-bold text-slate-800 focus:border-rose-450"
+                        placeholder="e.g. 10.0"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <input
+                        type="text"
+                        placeholder="Reason (e.g. Physical inventory count)..."
+                        value={correctionReason}
+                        onChange={(e) => setCorrectionReason(e.target.value)}
+                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none text-slate-700 focus:border-rose-450 font-medium"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-3.5 rounded transition cursor-pointer select-none whitespace-nowrap font-sans"
+                    >
+                      Apply Fix
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="h-full flex flex-col justify-center items-center text-center p-4">
+                  <Lock className="w-5 h-5 text-rose-400 mb-1.5" />
+                  <p className="text-xs font-bold text-slate-755 font-sans">Administrative Correction Required</p>
+                  <p className="text-[11px] text-slate-500 mt-1 max-w-[280px]">
+                    Only administrators are permitted to correct negative stocks. Please notify Harry Admin or authorized personnel to resolve this balance.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* KPI Info Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">

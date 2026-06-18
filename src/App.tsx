@@ -309,11 +309,21 @@ export default function App() {
           <div className="mx-4 mb-4 p-3.5 bg-[#14233a]/80 rounded-xl border border-[#2D3E5D]/80 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-slate-400 font-extrabold tracking-wider uppercase flex items-center gap-1.5 font-sans">
-                <Cloud className={`w-3.5 h-3.5 ${cloudHealth.syncFailed ? 'text-rose-500 animate-pulse' : 'text-blue-400'}`} />
+                <Cloud className={`w-3.5 h-3.5 ${(cloudHealth.syncFailed || Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')) ? 'text-rose-500 animate-pulse' : 'text-blue-400'}`} />
                 Cloud Health Status
               </span>
-              <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${cloudHealth.syncFailed ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-                {cloudHealth.syncFailed ? 'Sync Failed' : 'Healthy'}
+              <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                  : cloudHealth.syncFailed
+                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+              }`}>
+                {Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                  ? 'Sync Warning'
+                  : cloudHealth.syncFailed
+                    ? 'Sync Failed'
+                    : 'Healthy'}
               </span>
             </div>
 
@@ -343,6 +353,29 @@ export default function App() {
                 </span>
               </div>
             </div>
+
+            {/* Collection Sync Streams Grid */}
+            {cloudHealth.collectionStatus && (
+              <div className="mt-2 border-t border-[#2D3E5D]/40 pt-2 text-[9px] font-mono leading-tight">
+                <span className="block text-[8px] text-slate-500 font-extrabold uppercase tracking-wider mb-1.5 font-sans">Streams Monitor</span>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-1 text-[9px] font-mono select-none">
+                  {Object.entries(cloudHealth.collectionStatus).map(([collName, status]) => (
+                    <div key={collName} className="flex items-center justify-between pb-0.5 border-b border-white/[0.02]">
+                      <span className="text-slate-400 capitalize truncate max-w-[80px]" title={collName}>{collName.replace('_', ' ')}</span>
+                      <span className={`font-bold px-1 rounded-sm text-[8px] uppercase ${
+                        status === 'healthy' 
+                          ? 'text-emerald-400 bg-emerald-500/5' 
+                          : status === 'failed' 
+                            ? 'text-amber-400 bg-amber-500/5 font-extrabold animate-pulse' 
+                            : 'text-slate-500 bg-slate-500/5'
+                      }`}>
+                        {status === 'healthy' ? 'OK' : status === 'failed' ? 'ERR' : 'OFF'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {cloudHealth.lastError && (
               <div className="mt-1.5 p-2 bg-rose-950/30 border border-rose-800/30 rounded-lg text-[9px] text-rose-300 leading-normal font-mono select-text break-all max-h-[80px] overflow-y-auto">
