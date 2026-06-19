@@ -1422,6 +1422,93 @@ class DatabaseService {
       // Combine
       const newItemsList = [...remainingItems, ...savedChallanItems];
 
+      // Build version history
+      const previousItemsMapped = previousItems.map(item => ({
+        material_id: item.material_id,
+        qty: item.qty,
+        rate: item.rate,
+        amount: item.amount
+      }));
+
+      const latestItemsMapped = savedChallanItems.map(item => ({
+        material_id: item.material_id,
+        qty: item.qty,
+        rate: item.rate,
+        amount: item.amount
+      }));
+
+      let originalItems: any[] = [];
+      if (!challan.editHistory || challan.editHistory.length === 0) {
+        originalItems = previousItemsMapped;
+      } else {
+        originalItems = challan.editHistory[0].originalItems || challan.editHistory[0].previousItems || [];
+      }
+
+      const changedFields: string[] = [];
+      if (notes !== undefined && notes !== challan.notes) {
+        changedFields.push("Notes updated");
+      }
+
+      const prevMap = new Map(previousItemsMapped.map(i => [i.material_id, i]));
+      const nextMap = new Map(latestItemsMapped.map(i => [i.material_id, i]));
+
+      for (const [matId, prev] of prevMap.entries()) {
+        const next = nextMap.get(matId);
+        const matName = materialsList.find(m => m.id === matId)?.name || matId;
+        if (!next) {
+          changedFields.push(`Removed material: ${matName}`);
+        } else {
+          if (prev.qty !== next.qty) {
+            changedFields.push(`Quantity change for ${matName} (${prev.qty} → ${next.qty})`);
+          }
+          if (prev.rate !== next.rate) {
+            changedFields.push(`Rate change for ${matName} (₹${prev.rate} → ₹${next.rate})`);
+          }
+        }
+      }
+
+      for (const [matId, next] of nextMap.entries()) {
+        if (!prevMap.has(matId)) {
+          const matName = materialsList.find(m => m.id === matId)?.name || matId;
+          changedFields.push(`Added material: ${matName} (qty: ${next.qty}, rate: ₹${next.rate})`);
+        }
+      }
+
+      const stockDelta: { material_id: string; delta: number; name: string }[] = [];
+      const allMatIds = new Set([...prevMap.keys(), ...nextMap.keys()]);
+      allMatIds.forEach(matId => {
+        const prev = prevMap.get(matId);
+        const next = nextMap.get(matId);
+        const pQty = prev ? prev.qty : 0;
+        const nQty = next ? next.qty : 0;
+        const diff = pQty - nQty; // positive is inventory returned to stock, negative is extra inventory consumed
+        if (diff !== 0) {
+          const matObj = materialsList.find(m => m.id === matId);
+          stockDelta.push({
+            material_id: matId,
+            delta: parseFloat(diff.toFixed(2)),
+            name: matObj ? matObj.name : 'Unknown Material'
+          });
+        }
+      });
+
+      const editVersion = {
+        id: generateUUID(),
+        timestamp: new Date().toISOString(),
+        user: currentUser.email,
+        reason: reason,
+        originalItems: originalItems,
+        previousItems: previousItemsMapped,
+        latestItems: latestItemsMapped,
+        changedFields: changedFields.length > 0 ? changedFields : ["No material field changes"],
+        stockDelta: stockDelta
+      };
+
+      if (!challan.editHistory) {
+        challan.editHistory = [];
+      }
+      challan.editHistory.push(editVersion);
+
       // Update remaining fields on Challan
       if (notes !== undefined) {
         challan.notes = notes;
@@ -1429,6 +1516,10 @@ class DatabaseService {
       if (reason) {
         challan.notes = (challan.notes ? challan.notes + '\n' : '') + `EDIT REASON: ${reason}`;
       }
+
+      challan.lastEditedAt = new Date().toISOString();
+      challan.lastEditedBy = currentUser.email;
+      challan.editReason = reason;
 
       this.save('challans', challanList);
       this.save('challan_items', newItemsList);
@@ -1441,7 +1532,11 @@ class DatabaseService {
           const batch = writeBatch(firestore);
           // Update Challan fields
           batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
-            notes: challan.notes
+            notes: challan.notes,
+            lastEditedAt: challan.lastEditedAt,
+            lastEditedBy: challan.lastEditedBy,
+            editReason: challan.editReason,
+            editHistory: challan.editHistory
           }));
           
           // Delete old items on cloud
@@ -1475,6 +1570,74 @@ class DatabaseService {
         } catch (err) {
           console.warn(err);
         }
+      }
+    }
+  }
+
+  adjustBilledChallan(
+    challanId: string,
+    amount: number,
+    refNo: string,
+    reason: string
+  ): void {
+    const challanList = this.getChallans();
+    const challan = challanList.find(c => c.id === challanId);
+    if (!challan) {
+      throw new Error(`Challan ID ${challanId} not found.`);
+    }
+
+    if (challan.status !== 'billed') {
+      throw new Error(`Adjustment can only be performed on BILLED challans.`);
+    }
+
+    const currentUser = this.getCurrentUser();
+
+    // 1. Save adjustment manual ledger transaction
+    this.saveManualTransaction({
+      type: 'ADJUSTMENT',
+      master_id: challan.master_id,
+      amount: -amount, // credit is a deduction (negative) from master balance
+      ref_no: refNo.trim(),
+      notes: `POST-BILL ADJ: "${reason.trim()}" for locked Challan ${challan.challan_no}`,
+      date: new Date().toISOString().split('T')[0],
+    });
+
+    // 2. Add to edit history
+    const allItemsList = this.getChallanItems();
+    const currentItemsMapped = allItemsList.filter(item => item.challan_id === challanId);
+
+    const editVersion = {
+      id: generateUUID(),
+      timestamp: new Date().toISOString(),
+      user: currentUser.email,
+      reason: `POST-BILL AUDIT CORRECTION: ${reason} (Credit Note ${refNo} of ₹${amount})`,
+      originalItems: currentItemsMapped,
+      previousItems: currentItemsMapped,
+      latestItems: currentItemsMapped,
+      changedFields: ['POST_BILLING_CREDIT_NOTE', 'LEDGER_ADJUSTMENT'],
+      stockDelta: []
+    };
+
+    if (!challan.editHistory) {
+      challan.editHistory = [];
+    }
+    challan.editHistory.push(editVersion);
+
+    challan.lastEditedAt = new Date().toISOString();
+    challan.lastEditedBy = currentUser.email;
+    challan.editReason = `Billed credit note issued: ₹${amount} (Ref: ${refNo}). Reason: ${reason}`;
+
+    this.save('challans', challanList);
+
+    this.addAuditLog(currentUser.email, 'BILLED_ADJUSTED', `Registered Credit Note ${refNo} for Challan ${challan.challan_no}. Reason: ${reason}`);
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const docRef = doc(firestore, 'challans', challan.id);
+        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(challan)))
+          .catch(err => console.warn('Firestore err writing adjusted challan:', err));
+      } catch (err) {
+        console.warn('Firestore write failed:', err);
       }
     }
   }

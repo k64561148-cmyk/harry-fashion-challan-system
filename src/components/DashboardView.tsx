@@ -29,7 +29,9 @@ import {
   Check,
   AlertCircle,
   Lock,
-  ShieldCheck
+  ShieldCheck,
+  ChevronDown,
+  History
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -64,9 +66,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [editNotes, setEditNotes] = useState('');
   const [editReason, setEditReason] = useState('');
   const [editItems, setEditItems] = useState<{ material_id: string; qty: number; rate: number }[]>([]);
+  const [expandedChallans, setExpandedChallans] = useState<Record<string, boolean>>({});
 
   const [voidingChallan, setVoidingChallan] = useState<Challan | null>(null);
   const [voidReason, setVoidReason] = useState('');
+
+  // Post-billing adjustment states (Requirement 8)
+  const [adjustingChallan, setAdjustingChallan] = useState<Challan | null>(null);
+  const [adjustAmount, setAdjustAmount] = useState('');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjustRefNo, setAdjustRefNo] = useState('');
+  const [adjustError, setAdjustError] = useState('');
+  const [adjustSuccess, setAdjustSuccess] = useState('');
 
   const loadDashboardData = () => {
     // 1. Fetch Today's Challans
@@ -332,6 +343,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       loadDashboardData();
     } catch (err: any) {
       alert(err.message || 'Edit operation failed.');
+    }
+  };
+
+  const triggerBilledAdjustment = (ch: Challan) => {
+    setAdjustingChallan(ch);
+    setAdjustAmount('');
+    setAdjustReason('');
+    setAdjustRefNo(`CN-${ch.challan_no}-${Math.floor(1000 + Math.random() * 9000)}`);
+    setAdjustError('');
+    setAdjustSuccess('');
+  };
+
+  const handleConfirmAdjustment = () => {
+    setAdjustError('');
+    setAdjustSuccess('');
+
+    if (!adjustingChallan) return;
+    const amt = parseFloat(adjustAmount);
+    if (isNaN(amt) || amt <= 0) {
+      setAdjustError('Please specify a valid credit / adjustment amount greater than ₹0.');
+      return;
+    }
+    if (!adjustReason.trim()) {
+      setAdjustError('Please specify a clear justification for this adjustment / credit note.');
+      return;
+    }
+    if (!adjustRefNo.trim()) {
+      setAdjustError('Reference voucher or Credit Note number is mandatory.');
+      return;
+    }
+
+    try {
+      db.adjustBilledChallan(adjustingChallan.id, amt, adjustRefNo.trim(), adjustReason.trim());
+
+      setAdjustSuccess(`Credit Note & Adjustment of ₹${amt} successfully registered with full security logs!`);
+      setTimeout(() => {
+        setAdjustingChallan(null);
+        loadDashboardData();
+        // Emit trigger sync event
+        window.dispatchEvent(new Event('db_sync'));
+      }, 2000);
+    } catch (err: any) {
+      setAdjustError(err?.message || 'Error occurred while saving ledger adjustment.');
     }
   };
 
@@ -649,87 +703,302 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                   ) : (
                     displayedChallans.map((c) => {
                       const isVoided = c.status === 'voided';
+                      const isExpanded = !!expandedChallans[c.id];
                       return (
-                        <tr key={c.id} className={`hover:bg-slate-50 text-slate-700 transition ${isVoided ? 'bg-red-50/15 line-through decoration-red-500/80 decoration-1 text-slate-400' : ''}`}>
-                          <td className="py-3 px-3 font-semibold text-slate-900">{c.challan_no}</td>
-                          <td className="py-3 px-3 font-medium">{getMasterName(c.master_id)}</td>
-                          <td className="py-3 px-3 font-mono text-[10.5px] text-slate-500">{c.issued_date.split('-').reverse().join('/')}</td>
-                          <td className="py-3 px-3 text-slate-500">{c.issued_by}</td>
-                          <td className="py-3 px-3 text-right">
-                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold ${
-                              c.status === 'issued' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
-                              c.status === 'voided' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 
-                              'bg-green-50 text-green-700 border border-green-100'
-                            }`}>
-                              {c.status.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-3 px-3 text-right">
-                            <div className="flex items-center justify-end gap-1 flex-wrap">
-                              {/* View / Download Actions */}
-                              <button
-                                onClick={() => handlePrintChallan(c)}
-                                title="Direct Print"
-                                className="p-1 hover:bg-[#1A2E4A]/10 text-[#1A2E4A] rounded transition cursor-pointer flex items-center justify-center"
-                              >
-                                <Printer className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => handleDownloadChallan(c)}
-                                title="Download PDF"
-                                className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer flex items-center justify-center"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </button>
-
-                              {/* Admin Exclusive Controls */}
-                              {currentUser.role === 'admin' && (
-                                <>
-                                  {c.status === 'billed' ? (
-                                    <div 
-                                      className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-50 border border-slate-150 rounded px-1.5 py-0.5 select-none"
-                                      title={c.billedInvoiceId ? `Billed under Invoice ID ${c.billedInvoiceId} on ${c.billedAt ? new Date(c.billedAt).toLocaleDateString() : 'unknown'} by ${c.billedBy || 'unknown'}` : 'Locked: Billed'}
-                                    >
-                                      <Lock className="w-2.5 h-2.5 text-slate-400" />
-                                      <span>BILLED LINK</span>
-                                    </div>
-                                  ) : (
-                                    <>
-                                      {c.status === 'issued' && (
-                                        <>
-                                          <button
-                                            onClick={() => triggerEdit(c)}
-                                            title="Edit items in Challan"
-                                            className="p-1 hover:bg-blue-50 text-blue-600 border border-transparent hover:border-blue-200 rounded transition cursor-pointer flex items-center justify-center"
-                                          >
-                                            <Edit className="w-3.5 h-3.5" />
-                                          </button>
-                                          <button
-                                            onClick={() => triggerVoid(c)}
-                                            title="Void & Reverse Challan stocks"
-                                            className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
-                                          >
-                                            <Ban className="w-3.5 h-3.5" />
-                                          </button>
-                                        </>
-                                      )}
-                                      {c.status === 'voided' && (
-                                        <button
-                                          onClick={() => triggerDelete(c)}
-                                          title="[Owner Only] Permanently Purge Voided Challan Record"
-                                          className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                          <span className="text-[10px] font-bold ml-1 hidden lg:inline">PURGE RECORD</span>
-                                        </button>
-                                      )}
-                                    </>
-                                  )}
-                                </>
+                        <React.Fragment key={c.id}>
+                          <tr className={`hover:bg-slate-50 text-slate-700 transition ${isVoided ? 'bg-red-50/15 line-through decoration-red-500/80 decoration-1 text-slate-400' : ''}`}>
+                            <td className="py-3 px-3">
+                              <div className="font-semibold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                                <span>{c.challan_no}</span>
+                                {c.lastEditedAt && (
+                                  <span className="bg-amber-100 text-amber-800 text-[9px] font-extrabold px-1.5 py-0.5 rounded border border-amber-200">
+                                    EDITED
+                                  </span>
+                                )}
+                              </div>
+                              {c.lastEditedAt && (
+                                <div className="text-[10px] text-slate-550 mt-1 font-medium leading-tight">
+                                  <div>Edited by: <span className="font-bold">{c.lastEditedBy}</span></div>
+                                  <div className="text-slate-400">At: {new Date(c.lastEditedAt).toLocaleString('en-IN')}</div>
+                                </div>
                               )}
-                            </div>
-                          </td>
-                        </tr>
+                              {c.lastEditedAt && c.editReason && (
+                                <div className="mt-1.5 text-[10.5px] bg-amber-50/80 border border-amber-100 text-amber-900 p-1.5 px-2 rounded font-medium max-w-[220px] break-words">
+                                  <span className="font-bold text-amber-950">Reason:</span> "{c.editReason}"
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 font-medium">{getMasterName(c.master_id)}</td>
+                            <td className="py-3 px-3 font-mono text-[10.5px] text-slate-500">{c.issued_date.split('-').reverse().join('/')}</td>
+                            <td className="py-3 px-3 text-slate-500">{c.issued_by}</td>
+                            <td className="py-3 px-3 text-right">
+                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold ${
+                                c.status === 'issued' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
+                                c.status === 'voided' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 
+                                'bg-green-50 text-green-700 border border-green-100'
+                              }`}>
+                                {c.status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <div className="flex items-center justify-end gap-1 flex-wrap">
+                                {/* Expand / Collapse Toggle */}
+                                <button
+                                  onClick={() => {
+                                    setExpandedChallans(prev => ({
+                                      ...prev,
+                                      [c.id]: !prev[c.id]
+                                    }));
+                                  }}
+                                  title={isExpanded ? "Collapse Details" : "View Latest Items & Version History"}
+                                  className={`p-1 rounded transition cursor-pointer flex items-center justify-center ${
+                                    isExpanded ? 'bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white border border-[#1A2E4A]' : 'hover:bg-slate-200 text-slate-600 border border-slate-200'
+                                  }`}
+                                >
+                                  <ChevronDown className={`w-3.5 h-3.5 transform transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
+                                </button>
+
+                                {/* View / Download Actions */}
+                                <button
+                                  onClick={() => handlePrintChallan(c)}
+                                  title="Direct Print"
+                                  className="p-1 hover:bg-[#1A2E4A]/10 text-[#1A2E4A] rounded transition cursor-pointer flex items-center justify-center"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => handleDownloadChallan(c)}
+                                  title="Download PDF"
+                                  className="p-1 hover:bg-slate-200 text-slate-600 rounded transition cursor-pointer flex items-center justify-center"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </button>
+ 
+                                {/* Admin Exclusive Controls */}
+                                {currentUser.role === 'admin' && (
+                                  <>
+                                    {c.status === 'billed' ? (
+                                      <div 
+                                        className="flex items-center gap-1 text-[10px] text-slate-450 bg-slate-50 border border-slate-150 rounded px-1.5 py-0.5 select-none"
+                                        title={c.billedInvoiceId ? `Billed under Invoice ID ${c.billedInvoiceId} on ${c.billedAt ? new Date(c.billedAt).toLocaleDateString() : 'unknown'} by ${c.billedBy || 'unknown'}` : 'Locked: Billed'}
+                                      >
+                                        <Lock className="w-2.5 h-2.5 text-slate-400" />
+                                        <span>BILLED LINK</span>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        {c.status === 'issued' && (
+                                          <>
+                                            <button
+                                              onClick={() => triggerEdit(c)}
+                                              title="Edit items in Challan"
+                                              className="p-1 hover:bg-blue-50 text-blue-600 border border-transparent hover:border-blue-200 rounded transition cursor-pointer flex items-center justify-center"
+                                            >
+                                              <Edit className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                              onClick={() => triggerVoid(c)}
+                                              title="Void & Reverse Challan stocks"
+                                              className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
+                                            >
+                                              <Ban className="w-3.5 h-3.5" />
+                                            </button>
+                                          </>
+                                        )}
+                                        {c.status === 'voided' && (
+                                          <button
+                                            onClick={() => triggerDelete(c)}
+                                            title="[Owner Only] Permanently Purge Voided Challan Record"
+                                            className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <span className="text-[10px] font-bold ml-1 hidden lg:inline">PURGE RECORD</span>
+                                          </button>
+                                        )}
+                                      </>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+
+                          {isExpanded && (
+                            <tr className="bg-slate-50/40">
+                              <td colSpan={6} className="p-4">
+                                <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm space-y-4 text-xs">
+                                  {/* Section 1: Latest Items Panel */}
+                                  <div>
+                                    <div className="flex items-center gap-1.5 border-b pb-2 mb-2 text-[#1A2E4A] font-bold text-xs">
+                                      <span className="uppercase tracking-wider">Current / Latest Material Items</span>
+                                      <span className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.2 rounded-full font-bold">Active Value</span>
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                      <table className="w-full text-left text-[11px] border-collapse bg-slate-50/30 rounded-lg">
+                                        <thead>
+                                          <tr className="border-b border-slate-200/60 text-slate-450 font-bold">
+                                            <th className="py-2 px-3">Material Name</th>
+                                            <th className="py-2 px-3 text-right">Quantity</th>
+                                            <th className="py-2 px-3 text-right">Rate</th>
+                                            <th className="py-2 px-3 text-right">Total Amount</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100">
+                                          {(() => {
+                                            const items = db.getChallanItems(c.id);
+                                            const materials = db.getMaterials();
+                                            if (items.length === 0) {
+                                              return (
+                                                <tr>
+                                                  <td colSpan={4} className="py-3 px-3 text-center text-slate-400">No items in this challan</td>
+                                                </tr>
+                                              );
+                                            }
+                                            const totalAmt = items.reduce((sum, item) => sum + item.amount, 0);
+                                            return (
+                                              <>
+                                                {items.map(item => {
+                                                  const mat = materials.find(m => m.id === item.material_id);
+                                                  return (
+                                                    <tr key={item.id} className="text-slate-705 font-medium hover:bg-slate-50/20">
+                                                      <td className="py-2 px-3 font-semibold text-slate-800">
+                                                        {mat ? mat.name : 'Unknown Material'} {mat?.unit ? `(${mat.unit})` : ''}
+                                                      </td>
+                                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">{item.qty}</td>
+                                                      <td className="py-2 px-3 text-right font-mono text-slate-505">₹{item.rate.toFixed(2)}</td>
+                                                      <td className="py-2 px-3 text-right font-mono font-extrabold text-[#1A2E4A]">₹{item.amount.toFixed(2)}</td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                                <tr className="bg-slate-50 font-bold border-t border-slate-200">
+                                                  <td className="py-2 px-3 uppercase text-[#1A2E4A] font-bold" colSpan={3}>Grand Total Amount</td>
+                                                  <td className="py-2 px-3 text-right font-mono text-[#1A2E4A] font-extrabold text-xs">₹{totalAmt.toFixed(2)}</td>
+                                                </tr>
+                                              </>
+                                            );
+                                          })()}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+
+                                  {/* Section 2: Edit Version History */}
+                                  {c.editHistory && c.editHistory.length > 0 ? (
+                                    <div className="space-y-3 pt-2">
+                                      <div className="flex items-center gap-1.5 border-b pb-2 mb-1.5 text-indigo-900 font-bold text-xs">
+                                        <History className="w-3.5 h-3.5 text-indigo-600" />
+                                        <span className="uppercase tracking-wider">Audit Edit Version History ({c.editHistory.length})</span>
+                                      </div>
+                                      <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                                        {c.editHistory.slice().reverse().map((ver, idx) => {
+                                          const materials = db.getMaterials();
+                                          return (
+                                            <div key={ver.id || idx} className="p-3 bg-indigo-50/25 hover:bg-indigo-50/40 rounded-lg border border-indigo-100/50 space-y-2">
+                                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-indigo-100/40 pb-1.5 text-[10.5px]">
+                                                <span className="font-bold text-indigo-900 uppercase">Version {c.editHistory!.length - idx}: Correction Update</span>
+                                                <div className="flex items-center gap-2 text-slate-405 font-mono text-[10px]">
+                                                  <span>User: <strong className="text-slate-700 font-bold">{ver.user}</strong></span>
+                                                  <span>•</span>
+                                                  <span>{new Date(ver.timestamp).toLocaleString('en-IN')}</span>
+                                                </div>
+                                              </div>
+                                              
+                                              <div className="text-[11px] text-slate-70 bg-white p-2 border border-slate-200/50 rounded-lg shadow-sm">
+                                                <p className="font-semibold text-slate-800 leading-tight">Reason for edit: <strong className="font-bold text-rose-700">"{ver.reason}"</strong></p>
+                                                {ver.changedFields && ver.changedFields.length > 0 && (
+                                                  <div className="mt-1.5 flex items-start gap-1.5 flex-col">
+                                                    <span className="font-bold text-slate-450 text-[9px] uppercase tracking-wider">Changed Fields &amp; Actions:</span>
+                                                    <div className="flex flex-wrap gap-1">
+                                                      {ver.changedFields.map((field, fIdx) => (
+                                                        <span key={fIdx} className="bg-indigo-50/50 border border-indigo-100/50 text-[10px] px-1.5 py-0.2 rounded font-mono text-indigo-850 font-semibold">
+                                                          {field}
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                )}
+                                              </div>
+
+                                              {/* Stock Delta Details */}
+                                              {ver.stockDelta && ver.stockDelta.length > 0 && (
+                                                <div className="bg-slate-100/60 p-2 rounded-lg border border-slate-200/60">
+                                                  <span className="block text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1">Stock Compensation Deltas:</span>
+                                                  <div className="space-y-1">
+                                                    {ver.stockDelta.map((delta, dIdx) => (
+                                                      <div key={dIdx} className="flex justify-between font-mono text-[10.5px] leading-tight">
+                                                        <span>{delta.name}:</span>
+                                                        <span className={delta.delta > 0 ? "text-green-700 font-bold" : "text-rose-600 font-bold"}>
+                                                          {delta.delta > 0 ? `+${delta.delta}` : delta.delta} (Inv Adjusted)
+                                                        </span>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                </div>
+                                              )}
+
+                                              {/* Compare Item Lists */}
+                                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                                                <div>
+                                                  <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block mb-1">Previous items on this version:</span>
+                                                  <div className="bg-white p-2 rounded border border-slate-150 space-y-1 leading-tight text-[10.5px] font-mono">
+                                                    {ver.previousItems.map((pi, pIdx) => {
+                                                      const mat = materials.find(m => m.id === pi.material_id);
+                                                      return (
+                                                        <div key={pIdx} className="flex justify-between text-slate-500">
+                                                          <span className="truncate">{mat ? mat.name : pi.material_id}:</span>
+                                                          <span className="font-bold">{pi.qty} × ₹{pi.rate}</span>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                </div>
+                                                <div>
+                                                  <span className="text-[9px] uppercase tracking-wider font-extrabold text-slate-400 block mb-1">Newly saved items:</span>
+                                                  <div className="bg-white p-2 rounded border border-indigo-150 space-y-1 leading-tight text-[10.5px] font-mono">
+                                                    {ver.latestItems.map((li, lIdx) => {
+                                                      const mat = materials.find(m => m.id === li.material_id);
+                                                      return (
+                                                        <div key={lIdx} className="flex justify-between text-[#1A2E4A]">
+                                                          <span className="truncate font-semibold">{mat ? mat.name : li.material_id}:</span>
+                                                          <span className="font-bold">{li.qty} × ₹{li.rate}</span>
+                                                        </div>
+                                                      );
+                                                    })}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  ) : null}
+
+                                  {/* Section 3: Owner Post-Billing Adjustment (Requirement 8) */}
+                                  {c.status === 'billed' && currentUser.role === 'admin' && (
+                                    <div className="bg-rose-50/50 border border-rose-100 rounded-xl p-3.5 space-y-2 mt-4 text-left">
+                                      <div className="flex items-center gap-1.5 text-rose-800 font-extrabold text-[#1A2E4A] text-xs">
+                                        <AlertTriangle className="w-4 h-4 text-rose-600" />
+                                        <span className="uppercase tracking-wider">Owner Post-Billing Adjustment Control</span>
+                                      </div>
+                                      <p className="text-slate-650 leading-relaxed text-[11px]">
+                                        This material challan has been finalized in the billing settlement ledger and is locked from standard correction or voiding. Click below to issue an authorized post-billing credit adjustment/credit note.
+                                      </p>
+                                      <div>
+                                        <button
+                                          onClick={() => triggerBilledAdjustment(c)}
+                                          className="bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-[10px] px-3 py-1.5 rounded-lg flex items-center gap-1 cursor-pointer shadow-sm transition uppercase"
+                                        >
+                                          <Receipt className="w-3.5 h-3.5" /> Issue post-billing adjustment / credit note
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })
                   )}
@@ -845,6 +1114,99 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 className="text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white transition py-2 px-4.5 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 <Check className="w-4 h-4" /> Void Challan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- POST-BILLING SECURITY ADJUSTMENT DIALOG MODAL (Requirement 8) --- */}
+      {adjustingChallan && (
+        <div className="fixed inset-0 bg-slate-900/65 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-xl shadow-xl border border-slate-100 max-w-md w-full overflow-hidden">
+            <div className="bg-rose-50 border-b border-rose-100 px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-rose-650" />
+                <h3 className="text-xs font-bold text-rose-900 tracking-wider uppercase">POST-BILLING LEDGER ADJUSTMENT</h3>
+              </div>
+              <button 
+                onClick={() => setAdjustingChallan(null)} 
+                className="text-slate-400 hover:text-slate-700 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div className="text-xs font-semibold text-slate-600 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-105 font-mono">
+                <p>Locked Challan: <span className="font-extrabold text-slate-900">{adjustingChallan.challan_no}</span></p>
+                <p>Master Account: <span className="font-extrabold text-[#1A2E4A]">{getMasterName(adjustingChallan.master_id)}</span></p>
+                <p>Linked Invoice Code: <span className="font-bold text-slate-800">{adjustingChallan.billedInvoiceId || 'PRE-ESTABLISHED'}</span></p>
+              </div>
+
+              {adjustError && (
+                <div className="p-3 bg-rose-50 border border-rose-100 rounded-lg text-[10.5px] font-bold text-rose-600">{adjustError}</div>
+              )}
+              {adjustSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-lg text-[10.5px] font-bold text-emerald-600">{adjustSuccess}</div>
+              )}
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    Receipt credit / adjustment amount (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    value={adjustAmount}
+                    onChange={(e) => setAdjustAmount(e.target.value)}
+                    placeholder="Enter absolute correction/credit value in Rupees"
+                    className="w-full text-xs bg-white border border-slate-200 p-2.5 rounded-lg font-bold text-slate-800 outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400 font-mono"
+                  />
+                  <p className="text-[9px] text-slate-400 mt-1">This will deduct from the Tailoring Master's outstanding billing ledger balance.</p>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    Credit Note Reference Number / Voucher ID *
+                  </label>
+                  <input
+                    type="text"
+                    value={adjustRefNo}
+                    onChange={(e) => setAdjustRefNo(e.target.value)}
+                    placeholder="e.g. CN-102938"
+                    className="w-full text-xs bg-white border border-slate-200 p-2.5 rounded-lg font-semibold text-slate-800 outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400 font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                    Formal audit correction reason *
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={adjustReason}
+                    onChange={(e) => setAdjustReason(e.target.value)}
+                    placeholder="Explain billing correction discrepancy or discount rationale..."
+                    className="w-full text-xs bg-white border border-slate-200 p-2.5 rounded-lg font-medium text-slate-800 outline-none focus:border-rose-400 focus:ring-1 focus:ring-rose-400"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 px-5 py-3.5 flex gap-2 justify-end border-t border-slate-200/50">
+              <button
+                onClick={() => setAdjustingChallan(null)}
+                className="text-[11px] font-bold text-slate-600 hover:text-slate-900 transition py-2 px-3.5 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAdjustment}
+                disabled={!adjustAmount || !adjustReason.trim() || !adjustRefNo.trim()}
+                className="text-[11px] font-bold bg-rose-600 hover:bg-rose-700 text-white transition py-2 px-4.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+              >
+                <Check className="w-4 h-4" /> Save Credit Ledger Adjustment
               </button>
             </div>
           </div>
@@ -992,7 +1354,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               </button>
               <button
                 onClick={handleConfirmEdit}
-                className="text-xs font-bold bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white transition py-2 px-4.5 rounded-lg flex items-center gap-1 cursor-pointer"
+                disabled={!editReason.trim()}
+                className="text-xs font-bold bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white disabled:opacity-50 disabled:cursor-not-allowed transition py-2 px-4.5 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 <Check className="w-4 h-4" /> Save Corrections
               </button>

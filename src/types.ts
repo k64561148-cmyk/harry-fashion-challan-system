@@ -51,6 +51,25 @@ export interface Material {
   created_at: string;
 }
 
+export interface ChallanEditVersionItem {
+  material_id: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+export interface ChallanEditVersion {
+  id: string;
+  timestamp: string;
+  user: string;
+  reason: string;
+  originalItems?: ChallanEditVersionItem[];
+  previousItems: ChallanEditVersionItem[];
+  latestItems: ChallanEditVersionItem[];
+  changedFields: string[];
+  stockDelta: { material_id: string; delta: number; name: string }[];
+}
+
 export interface Challan {
   id: string;
   challan_no: string;
@@ -63,6 +82,10 @@ export interface Challan {
   billedInvoiceId?: string;
   billedAt?: string;
   billedBy?: string;
+  lastEditedAt?: string;
+  lastEditedBy?: string;
+  editReason?: string;
+  editHistory?: ChallanEditVersion[];
 }
 
 export interface ChallanItem {

@@ -71,6 +71,7 @@ export const BillingView: React.FC = () => {
 
   // Pending challans of selected master
   const [pendingChallans, setPendingChallans] = useState<Challan[]>([]);
+  const [settledChallans, setSettledChallans] = useState<Challan[]>([]);
   const [selectedChallanIds, setSelectedChallanIds] = useState<{ [id: string]: boolean }>({});
   const [challansVersion, setChallansVersion] = useState<number>(0);
 
@@ -181,6 +182,19 @@ export const BillingView: React.FC = () => {
       });
       setPendingChallans(masterPending);
 
+      // Fetch all billed challans for this master and period
+      const masterSettled = allChallans.filter(c => {
+        if (c.master_id !== selectedMasterId || c.status !== 'billed') {
+          return false;
+        }
+        const parts = (c.issued_date || '').split('-');
+        if (parts.length < 3) return false;
+        const cYear = parseInt(parts[0], 10);
+        const cMonth = parseInt(parts[1], 10);
+        return cYear === periodYear && cMonth === periodMonth;
+      });
+      setSettledChallans(masterSettled);
+
       // Auto check all by default
       const initialChecks: { [id: string]: boolean } = {};
       masterPending.forEach(c => {
@@ -189,6 +203,7 @@ export const BillingView: React.FC = () => {
       setSelectedChallanIds(initialChecks);
     } else {
       setPendingChallans([]);
+      setSettledChallans([]);
       setSelectedChallanIds({});
       setBillingItems([]);
     }
@@ -754,54 +769,147 @@ export const BillingView: React.FC = () => {
           ) : (
             /* Main Form UI */
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              
-              {/* Left Column: List of pending challans selection */}
+              {/* Left Column: Two separate lists — Pending (to bill) and Settled (billed) */}
               <div className="lg:col-span-5 space-y-4">
-                <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-                  <div className="flex items-center gap-1 text-xs font-bold text-[#1A2E4A] mb-3 border-b border-slate-100 pb-2">
-                    <Clock className="w-4 h-4 text-amber-500" />
-                    <span className="uppercase tracking-wider">SELECT PENDING CHALLANS TO ADD</span>
+                <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-4">
+                  
+                  {/* List 1: Pending Challans To Bill */}
+                  <div>
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#1A2E4A] mb-3 border-b border-slate-100 pb-2">
+                      <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
+                      <span className="uppercase tracking-wider">Pending Challans To Bill ({pendingChallans.length})</span>
+                    </div>
+
+                    {pendingChallans.length === 0 ? (
+                      <div className="text-center py-6 text-slate-400 text-[11px] leading-relaxed bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+                        No active 'issued' material challans found.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                        {pendingChallans.map(ch => {
+                          const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
+                          return (
+                            <label 
+                              key={ch.id}
+                              className={`flex items-start gap-2.5 p-3 rounded-xl border transition cursor-pointer text-left block ${
+                                selectedChallanIds[ch.id] 
+                                  ? 'bg-slate-50 border-[#1A2E4A]/30 shadow-xs' 
+                                  : 'bg-white border-slate-150 hover:bg-slate-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer"
+                                checked={!!selectedChallanIds[ch.id]}
+                                onChange={() => handleChallanToggle(ch.id)}
+                              />
+                              <div className="flex-1 text-xs">
+                                <div className="flex justify-between items-center font-bold text-slate-900">
+                                  <span>{ch.challan_no}</span>
+                                  <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
+                                </div>
+                                <p className="text-[10px] text-slate-550 mt-1">
+                                  Issued By: <span className="font-semibold">{ch.issued_by}</span>
+                                </p>
+                                {cleanNotes && (
+                                  <p className="text-[9.5px] text-slate-400 italic mt-1 max-w-[200px] truncate">
+                                    "{cleanNotes}"
+                                  </p>
+                                )}
+                                {ch.editReason && (
+                                  <div className="mt-1.5 text-[9.5px] bg-amber-50/70 text-amber-900 border border-amber-100 p-1 rounded font-medium max-w-[210px] leading-relaxed">
+                                    <span className="font-bold text-amber-950">Edit Reason:</span> "{ch.editReason}"
+                                  </div>
+                                )}
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
-                  {pendingChallans.length === 0 ? (
-                    <div className="text-center py-10 text-slate-400 text-xs">
-                      No active 'issued' material challans found for this Master.
+                  {/* List 2: Settled Challans / Invoice History */}
+                  <div className="border-t border-slate-100 pt-4">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-800 mb-3 border-b border-emerald-100 pb-2">
+                      <FileCheck className="w-4 h-4 text-emerald-600" />
+                      <span className="uppercase tracking-wider">Settled Challans / Invoice History ({settledChallans.length})</span>
                     </div>
-                  ) : (
-                    <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
-                      {pendingChallans.map(ch => (
-                        <label 
-                          key={ch.id}
-                          className={`flex items-start gap-3 p-3 rounded-xl border transition cursor-pointer ${
-                            selectedChallanIds[ch.id] 
-                              ? 'bg-slate-50 border-[#1A2E4A]/30 shadow-xs' 
-                              : 'bg-white border-slate-150 hover:bg-slate-50'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer"
-                            checked={!!selectedChallanIds[ch.id]}
-                            onChange={() => handleChallanToggle(ch.id)}
-                          />
-                          <div className="flex-1 text-xs">
-                            <div className="flex justify-between items-center font-bold text-slate-900">
-                              <span>{ch.challan_no}</span>
-                              <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
-                            </div>
-                            <p className="text-[10px] text-slate-500 mt-1 truncate">
-                              Issued By: {ch.issued_by}
-                            </p>
-                            {ch.notes && (
-                              <p className="text-[9px] text-slate-400 italic mt-0.5 max-w-[190px] truncate">
-                                "{ch.notes}"
+
+                    {settledChallans.length === 0 ? (
+                      <div className="text-center py-6 text-slate-400 text-[11px] leading-relaxed bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+                        No settled or billed challans found for this period.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                        {settledChallans.map(ch => {
+                          const linkedInvoice = allInvoices.find(inv => inv.id === ch.billedInvoiceId);
+                          const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
+                          return (
+                            <div 
+                              key={ch.id}
+                              className="bg-emerald-50/20 hover:bg-emerald-50/45 p-3 rounded-xl border border-emerald-100/50 text-left transition text-xs"
+                            >
+                              <div className="flex justify-between items-center font-bold text-slate-900">
+                                <span className="text-emerald-950 flex items-center gap-1">
+                                  <span>{ch.challan_no}</span>
+                                  <span className="text-[8px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.2 rounded uppercase">Settled</span>
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 mt-0.5">
+                                Issued By: {ch.issued_by}
                               </p>
-                            )}
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  )}
+                              {cleanNotes && (
+                                <p className="text-[9.5px] text-slate-400 italic mt-0.5 max-w-[200px] truncate">
+                                  "{cleanNotes}"
+                                </p>
+                              )}
+                              {ch.editReason && (
+                                <div className="mt-1 text-[9px] text-amber-800 font-medium leading-relaxed max-w-[210px] truncate">
+                                  <span className="font-bold">Edit Reason:</span> "{ch.editReason}"
+                                </div>
+                              )}
+
+                              {linkedInvoice ? (
+                                <div className="mt-2.5 p-2 bg-white rounded-lg border border-emerald-100/60 shadow-xs flex flex-col gap-1 text-[11.5px]">
+                                  <div className="flex justify-between font-bold text-slate-800">
+                                    <span>Invoice No:</span>
+                                    <span className="font-mono text-emerald-900">{linkedInvoice.invoice_no}</span>
+                                  </div>
+                                  <div className="flex justify-between font-medium text-slate-500 text-[10.5px]">
+                                    <span>Date: {formatDate(linkedInvoice.invoice_date)}</span>
+                                    <span className="font-bold font-mono text-emerald-750">₹{linkedInvoice.net_payable.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                  </div>
+
+                                  <div className="flex items-center justify-end gap-2.5 mt-1.5 pt-1.5 border-t border-slate-100 font-bold text-[10px]">
+                                    <button 
+                                      onClick={() => triggerListPDFPrint(linkedInvoice)}
+                                      className="text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-indigo-50/40 cursor-pointer"
+                                      title="Print/View PDF"
+                                    >
+                                      <Printer className="w-2.8 h-2.8" /> Direct Print
+                                    </button>
+                                    <span className="text-slate-200">|</span>
+                                    <button 
+                                      onClick={() => triggerListPDFDownload(linkedInvoice)}
+                                      className="text-amber-700 hover:text-amber-900 flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-amber-50/40 cursor-pointer"
+                                      title="Download Ledger PDF"
+                                    >
+                                      <Download className="w-2.8 h-2.8" /> Download PDF
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-[9px] text-amber-600 italic font-semibold mt-1">Invoice linked ID: {ch.billedInvoiceId || 'None found'}</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
                 </div>
               </div>
 
