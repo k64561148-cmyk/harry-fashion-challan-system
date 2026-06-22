@@ -25,30 +25,46 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role;
     }
 
+    function isEmailAdmin() {
+      return request.auth.token.email != null && (
+        request.auth.token.email == 'k64561148@gmail.com' ||
+        request.auth.token.email.matches('(?i).*admin.*') ||
+        request.auth.token.email.matches('(?i).*owner.*')
+      );
+    }
+
+    function isEmailBilling() {
+      return request.auth.token.email != null && request.auth.token.email.matches('(?i).*billing.*');
+    }
+
+    function isEmailIssueDept() {
+      return request.auth.token.email != null && (
+        request.auth.token.email.matches('(?i).*issue.*') ||
+        request.auth.token.email.matches('(?i).*dept.*')
+      );
+    }
+
     function isAdmin() {
       return isSignedIn() && (
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'admin') ||
-        (request.auth.token.email != null && (
-          request.auth.token.email == 'k64561148@gmail.com' ||
-          request.auth.token.email.matches('(?i).*admin.*') ||
-          request.auth.token.email.matches('(?i).*owner.*')
-        ))
+        isEmailAdmin() ||
+        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'admin')
       );
     }
 
     function isBilling() {
       return isSignedIn() && (
-        isAdmin() ||
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'billing') ||
-        (request.auth.token.email != null && request.auth.token.email.matches('(?i).*billing.*'))
+        isEmailBilling() ||
+        isEmailAdmin() ||
+        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'billing' || getUserRole() == 'admin'))
       );
     }
 
     function isIssueDept() {
       return isSignedIn() && (
-        isAdmin() ||
-        isBilling() ||
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'issue_dept')
+        isEmailIssueDept() ||
+        isEmailBilling() ||
+        isEmailAdmin() ||
+        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'issue_dept' || getUserRole() == 'billing' || getUserRole() == 'admin'))
       );
     }
 
