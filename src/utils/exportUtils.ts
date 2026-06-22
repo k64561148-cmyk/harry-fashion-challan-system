@@ -680,311 +680,279 @@ export async function generateInvoicePDF(
   try {
     await new Promise(resolve => setTimeout(resolve, 150));
     const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: 'a4'
-  });
-
-  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  const monthName = months[invoice.period_month - 1];
-  const billingPeriod = `${monthName}-${invoice.period_year}`;
-
-  // Helper inside PDF generation to find last day of month
-  const getLastDayOfMonth = (month: number, year: number): string => {
-    const lastDay = new Date(year, month, 0).getDate();
-    const d = String(lastDay).padStart(2, '0');
-    const m = String(month).padStart(2, '0');
-    return `${d}-${m}-${year}`;
-  };
-
-  // Header branding using standard letterhead decoration
-  drawLetterhead(doc, 'Month-End Clearance Invoice');
-
-  // Metadata block (shifted down to avoid colliding with drawLetterhead)
-  doc.setDrawColor(218, 224, 233);
-  doc.setFillColor(248, 250, 252);
-  doc.rect(14, 62, 182, 30, 'F');
-  doc.rect(14, 62, 182, 30, 'D');
-
-  doc.setFontSize(9.5);
-  doc.setTextColor(50, 60, 75);
-  
-  // Left side: Period and unique invoice no
-  doc.setFont('Helvetica', 'bold');
-  doc.text(`Period: ${billingPeriod}`, 20, 70);
-  doc.text(`Invoice No: ${invoice.invoice_no}`, 20, 78);
-  doc.setFont('Helvetica', 'normal');
-  doc.text(`Date of Issue: ${formatDate(invoice.created_at.split('T')[0])}`, 20, 85);
-
-  // Right side: Tailor Details
-  doc.text('Tailor Code:', 125, 70);
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(26, 46, 74);
-  doc.text(master.code || 'NA', 152, 70);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(50, 60, 75);
-  doc.text('Tailor Name:', 125, 78);
-  doc.setFont('Helvetica', 'bold');
-  doc.text(master.name, 152, 78);
-
-  // Use chosen PAN value from invoice drafting, or default saved on profile, or deterministic fallback
-  const tailorPanCode = invoice.selected_pan_no || 
-                        (master.pan_accounts && master.pan_accounts.length > 0 ? master.pan_accounts[0].pan_no : null) || 
-                        `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String(master.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
-  doc.setFont('Helvetica', 'normal');
-  doc.text('Pan #:', 125, 85);
-  doc.setFont('Helvetica', 'bold');
-  doc.text(tailorPanCode, 152, 85);
-
-  let y = 102;
-
-  // --- CHAPTER 1: Stitching Job Earnings Summary ---
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(10.5);
-  doc.setTextColor(26, 46, 74);
-  doc.text('Stitching Job Earnings Summary', 14, y);
-  
-  y += 4;
-
-  // Stitching table headers
-  doc.setDrawColor(180, 190, 200);
-  doc.setFillColor(235, 240, 245);
-  doc.rect(14, y, 182, 8, 'F');
-  doc.rect(14, y, 182, 8, 'D');
-
-  doc.setFontSize(9.5);
-  doc.setTextColor(0, 0, 0);
-  doc.text('Date', 20, y + 5.5);
-  doc.text('Amount', 130, y + 5.5, { align: 'right' });
-  doc.text('Pcs', 190, y + 5.5, { align: 'right' });
-
-  // Column gridlines in header
-  doc.line(75, y, 75, y + 8);
-  doc.line(135, y, 135, y + 8);
-
-  y += 8;
-
-  // Stitching data row (aggregated)
-  const billingMonthEnd = getLastDayOfMonth(invoice.period_month, invoice.period_year);
-  doc.setFont('Helvetica', 'normal');
-  doc.rect(14, y, 182, 8, 'D');
-  doc.text(billingMonthEnd, 20, y + 5.5);
-  doc.text(formatINR(invoice.work_amount), 130, y + 5.5, { align: 'right' });
-  doc.text(String(invoice.pcs || 0), 190, y + 5.5, { align: 'right' });
-
-  doc.line(75, y, 75, y + 8);
-  doc.line(135, y, 135, y + 8);
-
-  y += 8;
-
-  // Stitching Totals row
-  doc.setFont('Helvetica', 'bold');
-  doc.rect(14, y, 182, 8, 'D');
-  doc.text('Totals', 20, y + 5.5);
-  doc.text(formatINR(invoice.work_amount), 130, y + 5.5, { align: 'right' });
-  doc.text(String(invoice.pcs || 0), 190, y + 5.5, { align: 'right' });
-
-  doc.line(75, y, 75, y + 8);
-  doc.line(135, y, 135, y + 8);
-
-  y += 18;
-
-  // --- CHAPTER 2: Vouchers (Materials Issued) ---
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(10.5);
-  doc.setTextColor(26, 46, 74);
-  doc.text('Vouchers', 14, y);
-  
-  y += 4;
-
-  // Vouchers table headers
-  doc.setFillColor(235, 240, 245);
-  doc.rect(14, y, 182, 8, 'F');
-  doc.rect(14, y, 182, 8, 'D');
-
-  doc.setFontSize(9.5);
-  doc.setTextColor(0, 0, 0);
-  doc.text('Date', 20, y + 5.5);
-  doc.text('Voucher No', 80, y + 5.5);
-  doc.text('Amount', 190, y + 5.5, { align: 'right' });
-
-  // Column lines in header
-  doc.line(75, y, 75, y + 8);
-  doc.line(135, y, 135, y + 8);
-
-  y += 8;
-
-  // Generate vouchers array matching input challans
-  const vouchersData = invoiceChallans.map((ch) => {
-    const items = allChallanItems.filter(item => item.challan_id === ch.id);
-    const amount = items.reduce((sum, curr) => sum + curr.amount, 0);
-    return {
-      date: formatDate(ch.issued_date),
-      voucher_no: ch.challan_no.replace('HF-2526-', ''), // clean numeric suffix e.g. "34"
-      amount: amount
-    };
-  });
-
-  doc.setFont('Helvetica', 'normal');
-  let accumulatedVoucherSum = 0;
-
-  vouchersData.forEach((v) => {
-    doc.rect(14, y, 182, 8, 'D');
-    doc.text(v.date, 20, y + 5.5);
-    doc.text(v.voucher_no, 80, y + 5.5);
-    doc.text(formatINR(v.amount), 190, y + 5.5, { align: 'right' });
-
-    doc.line(75, y, 75, y + 8);
-    doc.line(135, y, 135, y + 8);
-
-    accumulatedVoucherSum += v.amount;
-    y += 8;
-  });
-
-  // Vouchers Totals row
-  doc.setFont('Helvetica', 'bold');
-  doc.rect(14, y, 182, 8, 'D');
-  doc.text('Totals', 20, y + 5.5);
-  doc.text(formatINR(accumulatedVoucherSum), 190, y + 5.5, { align: 'right' });
-
-  doc.line(75, y, 75, y + 8);
-  doc.line(135, y, 135, y + 8);
-
-  y += 14;
-
-  // --- CHAPTER 3: Final Computations (Two Column Layout) ---
-  const leftBlockY = y + 2;
-
-  // Left side disbursement details & checked by info
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.setTextColor(50, 60, 70);
-
-  let curLeftY = leftBlockY;
-  
-  if (invoice.selected_account_no) {
-    doc.text('Disbursement Bank Account Details:', 14, curLeftY);
-    curLeftY += 4.5;
-    doc.setFont('Helvetica', 'normal');
-    doc.setFontSize(8.5);
-    doc.text(`Bank Name: ${invoice.selected_bank_name || 'N/A'}`, 14, curLeftY);
-    curLeftY += 4.5;
-    doc.text(`A/C Number: ${invoice.selected_account_no}`, 14, curLeftY);
-    curLeftY += 4.5;
-    doc.text(`IFSC Code: ${invoice.selected_ifsc_code || 'N/A'}`, 14, curLeftY);
-    if (invoice.selected_branch_name) {
-      curLeftY += 4.5;
-      doc.text(`Branch Name: ${invoice.selected_branch_name}`, 14, curLeftY);
-    }
-  } else {
-    doc.text('Chq in favor of: ' + master.name, 14, curLeftY);
-    const underlineLength = doc.getTextWidth(master.name);
-    doc.line(42, leftBlockY + 1, 42 + underlineLength, leftBlockY + 1);
-  }
-
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.text('Checked By:', 14, Math.max(curLeftY + 8, leftBlockY + 14));
-
-  // Right side formulas aligned block
-  const rLabelX = 142;
-  const rValueX = 190;
-
-  const mDiscount = invoice.discount || 0;
-  const mSub = invoice.work_amount - invoice.material_deduction - mDiscount;
-  const mTds = invoice.tds_amount || 0;
-  const mGrand = invoice.grand_total || (mSub - mTds);
-  const mRounded = Math.round(mGrand);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setFontSize(10);
-  doc.setTextColor(0, 0, 0);
-
-  const hasStitchDeduct = !!(invoice.stitching_deduction_amount && invoice.stitching_deduction_amount > 0);
-  if (hasStitchDeduct) {
-    const baseAmt = invoice.base_work_amount || (invoice.work_amount + invoice.stitching_deduction_amount);
-    doc.text('Stitch. Earnings:', rLabelX, y);
-    doc.text(formatINR(baseAmt), rValueX, y, { align: 'right' });
-    y += 5.5;
-
-    const limitStr = (invoice.stitching_deduction_reason && invoice.stitching_deduction_reason.length > 20)
-      ? invoice.stitching_deduction_reason.substring(0, 18) + '..'
-      : (invoice.stitching_deduction_reason || 'Rework');
-    doc.text(`-Stitch Deduct (${limitStr}):`, rLabelX, y);
-    doc.text(formatINR(invoice.stitching_deduction_amount), rValueX, y, { align: 'right' });
-    y += 5.5;
-  }
-
-  doc.text('Total Amount:', rLabelX, y);
-  doc.text(formatINR(invoice.work_amount), rValueX, y, { align: 'right' });
-  y += 5.5;
-
-  doc.text('-Vouchers:', rLabelX, y);
-  doc.text(formatINR(invoice.material_deduction), rValueX, y, { align: 'right' });
-  y += 5.5;
-
-  doc.text('-Discount:', rLabelX, y);
-  doc.text(formatINR(mDiscount), rValueX, y, { align: 'right' });
-  y += 5.5;
-
-  doc.setFont('Helvetica', 'bold');
-  doc.text('Sub Total:', rLabelX, y);
-  doc.text(formatINR(mSub), rValueX, y, { align: 'right' });
-  y += 5.5;
-
-  doc.setFont('Helvetica', 'normal');
-  doc.text('-TDS: (1%)', rLabelX, y);
-  doc.text(formatINR(mTds), rValueX, y, { align: 'right' });
-  y += 5;
-
-  // Dashed divider line under TDS
-  doc.setDrawColor(120, 120, 120);
-  doc.setLineDashPattern([1.5, 1], 0);
-  doc.setLineWidth(0.25);
-  doc.line(rLabelX - 2, y, rValueX + 5, y);
-  y += 5.5;
-
-  doc.setFont('Helvetica', 'bold');
-  doc.text('Grand Total:', rLabelX, y);
-  doc.text(formatINR(mGrand), rValueX, y, { align: 'right' });
-  y += 5.5;
-
-  doc.line(rLabelX - 2, y, rValueX + 5, y);
-  y += 5.5;
-
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(26, 46, 74);
-  doc.text('Rounded off:', rLabelX, y);
-  doc.text(formatINR(mRounded), rValueX, y, { align: 'right' });
-
-  // Clear dash pattern
-  doc.setLineDashPattern([], 0);
-
-  // Pagination Footer
-  drawFooter(doc, 1, 1);
-
-  const pdfBlob = doc.output('blob');
-  
-  if (autoDownload) {
-    smartSavePDF({
-      blob: pdfBlob,
-      category: 'invoice',
-      dateText: getFolderInvoiceDateText(invoice.period_month, invoice.period_year),
-      masterName: master.name,
-      fileNo: invoice.invoice_no
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
     });
-  }
 
-  if (shouldPrint) {
-    printPDFDoc(doc);
-  }
+    const months = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+    const monthName = months[invoice.period_month - 1];
+    const billingPeriod = `${monthName} ${invoice.period_year}`;
 
-  const yr = new Date().getFullYear();
-  const mo = String(new Date().getMonth() + 1).padStart(2, '0');
-  console.log(`Saved Invoice PDF using Smart Folder System / Cloud: /invoices/${yr}-${mo}/INVOICE_${invoice.invoice_no}.pdf`);
+    const getLastDayOfMonth = (month: number, year: number): string => {
+      const lastDay = new Date(year, month, 0).getDate();
+      const d = String(lastDay).padStart(2, '0');
+      const m = String(month).padStart(2, '0');
+      return `${d}-${m}-${year}`;
+    };
 
-  return pdfBlob;
+    // --- TITLE HEADER ---
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Harry Fashion LLP', 105, 18, { align: 'center' });
+
+    // --- METADATA PANEL (TWO COLUMNS) ---
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9.5);
+    
+    // Left side info
+    doc.text(`Period: ${billingPeriod}`, 14, 28);
+    doc.text(`Invoice No: ${invoice.invoice_no}`, 14, 34);
+
+    // Right side info (aligned right at x=196)
+    const tailorInitial = master.code || master.name.split(' ')[0] || 'NA';
+    doc.text(`Tailor Initial: ${tailorInitial}`, 196, 28, { align: 'right' });
+    doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
+
+    const tailorPanCode = invoice.selected_pan_no || 
+                          (master.pan_accounts && master.pan_accounts.length > 0 ? master.pan_accounts[0].pan_no : null) || 
+                          `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String(master.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
+    doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
+
+    let y = 48;
+
+    // --- CHAPTER 1: Stitching Job Earnings Table ---
+    // Table Headers
+    doc.setFont('Helvetica', 'bold');
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.35);
+    doc.setFillColor(235, 238, 242); // very soft grey table header
+    
+    doc.rect(14, y, 182, 8, 'F');
+    doc.rect(14, y, 182, 8, 'D');
+
+    doc.text('Date', 16, y + 5.5);
+    doc.text('Amount', 76, y + 5.5);
+    doc.text('Pcs', 136, y + 5.5);
+
+    doc.line(74, y, 74, y + 8);
+    doc.line(134, y, 134, y + 8);
+
+    y += 8;
+
+    // Data Row (aggregated)
+    const billingMonthEnd = getLastDayOfMonth(invoice.period_month, invoice.period_year);
+    doc.setFont('Helvetica', 'normal');
+    doc.rect(14, y, 182, 8, 'D');
+    doc.text(billingMonthEnd, 16, y + 5.5);
+    doc.text(String(Math.round(invoice.work_amount)), 76, y + 5.5);
+    doc.text(String(invoice.pcs || 0), 136, y + 5.5);
+
+    doc.line(74, y, 74, y + 8);
+    doc.line(134, y, 134, y + 8);
+
+    y += 8;
+
+    // Totals Row
+    doc.setFont('Helvetica', 'bold');
+    doc.rect(14, y, 182, 8, 'D');
+    doc.text('Totals', 16, y + 5.5);
+    doc.text(String(Math.round(invoice.work_amount)), 76, y + 5.5);
+    doc.text(String(invoice.pcs || 0), 136, y + 5.5);
+
+    doc.line(74, y, 74, y + 8);
+    doc.line(134, y, 134, y + 8);
+
+    y += 14;
+
+    // --- CHAPTER 2: Vouchers (Materials Issued) Table ---
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.text('Vouchers', 14, y);
+
+    y += 4;
+
+    // Vouchers Table Headers
+    doc.setFont('Helvetica', 'bold');
+    doc.setFillColor(235, 238, 242);
+    doc.rect(14, y, 182, 8, 'F');
+    doc.rect(14, y, 182, 8, 'D');
+
+    doc.text('Date', 16, y + 5.5);
+    doc.text('Voucher No', 76, y + 5.5);
+    doc.text('Amount', 136, y + 5.5);
+
+    doc.line(74, y, 74, y + 8);
+    doc.line(134, y, 134, y + 8);
+
+    y += 8;
+
+    // Generate vouchers array matching input challans
+    const vouchersData = invoiceChallans.map((ch) => {
+      const items = allChallanItems.filter(item => item.challan_id === ch.id);
+      const amount = items.reduce((sum, curr) => sum + curr.amount, 0);
+      return {
+        date: formatDate(ch.issued_date),
+        voucher_no: ch.challan_no.split('-').pop() || ch.challan_no,
+        amount: amount
+      };
+    });
+
+    doc.setFont('Helvetica', 'normal');
+    let accumulatedVoucherSum = 0;
+
+    vouchersData.forEach((v) => {
+      // Add a page break if table grows too long for A4
+      if (y > 265) {
+        doc.addPage();
+        y = 20;
+      }
+      doc.rect(14, y, 182, 7.5, 'D');
+      doc.text(v.date, 16, y + 5);
+      doc.text(v.voucher_no, 76, y + 5);
+      doc.text(String(Math.round(v.amount)), 136, y + 5);
+
+      doc.line(74, y, 74, y + 7.5);
+      doc.line(134, y, 134, y + 7.5);
+
+      accumulatedVoucherSum += v.amount;
+      y += 7.5;
+    });
+
+    // Vouchers Totals Row
+    doc.setFont('Helvetica', 'bold');
+    doc.rect(14, y, 182, 8, 'D');
+    doc.text('Totals', 16, y + 5.5);
+    doc.text(String(Math.round(accumulatedVoucherSum)), 136, y + 5.5);
+
+    doc.line(74, y, 74, y + 8);
+    doc.line(134, y, 134, y + 8);
+
+    y += 12;
+
+    // --- CHAPTER 3: Checked By & Final Calculations ---
+    const leftBlockY = y + 2;
+    let curLeftY = leftBlockY;
+
+    // Left side: Outward/Disbursement bank info
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9.5);
+
+    doc.setFont('Helvetica', 'bold');
+    const chqFavorText = `Chq in favor of: ${master.name.toUpperCase()}`;
+    doc.text(chqFavorText, 14, curLeftY);
+    
+    // Underline the custom name
+    const underlineStart = 14 + doc.getTextWidth('Chq in favor of: ');
+    const underlineLength = doc.getTextWidth(master.name.toUpperCase());
+    doc.setLineWidth(0.35);
+    doc.line(underlineStart, curLeftY + 0.8, underlineStart + underlineLength, curLeftY + 0.8);
+
+    // Dynamic bank specifications
+    const actualBankName = invoice.selected_bank_name || '';
+    const actualAcNo = invoice.selected_account_no || '';
+    const actualIfsc = invoice.selected_ifsc_code || '';
+    const actualBranch = invoice.selected_branch_name || '';
+
+    if (actualAcNo) {
+      curLeftY += 6;
+      doc.setFont('Helvetica', 'bold');
+      doc.text('Disbursement Bank Account:', 14, curLeftY);
+      curLeftY += 4.5;
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.text(`Bank: ${actualBankName}`, 14, curLeftY);
+      curLeftY += 4.5;
+      doc.text(`Account No: ${actualAcNo}`, 14, curLeftY);
+      curLeftY += 4.5;
+      doc.text(`IFSC Code: ${actualIfsc}`, 14, curLeftY);
+      if (actualBranch) {
+        curLeftY += 4.5;
+        doc.text(`Branch: ${actualBranch}`, 14, curLeftY);
+      }
+    }
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.text('Checked By:', 105, leftBlockY); // Matches alignment side of Checked By
+
+    // Right side formulas block
+    const rLabelX = 142;
+    const rValueX = 196;
+
+    const mDiscount = invoice.discount || 0;
+    const mSub = invoice.work_amount - invoice.material_deduction - mDiscount;
+    const mTds = invoice.tds_amount || 0;
+    const mGrand = invoice.grand_total || (mSub - mTds);
+    const mRounded = Math.round(mGrand);
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setTextColor(0, 0, 0);
+
+    let formulasY = y + 2;
+
+    doc.text('Total Amount:', rLabelX, formulasY);
+    doc.text(String(Math.round(invoice.work_amount)), rValueX, formulasY, { align: 'right' });
+    formulasY += 5.5;
+
+    doc.text('-Vouchers:', rLabelX, formulasY);
+    doc.text(String(Math.round(invoice.material_deduction)), rValueX, formulasY, { align: 'right' });
+    formulasY += 5.5;
+
+    doc.text('-Discount:', rLabelX, formulasY);
+    doc.text(String(Math.round(mDiscount)), rValueX, formulasY, { align: 'right' });
+    formulasY += 5.5;
+
+    doc.setFont('Helvetica', 'bold');
+    doc.text('Sub Total:', rLabelX, formulasY);
+    doc.text(String(Math.round(mSub)), rValueX, formulasY, { align: 'right' });
+    formulasY += 5.5;
+
+    doc.setFont('Helvetica', 'normal');
+    doc.text('-TDS: (1%)', rLabelX, formulasY);
+    doc.text(mTds.toFixed(2), rValueX, formulasY, { align: 'right' });
+    formulasY += 4;
+
+    // Solid/dashed separator
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineDashPattern([1.5, 1], 0);
+    doc.setLineWidth(0.25);
+    doc.line(135, formulasY, 196, formulasY);
+    formulasY += 5.5;
+
+    doc.setFont('Helvetica', 'bold');
+    doc.text('Grand Total:', rLabelX, formulasY);
+    doc.text(mGrand.toFixed(2), rValueX, formulasY, { align: 'right' });
+    formulasY += 4;
+
+    doc.line(135, formulasY, 196, formulasY);
+    formulasY += 5.5;
+
+    doc.setFont('Helvetica', 'bold');
+    doc.text('Rounded off:', rLabelX, formulasY);
+    doc.text(String(mRounded), rValueX, formulasY, { align: 'right' });
+
+    // Clear dash pattern
+    doc.setLineDashPattern([], 0);
+
+    const pdfBlob = doc.output('blob');
+    
+    if (autoDownload) {
+      smartSavePDF({
+        blob: pdfBlob,
+        category: 'invoice',
+        dateText: getFolderInvoiceDateText(invoice.period_month, invoice.period_year),
+        masterName: master.name,
+        fileNo: invoice.invoice_no
+      });
+    }
+
+    if (shouldPrint) {
+      printPDFDoc(doc);
+    }
+
+    return pdfBlob;
   } catch (err: any) {
     showPDFError(err.message || `Failed to compile Invoice ${invoice.invoice_no || ''}.`);
     throw err;

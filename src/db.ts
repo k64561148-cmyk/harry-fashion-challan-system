@@ -643,9 +643,25 @@ class DatabaseService {
             });
 
             // Overwrite/merge with remote records (remote is source of truth, but we don't discard local-only ones)
+            // We use standard Last-Write-Wins based on timestamps to guarantee local pending writes aren't overwritten by old remote cache snapshots
             remoteRecords.forEach(item => {
               const key = getKey(item);
-              if (key) mergedMap.set(key, item);
+              if (key) {
+                const localItem = mergedMap.get(key);
+                if (localItem) {
+                  const getStampTime = (obj: any) => {
+                    const val = obj.updatedAt || obj.updated_at || obj.lastEditedAt || obj.timestamp || obj.created_at || obj.createdAt || 0;
+                    return typeof val === 'number' ? val : new Date(val).getTime();
+                  };
+                  const localTime = getStampTime(localItem);
+                  const remoteTime = getStampTime(item);
+                  if (remoteTime >= localTime) {
+                    mergedMap.set(key, item);
+                  }
+                } else {
+                  mergedMap.set(key, item);
+                }
+              }
             });
 
             const mergedRecords = Array.from(mergedMap.values());

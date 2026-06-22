@@ -187,58 +187,54 @@ service cloud.firestore {
 
     match /challan_items/{itemId} {
       allow read: if isSignedIn();
-      allow create: if isIssueDept() && isValidId(itemId) && isValidChallanItem(request.resource.data);
-      allow update: if isAdmin() && isValidId(itemId) && isValidChallanItem(request.resource.data);
-      allow delete: if isAdmin() && isValidId(itemId);
+      allow create, update: if isIssueDept() && isValidId(itemId) && isValidChallanItem(request.resource.data);
+      allow delete: if isIssueDept() && isValidId(itemId);
     }
 
     match /inward_entries/{entryId} {
       allow read: if isSignedIn();
       allow create: if isIssueDept() && isValidId(entryId) && isValidInwardEntry(request.resource.data);
-      allow update, delete: if isAdmin() && isValidId(entryId);
+      allow update, delete: if isIssueDept() && isValidId(entryId);
     }
 
     match /invoices/{invoiceId} {
       allow read: if isSignedIn();
-      allow create: if isBilling() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
-      allow update: if isAdmin() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
-      allow delete: if isAdmin() && isValidId(invoiceId);
+      allow create, update: if isBilling() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
+      allow delete: if isBilling() && isValidId(invoiceId);
     }
 
     match /invoice_challans/{id} {
       allow read: if isSignedIn();
-      allow create: if isBilling() && isValidId(id);
-      allow update, delete: if isAdmin() && isValidId(id);
+      allow create, update, delete: if isBilling() && isValidId(id);
     }
 
     match /master_rate_overrides/{overrideId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdmin() && isValidId(overrideId);
+      allow create, update, delete: if isBilling() && isValidId(overrideId);
     }
 
     match /rate_history/{historyId} {
       allow read: if isSignedIn();
-      allow create: if isAdmin() && isValidId(historyId);
+      allow create: if isBilling() && isValidId(historyId);
       allow update, delete: if false;
     }
 
     match /audit_logs/{logId} {
-      allow read: if isAdmin();
+      allow read: if isBilling();
       allow create: if isSignedIn() && isValidId(logId);
       allow update, delete: if false;
     }
 
     match /stock_corrections/{correctionId} {
       allow read: if isSignedIn();
-      allow create: if isAdmin() && isValidId(correctionId) && isValidStockCorrection(request.resource.data);
+      allow create: if isBilling() && isValidId(correctionId) && isValidStockCorrection(request.resource.data);
       allow update, delete: if false;
     }
 
     match /ledger_transactions/{txId} {
-      allow read: if isAdmin();
-      allow create: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
-      allow update: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
-      allow delete: if isAdmin() && isValidId(txId);
+      allow read: if isBilling();
+      allow create, update: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
+      allow delete: if isBilling() && isValidId(txId);
     }
   }
 }

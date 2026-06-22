@@ -288,11 +288,11 @@ export const BillingView: React.FC = () => {
   const isPcsValid = pcs > 0;
   const isEarningValid = workAmount > 0;
 
-  const isPanValid = panNo.trim() === "" || panNo.trim().length === 10;
-  const isIfscValid = ifscCode.trim() === "" || ifscCode.trim().length === 11;
-  const isAccountValid = accountNo.trim() === "" || accountNo.trim().length >= 9;
-  const isBankValid = bankName.trim() === "" || bankName.trim().length >= 2;
-  const isBankPanValid = isPanValid && isIfscValid && isAccountValid && isBankValid;
+  const isPanValid = true;
+  const isIfscValid = true;
+  const isAccountValid = true;
+  const isBankValid = true;
+  const isBankPanValid = true;
 
   const isNetPayableNegative = roundedOffGrandTotal < 0;
   const isOverrideApproved = !isNetPayableNegative || (ownerOverride && overrideReason.trim().length >= 5);
@@ -359,10 +359,6 @@ export const BillingView: React.FC = () => {
         }
         if (!isEarningValid) {
           setErrorMsg('Stitching earning amount (Work Amount) must be greater than zero.');
-          return;
-        }
-        if (!isBankPanValid) {
-          setErrorMsg('PAN / Bank details are invalid or incomplete. PAN must be 10 alphanumeric characters. Bank Name must be >= 2 characters. Account No must be >= 9 digits. IFSC Code must be 11 characters.');
           return;
         }
         if (isNetPayableNegative && !isOverrideApproved) {
@@ -1276,11 +1272,9 @@ export const BillingView: React.FC = () => {
                         </span>
                         Job Wages ({formatINR(workAmount)}) &gt; 0
                       </div>
-                      <div className="sm:col-span-2 flex items-center gap-1.5 border-t border-slate-200/60 pt-1.5">
-                        <span className={isBankPanValid ? "text-green-600 font-bold" : "text-rose-500 font-bold"}>
-                          {isBankPanValid ? "✓" : "✗"}
-                        </span>
-                        PAN (10 chars uppercase) &amp; Bank Info (IFSC 11 chars, A/C &ge; 9 digits)
+                      <div className="sm:col-span-2 flex items-center gap-1.5 border-t border-slate-200/60 pt-1.5 text-slate-500 font-medium">
+                        <span className="text-green-600 font-bold">✓</span>
+                        PAN &amp; Bank Disbursement Details (Optional)
                       </div>
                     </div>
 
