@@ -625,11 +625,36 @@ class DatabaseService {
 
           // Only sync if there are active cloud records to avoid empty-source overwrites initially
           if (snapshot.size > 0) {
+            // Robust local-remote merge to prevent local data loss/wipeouts!
+            const localRecords = this.load<any[]>(collName, []);
+            const getKey = (item: any) => {
+              if (collName === 'invoice_challans') {
+                return `${item.invoice_id}_${item.challan_id}`;
+              }
+              return item.id || item.uid;
+            };
+
+            const mergedMap = new Map<string, any>();
+            
+            // First load all local records
+            localRecords.forEach(item => {
+              const key = getKey(item);
+              if (key) mergedMap.set(key, item);
+            });
+
+            // Overwrite/merge with remote records (remote is source of truth, but we don't discard local-only ones)
+            remoteRecords.forEach(item => {
+              const key = getKey(item);
+              if (key) mergedMap.set(key, item);
+            });
+
+            const mergedRecords = Array.from(mergedMap.values());
+
             // Re-order by createdAt desc if applicable
             if (collName === 'audit_logs' || collName === 'rate_history') {
-              remoteRecords.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+              mergedRecords.sort((a, b) => new Date(b.created_at || b.createdAt || 0).getTime() - new Date(a.created_at || a.createdAt || 0).getTime());
             }
-            this.save(collName, remoteRecords);
+            this.save(collName, mergedRecords);
             // Trigger customized global event so UI knows data synced
             window.dispatchEvent(new Event('db_sync'));
           } else {
@@ -1994,7 +2019,10 @@ class DatabaseService {
       selected_bank_name: invoice.selected_bank_name,
       selected_account_no: invoice.selected_account_no,
       selected_ifsc_code: invoice.selected_ifsc_code,
-      selected_branch_name: invoice.selected_branch_name
+      selected_branch_name: invoice.selected_branch_name,
+      stitching_deduction_amount: invoice.stitching_deduction_amount !== undefined ? invoice.stitching_deduction_amount : 0,
+      stitching_deduction_reason: invoice.stitching_deduction_reason || '',
+      base_work_amount: invoice.base_work_amount !== undefined ? invoice.base_work_amount : (invoice.work_amount || 0)
     };
 
     invoiceList.push(newInvoice);

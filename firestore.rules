@@ -128,9 +128,9 @@ service cloud.firestore {
         && data.master_id is string && data.master_id.size() <= 128
         && data.period_month is number && data.period_month >= 1 && data.period_month <= 12
         && data.period_year is number && data.period_year >= 2000 && data.period_year <= 2100
-        && data.work_amount is number && data.work_amount >= 0
-        && data.material_deduction is number && data.material_deduction >= 0
-        && data.net_payable is number && data.net_payable >= 0
+        && data.work_amount is number
+        && data.material_deduction is number
+        && data.net_payable is number
         && data.status is string && (data.status == 'draft' || data.status == 'finalised')
         && data.created_at is string;
     }

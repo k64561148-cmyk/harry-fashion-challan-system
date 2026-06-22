@@ -138,6 +138,9 @@ export interface Invoice {
   selected_account_no?: string;
   selected_ifsc_code?: string;
   selected_branch_name?: string;
+  stitching_deduction_amount?: number;
+  stitching_deduction_reason?: string;
+  base_work_amount?: number;
 }
 
 export interface InvoiceChallan {

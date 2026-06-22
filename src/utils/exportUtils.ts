@@ -901,6 +901,21 @@ export async function generateInvoicePDF(
   doc.setFontSize(10);
   doc.setTextColor(0, 0, 0);
 
+  const hasStitchDeduct = !!(invoice.stitching_deduction_amount && invoice.stitching_deduction_amount > 0);
+  if (hasStitchDeduct) {
+    const baseAmt = invoice.base_work_amount || (invoice.work_amount + invoice.stitching_deduction_amount);
+    doc.text('Stitch. Earnings:', rLabelX, y);
+    doc.text(formatINR(baseAmt), rValueX, y, { align: 'right' });
+    y += 5.5;
+
+    const limitStr = (invoice.stitching_deduction_reason && invoice.stitching_deduction_reason.length > 20)
+      ? invoice.stitching_deduction_reason.substring(0, 18) + '..'
+      : (invoice.stitching_deduction_reason || 'Rework');
+    doc.text(`-Stitch Deduct (${limitStr}):`, rLabelX, y);
+    doc.text(formatINR(invoice.stitching_deduction_amount), rValueX, y, { align: 'right' });
+    y += 5.5;
+  }
+
   doc.text('Total Amount:', rLabelX, y);
   doc.text(formatINR(invoice.work_amount), rValueX, y, { align: 'right' });
   y += 5.5;

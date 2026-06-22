@@ -60,6 +60,11 @@ export const BillingView: React.FC = () => {
   
   const [selectedMasterId, setSelectedMasterId] = useState<string>('');
   const [workAmountRaw, setWorkAmountRaw] = useState<string>('');
+  const [baseWorkAmountRaw, setBaseWorkAmountRaw] = useState<string>('');
+  const [baseWorkAmount, setBaseWorkAmount] = useState<number>(0);
+  const [stitchingDeductionReason, setStitchingDeductionReason] = useState<string>('');
+  const [stitchingDeductionAmountRaw, setStitchingDeductionAmountRaw] = useState<string>('');
+  const [stitchingDeductionAmount, setStitchingDeductionAmount] = useState<number>(0);
   const [periodMonth, setPeriodMonth] = useState<number>(new Date().getMonth() + 1);
   const [periodYear, setPeriodYear] = useState<number>(new Date().getFullYear());
 
@@ -209,6 +214,11 @@ export const BillingView: React.FC = () => {
     }
     setWorkAmount(0);
     setWorkAmountRaw('');
+    setBaseWorkAmount(0);
+    setBaseWorkAmountRaw('');
+    setStitchingDeductionReason('');
+    setStitchingDeductionAmountRaw('');
+    setStitchingDeductionAmount(0);
     setPcs(0);
     setPcsRaw('');
     setDiscount(0);
@@ -256,6 +266,11 @@ export const BillingView: React.FC = () => {
     setMaterialDeduction(deductionSum);
   }, [selectedChallanIds, materials, selectedMasterId]);
 
+  // Recalculates final workAmount by deducting stitchingDeductionAmount from baseWorkAmount
+  useEffect(() => {
+    setWorkAmount(Math.max(0, baseWorkAmount - stitchingDeductionAmount));
+  }, [baseWorkAmount, stitchingDeductionAmount]);
+
   // Recalculates net payables
   useEffect(() => {
     setNetPayable(workAmount - materialDeduction);
@@ -273,10 +288,10 @@ export const BillingView: React.FC = () => {
   const isPcsValid = pcs > 0;
   const isEarningValid = workAmount > 0;
 
-  const isPanValid = panNo.trim().length === 10;
-  const isIfscValid = ifscCode.trim().length === 11;
-  const isAccountValid = accountNo.trim().length >= 9;
-  const isBankValid = bankName.trim().length >= 2;
+  const isPanValid = panNo.trim() === "" || panNo.trim().length === 10;
+  const isIfscValid = ifscCode.trim() === "" || ifscCode.trim().length === 11;
+  const isAccountValid = accountNo.trim() === "" || accountNo.trim().length >= 9;
+  const isBankValid = bankName.trim() === "" || bankName.trim().length >= 2;
   const isBankPanValid = isPanValid && isIfscValid && isAccountValid && isBankValid;
 
   const isNetPayableNegative = roundedOffGrandTotal < 0;
@@ -383,7 +398,10 @@ export const BillingView: React.FC = () => {
         selected_bank_name: bankName || undefined,
         selected_account_no: accountNo || undefined,
         selected_ifsc_code: ifscCode || undefined,
-        selected_branch_name: branchName || undefined
+        selected_branch_name: branchName || undefined,
+        stitching_deduction_amount: stitchingDeductionAmount,
+        stitching_deduction_reason: stitchingDeductionReason,
+        base_work_amount: baseWorkAmount
       };
 
       // 1. Commit and get compiled invoice Record
@@ -433,6 +451,11 @@ export const BillingView: React.FC = () => {
     setSelectedMasterId('');
     setWorkAmount(0);
     setWorkAmountRaw('');
+    setBaseWorkAmount(0);
+    setBaseWorkAmountRaw('');
+    setStitchingDeductionReason('');
+    setStitchingDeductionAmountRaw('');
+    setStitchingDeductionAmount(0);
     setPcs(0);
     setPcsRaw('');
     setDiscount(0);
@@ -991,20 +1014,20 @@ export const BillingView: React.FC = () => {
 
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-705 mb-1">
-                        AMOUNT TO PAY (₹) <span className="text-red-500">*</span>
+                        STITCHING WORK EARNINGS (₹) <span className="text-red-500">*</span>
                       </label>
                       <input
                         type="text"
                         inputMode="decimal"
                         placeholder="Earned, e.g. 210100"
                         className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-mono font-bold text-slate-800"
-                        value={workAmountRaw}
+                        value={baseWorkAmountRaw}
                         onChange={(e) => {
                           const val = e.target.value.replace(/[^0-9.]/g, '');
                           const parts = val.split('.');
                           const cleaned = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : val;
-                          setWorkAmountRaw(cleaned);
-                          setWorkAmount(parseFloat(cleaned) || 0);
+                          setBaseWorkAmountRaw(cleaned);
+                          setBaseWorkAmount(parseFloat(cleaned) || 0);
                         }}
                       />
                     </div>
@@ -1030,6 +1053,50 @@ export const BillingView: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-100 pt-4 mt-1">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        STITCHING WORK DEDUCTION REASON
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Reason, e.g. Stitching correction defect, rework damage"
+                        className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-medium text-slate-800 placeholder-slate-400 font-semibold"
+                        value={stitchingDeductionReason}
+                        onChange={(e) => setStitchingDeductionReason(e.target.value)}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        DEDUCTION AMOUNT (₹)
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Deduction value, e.g. 1500"
+                        className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-mono font-bold text-slate-800 placeholder-slate-400"
+                        value={stitchingDeductionAmountRaw}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/[^0-9.]/g, '');
+                          const parts = val.split('.');
+                          const cleaned = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : val;
+                          setStitchingDeductionAmountRaw(cleaned);
+                          setStitchingDeductionAmount(parseFloat(cleaned) || 0);
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {stitchingDeductionAmount > 0 && (
+                    <div className="bg-amber-50 rounded-lg p-2.5 text-[11px] text-amber-850 border border-amber-200 flex justify-between items-center font-semibold">
+                      <span>Stitching Sub-Total Deduction Applied:</span>
+                      <span className="font-mono text-xs text-amber-900 font-bold">
+                        {formatINR(baseWorkAmount)} - {formatINR(stitchingDeductionAmount)} = {formatINR(workAmount)} Net Earning
+                      </span>
+                    </div>
+                  )}
+
                   {/* SECTION III: Disbursement details with PAN configuration */}
                   <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
                     <span className="text-[9px] font-bold tracking-widest text-[#1A2E4A] uppercase">SECTION III</span>
@@ -1044,7 +1111,7 @@ export const BillingView: React.FC = () => {
                           {hasPanDetails ? (
                             <div>
                               <span className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
-                                SELECT ACTIVE PAN ACCOUNT <span className="text-red-500">*</span>
+                                SELECT PAN ACCOUNT (OPTIONAL)
                               </span>
                               <select
                                 className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-2 text-xs font-bold text-[#1A2E4A]"
@@ -1132,8 +1199,18 @@ export const BillingView: React.FC = () => {
                           <span className="font-semibold text-slate-850 font-mono">{pcs} pcs</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-500">Stitching Work Earnings (Total):</span>
-                          <span className="font-semibold text-slate-850 font-mono">{formatINR(workAmount)}</span>
+                          <span className="text-slate-500">Stitching Work Earnings (Gross):</span>
+                          <span className="font-semibold text-slate-850 font-mono">{formatINR(baseWorkAmount)}</span>
+                        </div>
+                        {stitchingDeductionAmount > 0 && (
+                          <div className="flex justify-between text-amber-700 font-medium">
+                            <span className="text-amber-800">Stitching Deductions ({stitchingDeductionReason || 'Job Deduc.'}):</span>
+                            <span className="font-bold font-mono">- {formatINR(stitchingDeductionAmount)}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span className="text-slate-500 font-bold">Stitching Work Earnings (Net):</span>
+                          <span className="font-bold text-slate-900 font-mono">{formatINR(workAmount)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-500">Vouchers / Material Deductions (-):</span>
