@@ -4,7 +4,7 @@
  */
 
 export type MasterType = 'jacket' | 'pant';
-export type ChallanStatus = 'issued' | 'billed' | 'voided';
+export type ChallanStatus = 'issued' | 'billed' | 'voided' | 'BILLED' | 'ISSUED' | 'VOIDED';
 export type InvoiceStatus = 'draft' | 'finalised';
 export type UserRole = 'issue_dept' | 'billing' | 'admin';
 
@@ -80,6 +80,9 @@ export interface Challan {
   notes: string;
   created_at: string;
   billedInvoiceId?: string;
+  invoiceId?: string;
+  invoiceNo?: string;
+  locked?: boolean;
   billedAt?: string;
   billedBy?: string;
   lastEditedAt?: string;

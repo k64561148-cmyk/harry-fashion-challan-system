@@ -233,7 +233,7 @@ class DatabaseService {
     const employeeName = currentUser.displayName || currentUser.name || email.split('@')[0];
     const role = currentUser.role || 'issue_dept';
 
-    return {
+    const enriched = {
       ...payload,
       auth: {
         uid: systemUid
@@ -244,6 +244,26 @@ class DatabaseService {
       createdAt: (payload as any).created_at || (payload as any).createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
+
+    // Clean up all key-value pairs that have 'undefined' values (which Firestore does not support and fails on)
+    const cleanObject = (obj: any): any => {
+      if (obj === null || typeof obj !== 'object') {
+        return obj;
+      }
+      if (Array.isArray(obj)) {
+        return obj.map(cleanObject);
+      }
+      const cleaned: any = {};
+      Object.keys(obj).forEach(key => {
+        const val = obj[key];
+        if (val !== undefined) {
+          cleaned[key] = cleanObject(val);
+        }
+      });
+      return cleaned;
+    };
+
+    return cleanObject(enriched);
   }
 
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T> {
@@ -642,25 +662,11 @@ class DatabaseService {
               if (key) mergedMap.set(key, item);
             });
 
-            // Overwrite/merge with remote records (remote is source of truth, but we don't discard local-only ones)
-            // We use standard Last-Write-Wins based on timestamps to guarantee local pending writes aren't overwritten by old remote cache snapshots
+            // Overwrite/merge with remote records (remote is source of truth, and always overwrites local duplicates to handle live sync instantly)
             remoteRecords.forEach(item => {
               const key = getKey(item);
               if (key) {
-                const localItem = mergedMap.get(key);
-                if (localItem) {
-                  const getStampTime = (obj: any) => {
-                    const val = obj.updatedAt || obj.updated_at || obj.lastEditedAt || obj.timestamp || obj.created_at || obj.createdAt || 0;
-                    return typeof val === 'number' ? val : new Date(val).getTime();
-                  };
-                  const localTime = getStampTime(localItem);
-                  const remoteTime = getStampTime(item);
-                  if (remoteTime >= localTime) {
-                    mergedMap.set(key, item);
-                  }
-                } else {
-                  mergedMap.set(key, item);
-                }
+                mergedMap.set(key, item);
               }
             });
 
@@ -2007,7 +2013,29 @@ class DatabaseService {
     return `INV-${yearStr}-${nextNum}`;
   }
 
-  saveInvoice(invoice: Partial<Invoice>, challanIds: string[]): Invoice {
+  async checkDuplicateChallans(challanIds: string[]): Promise<string | null> {
+    if (!this.isFirebaseInitialized) return null;
+    for (const challanId of challanIds) {
+      try {
+        const docRef = doc(firestore, 'challans', challanId);
+        const docSnap = await getDocFromServer(docRef);
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const status = (data.status || '').toLowerCase();
+          const invoiceId = data.invoiceId || data.billedInvoiceId || (data as any).invoice_id;
+          const invoiceNo = data.invoiceNo || (data as any).invoice_no;
+          if (status === 'billed' || status === 'voided' || status === 'void' || invoiceId) {
+            return invoiceNo || 'unknown';
+          }
+        }
+      } catch (err) {
+        console.warn(`Failed to re-read challan ${challanId} from server:`, err);
+      }
+    }
+    return null;
+  }
+
+  async saveInvoice(invoice: Partial<Invoice>, challanIds: string[]): Promise<Invoice> {
     if (this.hasNegativeStock()) {
       throw new Error("Stock trust blocked until negative stock is corrected.");
     }
@@ -2041,8 +2069,6 @@ class DatabaseService {
       base_work_amount: invoice.base_work_amount !== undefined ? invoice.base_work_amount : (invoice.work_amount || 0)
     };
 
-    invoiceList.push(newInvoice);
-
     const linkedInvoiceChallans: InvoiceChallan[] = [];
     const updatedChallans: Challan[] = [];
 
@@ -2052,35 +2078,42 @@ class DatabaseService {
         invoice_id: newInvoice.id,
         challan_id: id
       };
-      invoiceChallanList.push(bridge);
       linkedInvoiceChallans.push(bridge);
 
       // Update challan status
       const cIdx = challanList.findIndex(c => c.id === id);
       if (cIdx > -1) {
         if (newInvoice.status === 'finalised') {
-          challanList[cIdx].status = 'billed';
+          challanList[cIdx].status = 'BILLED';
           challanList[cIdx].billedInvoiceId = newInvoice.id;
+          challanList[cIdx].invoiceId = newInvoice.id;
+          challanList[cIdx].invoiceNo = newInvoice.invoice_no;
           challanList[cIdx].billedAt = new Date().toISOString();
-          challanList[cIdx].billedBy = currentUser.name || currentUser.username || currentUser.email;
+          challanList[cIdx].billedBy = currentUser.email || currentUser.name || currentUser.username || currentUser.email;
+          challanList[cIdx].locked = true;
         } else {
           challanList[cIdx].status = 'issued';
           delete challanList[cIdx].billedInvoiceId;
           delete challanList[cIdx].billedAt;
           delete challanList[cIdx].billedBy;
+          delete (challanList[cIdx] as any).invoiceId;
+          delete (challanList[cIdx] as any).invoiceNo;
+          delete (challanList[cIdx] as any).locked;
         }
         updatedChallans.push(challanList[cIdx]);
       }
     });
 
     const masterName = this.getMasters().find(m => m.id === newInvoice.master_id)?.name || 'Unknown Master';
-    this.addAuditLog(currentUser.email, 'Invoice Created', `Generated ${newInvoice.status} Invoice ${newInvoice.invoice_no} for Master ${masterName}. Net Payable: ₹${newInvoice.net_payable}`);
+    const auditRecord: AuditLog = {
+      id: generateUUID(),
+      user_email: currentUser.email,
+      action: 'Invoice Created',
+      details: `Generated ${newInvoice.status} Invoice ${newInvoice.invoice_no} for Master ${masterName}. Net Payable: ₹${newInvoice.net_payable}`,
+      created_at: new Date().toISOString()
+    };
 
-    this.save('invoices', invoiceList);
-    this.save('invoice_challans', invoiceChallanList);
-    this.save('challans', challanList);
-
-    // Deep write to Firestore using atomic batch
+    // Deep write to Firestore using atomic batch. Save ledger only after successes.
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
@@ -2099,12 +2132,32 @@ class DatabaseService {
           batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
         });
 
-        this.performCloudWrite(() => batch.commit())
-          .catch(error => handleFirestoreError(error, OperationType.WRITE, `invoices/${newInvoice.id}`));
-      } catch (err) {
-        console.warn(err);
+        // Write audit log
+        batch.set(doc(firestore, 'audit_logs', auditRecord.id), this.enrichPayload(auditRecord));
+
+        // Wait for Firestore to successfully complete
+        await this.performCloudWrite(() => batch.commit());
+      } catch (error: any) {
+        throw new Error(`Firestore settlement transaction failed: ${error.message || error}`);
       }
     }
+
+    // Committing to local ledger only after cloud success (or in offline mode)
+    invoiceList.push(newInvoice);
+    linkedInvoiceChallans.forEach(bridge => {
+      invoiceChallanList.push(bridge);
+    });
+
+    this.save('invoices', invoiceList);
+    this.save('invoice_challans', invoiceChallanList);
+    this.save('challans', challanList);
+
+    // Write audit log local cache
+    const logs = this.load<AuditLog[]>('audit_logs', []);
+    logs.unshift(auditRecord);
+    this.save('audit_logs', logs.slice(0, 1000));
+
+    window.dispatchEvent(new Event('db_sync'));
 
     return newInvoice;
   }
@@ -2154,15 +2207,21 @@ class DatabaseService {
         const cIdx = challanList.findIndex(c => c.id === cid);
         if (cIdx > -1) {
           if (updatedInvoice.status === 'finalised') {
-            challanList[cIdx].status = 'billed';
+            challanList[cIdx].status = 'BILLED';
             challanList[cIdx].billedInvoiceId = invoiceId;
+            challanList[cIdx].invoiceId = invoiceId;
+            challanList[cIdx].invoiceNo = updatedInvoice.invoice_no;
             challanList[cIdx].billedAt = new Date().toISOString();
-            challanList[cIdx].billedBy = currentUser.name || currentUser.username || currentUser.email;
+            challanList[cIdx].billedBy = currentUser.email || currentUser.name || currentUser.username || currentUser.email;
+            challanList[cIdx].locked = true;
           } else {
             challanList[cIdx].status = 'issued';
             delete challanList[cIdx].billedInvoiceId;
             delete challanList[cIdx].billedAt;
             delete challanList[cIdx].billedBy;
+            delete (challanList[cIdx] as any).invoiceId;
+            delete (challanList[cIdx] as any).invoiceNo;
+            delete (challanList[cIdx] as any).locked;
           }
           updatedChallans.push(challanList[cIdx]);
         }
@@ -2227,6 +2286,9 @@ class DatabaseService {
           delete challanList[cIdx].billedInvoiceId;
           delete challanList[cIdx].billedAt;
           delete challanList[cIdx].billedBy;
+          delete (challanList[cIdx] as any).invoiceId;
+          delete (challanList[cIdx] as any).invoiceNo;
+          delete (challanList[cIdx] as any).locked;
           updatedChallans.push(challanList[cIdx]);
         }
       });

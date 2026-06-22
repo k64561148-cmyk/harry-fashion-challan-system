@@ -174,8 +174,13 @@ export const BillingView: React.FC = () => {
       const linkedChallanIds = new Set(invoiceChallans.map(ic => ic.challan_id));
 
       const masterPending = allChallans.filter(c => {
+        const statusLower = ((c.status as any) || '').toLowerCase();
         // Must match master, must be in 'issued' state (not billed, not voided), and must not be currently linked to any invoice
-        if (c.master_id !== selectedMasterId || c.status !== 'issued' || linkedChallanIds.has(c.id)) {
+        if (c.master_id !== selectedMasterId || statusLower !== 'issued' || statusLower === 'voided' || statusLower === 'void') {
+          return false;
+        }
+        // Any challan with billed/settled status or invoice link must never appear in pending billing
+        if (c.invoiceId || c.billedInvoiceId || (c as any).invoice_id || linkedChallanIds.has(c.id)) {
           return false;
         }
         // Match selected month and year from YYYY-MM-DD
@@ -189,7 +194,8 @@ export const BillingView: React.FC = () => {
 
       // Fetch all billed challans for this master and period
       const masterSettled = allChallans.filter(c => {
-        if (c.master_id !== selectedMasterId || c.status !== 'billed') {
+        const statusLower = (c.status || '').toLowerCase();
+        if (c.master_id !== selectedMasterId || statusLower !== 'billed') {
           return false;
         }
         const parts = (c.issued_date || '').split('-');
@@ -373,6 +379,14 @@ export const BillingView: React.FC = () => {
         return;
       }
 
+      if (status === 'finalised') {
+        const alreadySettledInvoiceNo = await db.checkDuplicateChallans(activeChallanIds);
+        if (alreadySettledInvoiceNo) {
+          setErrorMsg(`Challan already settled under invoice ${alreadySettledInvoiceNo}`);
+          return;
+        }
+      }
+
       if (workAmount <= 0) {
         setErrorMsg('Stitching job earnings (Work Amount) must be configured.');
         return;
@@ -401,7 +415,7 @@ export const BillingView: React.FC = () => {
       };
 
       // 1. Commit and get compiled invoice Record
-      const invoiceResult = db.saveInvoice(invoicePayload, activeChallanIds);
+      const invoiceResult = await db.saveInvoice(invoicePayload, activeChallanIds);
 
       // Reload local data and notify other components
       loadInitialData();
@@ -848,85 +862,87 @@ export const BillingView: React.FC = () => {
                     )}
                   </div>
 
-                  {/* List 2: Settled Challans / Invoice History */}
+                  {/* List 2: Settled Invoices History */}
                   <div className="border-t border-slate-100 pt-4">
                     <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-800 mb-3 border-b border-emerald-100 pb-2">
                       <FileCheck className="w-4 h-4 text-emerald-600" />
-                      <span className="uppercase tracking-wider">Settled Challans / Invoice History ({settledChallans.length})</span>
+                      <span className="uppercase tracking-wider">Settled Invoices / History</span>
                     </div>
 
-                    {settledChallans.length === 0 ? (
-                      <div className="text-center py-6 text-slate-400 text-[11px] leading-relaxed bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
-                        No settled or billed challans found for this period.
-                      </div>
-                    ) : (
-                      <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
-                        {settledChallans.map(ch => {
-                          const linkedInvoice = allInvoices.find(inv => inv.id === ch.billedInvoiceId);
-                          const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
-                          return (
-                            <div 
-                              key={ch.id}
-                              className="bg-emerald-50/20 hover:bg-emerald-50/45 p-3 rounded-xl border border-emerald-100/50 text-left transition text-xs"
-                            >
-                              <div className="flex justify-between items-center font-bold text-slate-900">
-                                <span className="text-emerald-950 flex items-center gap-1">
-                                  <span>{ch.challan_no}</span>
-                                  <span className="text-[8px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.2 rounded uppercase">Settled</span>
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
-                              </div>
-                              <p className="text-[10px] text-slate-500 mt-0.5">
-                                Issued By: {ch.issued_by}
-                              </p>
-                              {cleanNotes && (
-                                <p className="text-[9.5px] text-slate-400 italic mt-0.5 max-w-[200px] truncate">
-                                  "{cleanNotes}"
-                                </p>
-                              )}
-                              {ch.editReason && (
-                                <div className="mt-1 text-[9px] text-amber-800 font-medium leading-relaxed max-w-[210px] truncate">
-                                  <span className="font-bold">Edit Reason:</span> "{ch.editReason}"
+                    {(() => {
+                      const periodInvoices = allInvoices.filter(inv => 
+                        inv.master_id === selectedMasterId && 
+                        inv.period_month === periodMonth && 
+                        inv.period_year === periodYear &&
+                        inv.status === 'finalised'
+                      );
+
+                      if (periodInvoices.length === 0) {
+                        return (
+                          <div className="text-center py-6 text-slate-400 text-[11px] leading-relaxed bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
+                            No settled invoices found for this period.
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
+                          {periodInvoices.map(inv => {
+                            const allChallans = db.getChallans();
+                            const includedChallans = allChallans.filter(c => c.invoiceId === inv.id || c.billedInvoiceId === inv.id);
+                            const challanNoString = includedChallans.length > 0
+                              ? includedChallans.map(c => c.challan_no).join(', ')
+                              : 'No linked challans';
+
+                            return (
+                              <div 
+                                key={inv.id}
+                                className="bg-emerald-50/20 hover:bg-emerald-50/45 p-3 rounded-xl border border-emerald-100/50 text-left transition text-xs"
+                              >
+                                <div className="flex justify-between items-center font-bold text-slate-900 mb-1.5">
+                                  <span className="text-emerald-950 flex items-center gap-1">
+                                    <span>No: {inv.invoice_no}</span>
+                                    <span className="text-[8px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.2 rounded uppercase">Settled</span>
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono">{formatDate(inv.created_at.split('T')[0])}</span>
                                 </div>
-                              )}
+                                
+                                <div className="text-[10px] text-slate-500 mb-2 leading-relaxed">
+                                  <span className="font-semibold text-slate-600">Included Challans:</span> {challanNoString}
+                                </div>
 
-                              {linkedInvoice ? (
-                                <div className="mt-2.5 p-2 bg-white rounded-lg border border-emerald-100/60 shadow-xs flex flex-col gap-1 text-[11.5px]">
-                                  <div className="flex justify-between font-bold text-slate-800">
-                                    <span>Invoice No:</span>
-                                    <span className="font-mono text-emerald-900">{linkedInvoice.invoice_no}</span>
-                                  </div>
-                                  <div className="flex justify-between font-medium text-slate-500 text-[10.5px]">
-                                    <span>Date: {formatDate(linkedInvoice.invoice_date)}</span>
-                                    <span className="font-bold font-mono text-emerald-750">₹{linkedInvoice.net_payable.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                                <div className="p-2 bg-white rounded-lg border border-emerald-100/60 shadow-xs flex justify-between items-center text-[11.5px]">
+                                  <div className="flex flex-col">
+                                    <span className="text-[8.5px] text-slate-400 font-medium uppercase leading-none mb-0.5">Grand Total</span>
+                                    <span className="font-bold font-mono text-emerald-750">
+                                      ₹{inv.net_payable.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                    </span>
                                   </div>
 
-                                  <div className="flex items-center justify-end gap-2.5 mt-1.5 pt-1.5 border-t border-slate-100 font-bold text-[10px]">
+                                  <div className="flex items-center gap-2 font-bold text-[10px]">
                                     <button 
-                                      onClick={() => triggerListPDFPrint(linkedInvoice)}
+                                      onClick={() => triggerListPDFPrint(inv)}
                                       className="text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-indigo-50/40 cursor-pointer"
                                       title="Print/View PDF"
                                     >
-                                      <Printer className="w-2.8 h-2.8" /> Direct Print
+                                      <Printer className="w-2.8 h-2.8" /> View / Print
                                     </button>
                                     <span className="text-slate-200">|</span>
                                     <button 
-                                      onClick={() => triggerListPDFDownload(linkedInvoice)}
+                                      onClick={() => triggerListPDFDownload(inv)}
                                       className="text-amber-700 hover:text-amber-900 flex items-center gap-0.5 px-1 py-0.5 rounded hover:bg-amber-50/40 cursor-pointer"
                                       title="Download Ledger PDF"
                                     >
-                                      <Download className="w-2.8 h-2.8" /> Download PDF
+                                      <Download className="w-2.8 h-2.8" /> PDF
                                     </button>
                                   </div>
                                 </div>
-                              ) : (
-                                <p className="text-[9px] text-amber-600 italic font-semibold mt-1">Invoice linked ID: {ch.billedInvoiceId || 'None found'}</p>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                 </div>

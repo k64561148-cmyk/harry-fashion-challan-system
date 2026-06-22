@@ -108,7 +108,7 @@ service cloud.firestore {
         && data.master_id is string && data.master_id.size() <= 128
         && data.issued_date is string
         && data.issued_by is string && data.issued_by.size() <= 200
-        && data.status is string && (data.status == 'issued' || data.status == 'billed' || data.status == 'voided')
+        && data.status is string && (data.status == 'issued' || data.status == 'billed' || data.status == 'voided' || data.status == 'BILLED' || data.status == 'ISSUED' || data.status == 'VOIDED')
         && data.notes is string && data.notes.size() <= 2000
         && data.created_at is string;
     }
