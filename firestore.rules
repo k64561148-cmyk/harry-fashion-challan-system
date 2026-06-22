@@ -181,7 +181,7 @@ service cloud.firestore {
     match /challans/{challanId} {
       allow read: if isSignedIn();
       allow create: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow update: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
+      allow update: if (isIssueDept() || isBilling()) && isValidId(challanId) && isValidChallan(request.resource.data);
       allow delete: if isAdmin() && isValidId(challanId);
     }
 
