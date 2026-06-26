@@ -1259,8 +1259,8 @@ export const BillingView: React.FC = () => {
                   <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3 text-xs">
                     <p className="font-bold text-[#1A2E4A] uppercase tracking-wider text-[10px] flex items-center justify-between border-b pb-1">
                       <span>PRE-FLIGHT BILL VALIDATION</span>
-                      <span className={isBillingValid && !db.hasNegativeStock() ? "text-green-600 font-extrabold" : "text-rose-500 font-extrabold"}>
-                        {isBillingValid && !db.hasNegativeStock() ? "PASS" : "ATTENTION REQUIRED"}
+                      <span className={isBillingValid ? "text-green-600 font-extrabold" : "text-rose-500 font-extrabold"}>
+                        {isBillingValid ? "PASS" : "ATTENTION REQUIRED"}
                       </span>
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-650">
@@ -1324,12 +1324,6 @@ export const BillingView: React.FC = () => {
                       </div>
                     )}
 
-                    {db.hasNegativeStock() && (
-                      <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 animate-pulse mt-2">
-                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                        <span>Stock trust blocked until negative stock is corrected. Finalisation is disabled.</span>
-                      </div>
-                    )}
                   </div>
 
                   {errorMsg && (
@@ -1341,7 +1335,7 @@ export const BillingView: React.FC = () => {
                   <div className="flex gap-2.5 pt-2">
                     <button
                       type="button"
-                      disabled={loading || db.hasNegativeStock()}
+                      disabled={loading}
                       onClick={() => handleGenerateInvoice('draft')}
                       className="flex-1 bg-slate-100 hover:bg-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:cursor-not-allowed text-slate-800 font-bold py-2.5 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
                     >
@@ -1349,7 +1343,7 @@ export const BillingView: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      disabled={loading || !isBillingValid || db.hasNegativeStock()}
+                      disabled={loading || !isBillingValid}
                       onClick={() => handleGenerateInvoice('finalised')}
                       className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-lg text-xs shadow-sm cursor-pointer transition uppercase tracking-wider"
                     >

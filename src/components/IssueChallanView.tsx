@@ -31,6 +31,41 @@ interface ChallanFormItem {
   stockWarning: boolean;
 }
 
+const getFilteredAndRankedMaterials = (search: string, allMaterials: Material[]) => {
+  const query = search.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!query) return allMaterials;
+
+  return allMaterials
+    .map(m => {
+      const nameLower = m.name.toLowerCase().replace(/\s+/g, ' ');
+      
+      // 1. Exact match
+      if (nameLower === query) {
+        return { material: m, score: 1 };
+      }
+      // 2. Material name starts with search text
+      if (nameLower.startsWith(query)) {
+        return { material: m, score: 2 };
+      }
+      // 3. Any word in material name starts with search text
+      const words = nameLower.split(' ');
+      const anyWordStarts = words.some(w => w.startsWith(query));
+      if (anyWordStarts) {
+        return { material: m, score: 3 };
+      }
+      // 4. Material name contains search text anywhere
+      if (nameLower.includes(query)) {
+        return { material: m, score: 4 };
+      }
+      
+      // No match
+      return { material: m, score: 999 };
+    })
+    .filter(item => item.score < 999)
+    .sort((a, b) => a.score - b.score)
+    .map(item => item.material);
+};
+
 export const IssueChallanView: React.FC = () => {
   const [masters, setMasters] = useState<Master[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -110,24 +145,19 @@ export const IssueChallanView: React.FC = () => {
 
   // Derived check if the combined total of a material exceeds available stock
   const isRowOverStock = React.useCallback((item: ChallanFormItem) => {
-    if (!item.material_id) return false;
-    const mat = materials.find(m => m.id === item.material_id);
-    if (!mat) return false;
-    const totalQty = aggregatedQtys[item.material_id] || 0;
-    return totalQty > mat.current_stock;
-  }, [aggregatedQtys, materials]);
+    return false;
+  }, []);
 
-  // Recalculates amount and total excluding over-stock rows
+  // Recalculates amount and total
   useEffect(() => {
     let tot = 0;
     items.forEach(item => {
-      if (isRowOverStock(item)) return; // Exclude over-stock items from totals
       const q = parseFloat(String(item.qty)) || 0;
       const r = parseFloat(String(item.rate)) || 0;
       tot += q * r;
     });
     setRunningTotal(tot);
-  }, [items, isRowOverStock]);
+  }, [items]);
 
   const addItemRow = () => {
     setItems(prev => [...prev, ...createBlankRows(1, prev.length)]);
@@ -172,16 +202,14 @@ export const IssueChallanView: React.FC = () => {
 
     setItems(prev => prev.map(item => {
       if (item.id === rowId) {
-        // Stock level warning check
         const q = parseFloat(String(item.qty)) || 0;
-        const isExcess = q > mat.current_stock;
         return {
           ...item,
           material_id: materialId,
           unit: mat.unit,
           rate: rate,
           amount: q * rate,
-          stockWarning: isExcess
+          stockWarning: false
         };
       }
       return item;
@@ -199,15 +227,8 @@ export const IssueChallanView: React.FC = () => {
 
     setItems(prev => prev.map(item => {
       if (item.id === rowId) {
-        let warning = false;
-        if (item.material_id) {
-          const mat = materials.find(m => m.id === item.material_id);
-          if (mat && qtyNum > mat.current_stock) {
-            warning = true;
-          }
-        }
         const rateNum = parseFloat(String(item.rate)) || 0;
-        return { ...item, qty: finalVal, amount: qtyNum * rateNum, stockWarning: warning };
+        return { ...item, qty: finalVal, amount: qtyNum * rateNum, stockWarning: false };
       }
       return item;
     }));
@@ -318,20 +339,7 @@ export const IssueChallanView: React.FC = () => {
   );
 
   // List of clear error messages for materials exceeding stock
-  const stockErrors = React.useMemo(() => {
-    const messages: string[] = [];
-    const formatQty = (v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1);
-
-    Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
-      const mat = materials.find(m => m.id === materialId);
-      const qtyNum = totalQty as number;
-      if (mat && qtyNum > mat.current_stock) {
-        messages.push(`${mat.name} total issue ${formatQty(qtyNum)} exceeds stock ${formatQty(mat.current_stock)} ${mat.unit || 'pc'}.`);
-      }
-    });
-
-    return messages;
-  }, [aggregatedQtys, materials]);
+  const stockErrors: string[] = [];
 
   const autoMergeDuplicates = () => {
     const mergedMap: { [matId: string]: ChallanFormItem } = {};
@@ -368,7 +376,7 @@ export const IssueChallanView: React.FC = () => {
     setItems(finalRows);
   };
 
-  const hasOverStockError = stockErrors.length > 0;
+  const hasOverStockError = false;
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm max-w-5xl mx-auto" id="issue-challan-view">
@@ -385,15 +393,7 @@ export const IssueChallanView: React.FC = () => {
         </div>
       </div>
 
-      {db.hasNegativeStock() && (
-        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold flex items-center gap-3 mb-6 animate-pulse">
-          <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
-          <div>
-            <h4 className="font-bold text-sm text-rose-900 leading-none mb-1">Global Business Lock Active</h4>
-            <p className="text-rose-700">Stock trust blocked until negative stock is corrected. Issue Challan finalization, Billing finalization, and PDF downloads are disabled.</p>
-          </div>
-        </div>
-      )}
+
 
       {successChallan ? (
         /* Success Screen */
@@ -562,30 +562,82 @@ export const IssueChallanView: React.FC = () => {
                           {index + 1}
                         </td>
 
-                        {/* Dropdown Material Selector */}
-                        <td className="py-3 px-3 align-middle">
-                          <select
-                            className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold cursor-pointer"
-                            value={item.material_id}
-                            onChange={(e) => handleMaterialSelect(item.id, e.target.value)}
-                          >
-                            <option value="">-- Choose Material --</option>
-                            {materials.map(m => {
-                              const resolvedRate = selectedMasterId ? db.getRateForMaster(selectedMasterId, m.id) : m.default_rate;
-                              return (
-                                <option key={m.id} value={m.id}>
-                                  {m.name} [₹{resolvedRate} / Stock: {m.current_stock.toFixed(1)} {m.unit}]
-                                </option>
-                              );
-                            })}
-                          </select>
-                          
-                          {/* Stock error tag */}
-                          {isRowOverStock(item) && matObj && (
-                            <span className="text-[10px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-0.5 mt-1 block w-max font-bold flex items-center gap-1 animate-pulse">
-                              <AlertTriangle className="w-3.5 h-3.5 text-rose-600 animate-bounce" /> Error: Combined total issue for {matObj.name} exceeds available stock ({matObj.current_stock.toFixed(1)} {item.unit || matObj.unit} available). Row excluded from total.
-                            </span>
-                          )}
+                        {/* Autocomplete Material Selector */}
+                        <td className="py-3 px-3 align-middle relative">
+                          <div className="relative">
+                            <input
+                              type="text"
+                              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold"
+                              placeholder="Type to search material..."
+                              value={rowSearchTerms[item.id] !== undefined ? rowSearchTerms[item.id] : (materials.find(m => m.id === item.material_id)?.name || '')}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setRowSearchTerms(prev => ({ ...prev, [item.id]: val }));
+                                if (!val) {
+                                  // Clear selected material if cleared
+                                  setItems(prevItems => prevItems.map(prevItem => {
+                                    if (prevItem.id === item.id) {
+                                      return { ...prevItem, material_id: '', rate: '', amount: 0, stockWarning: false };
+                                    }
+                                    return prevItem;
+                                  }));
+                                } else {
+                                  // If there is an exact match while typing, select it automatically
+                                  const exactMat = materials.find(m => m.name.toLowerCase() === val.toLowerCase());
+                                  if (exactMat) {
+                                    handleMaterialSelect(item.id, exactMat.id);
+                                  }
+                                }
+                                setFocusedRowId(item.id);
+                              }}
+                              onFocus={() => {
+                                setFocusedRowId(item.id);
+                                if (rowSearchTerms[item.id] === undefined) {
+                                  const existingName = materials.find(m => m.id === item.material_id)?.name || '';
+                                  setRowSearchTerms(prev => ({ ...prev, [item.id]: existingName }));
+                                }
+                              }}
+                              onBlur={() => {
+                                // Delay slightly so clicks in dropdown register
+                                setTimeout(() => {
+                                  setFocusedRowId(current => current === item.id ? null : current);
+                                }, 250);
+                              }}
+                            />
+                            
+                            {/* Suggestions Dropdown */}
+                            {focusedRowId === item.id && (
+                              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-56 overflow-y-auto">
+                                {(() => {
+                                  const currentSearch = rowSearchTerms[item.id] || '';
+                                  const filtered = getFilteredAndRankedMaterials(currentSearch, materials);
+                                  
+                                  if (filtered.length === 0) {
+                                    return <p className="p-2.5 text-[11px] text-slate-400 text-center">No matching materials found</p>;
+                                  }
+
+                                  return filtered.map(m => {
+                                    const resolvedRate = selectedMasterId ? db.getRateForMaster(selectedMasterId, m.id) : m.default_rate;
+                                    return (
+                                      <button
+                                        key={m.id}
+                                        type="button"
+                                        onMouseDown={() => {
+                                          handleMaterialSelect(item.id, m.id);
+                                        }}
+                                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 font-bold text-slate-700 hover:text-[#1A2E4A] transition flex justify-between items-center border-b border-slate-50 last:border-0"
+                                      >
+                                        <span>{m.name}</span>
+                                        <span className="bg-slate-100 text-slate-500 text-[10px] px-1.5 py-0.5 rounded font-bold">
+                                          ₹{resolvedRate}
+                                        </span>
+                                      </button>
+                                    );
+                                  });
+                                })()}
+                              </div>
+                            )}
+                          </div>
                         </td>
 
                         {/* Quantity */}
@@ -682,22 +734,12 @@ export const IssueChallanView: React.FC = () => {
           </div>
 
           {/* Error panel / warnings */}
-          {(errorMessage || hasOverStockError) && (
+          {errorMessage && (
             <div className="p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg space-y-1.5 text-xs flex flex-col">
               <span className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-rose-900">
-                <AlertTriangle className="w-4 h-4 text-rose-600 animate-bounce" /> Warning / Hard Block Activated
+                <AlertTriangle className="w-4 h-4 text-rose-600 animate-bounce" /> Warning / Validation Error
               </span>
-              {errorMessage && <p className="text-rose-700 leading-relaxed">{errorMessage}</p>}
-              {stockErrors.map((err, idx) => (
-                <p key={idx} className="text-rose-800 font-semibold leading-relaxed">
-                  • {err}
-                </p>
-              ))}
-              {!errorMessage && stockErrors.length === 0 && (
-                <p className="text-rose-700 leading-relaxed">
-                  One or more line items have exceeded the current available stock. These lines have been excluded from the running total, and submission is disabled. Please decrease the quantity or choose a different item.
-                </p>
-              )}
+              <p className="text-rose-700 leading-relaxed">{errorMessage}</p>
             </div>
           )}
 
@@ -706,7 +748,7 @@ export const IssueChallanView: React.FC = () => {
             <div className="flex items-center gap-2">
               <Calculator className="w-5 h-5 text-blue-300" />
               <div>
-                <p className="text-[10px] text-slate-300 font-bold font-sans uppercase">AGGREGATE ESTIMATED OUTFLOW (EXCLUDING BLOCKED LINES)</p>
+                <p className="text-[10px] text-slate-300 font-bold font-sans uppercase">TOTAL OUTFLOW AMOUNT</p>
                 <p className="text-xl font-bold font-mono text-white">{formatINR(runningTotal)}</p>
               </div>
             </div>
@@ -722,7 +764,7 @@ export const IssueChallanView: React.FC = () => {
               
               <button
                 type="submit"
-                disabled={loading || hasOverStockError || db.hasNegativeStock()}
+                disabled={loading}
                 className="flex-1 sm:flex-initial bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition"
               >
                 {loading ? 'Processing...' : 'Issue Challan & Print'}

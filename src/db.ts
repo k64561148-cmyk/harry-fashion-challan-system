@@ -1115,9 +1115,6 @@ class DatabaseService {
   }
 
   saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Challan {
-    if (this.hasNegativeStock()) {
-      throw new Error("Stock trust blocked until negative stock is corrected.");
-    }
     const challanList = this.getChallans();
     const allItemsList = this.getChallanItems();
     const materialsList = this.getMaterials();
@@ -1128,13 +1125,6 @@ class DatabaseService {
     items.forEach((item) => {
       if (item.material_id) {
         aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + item.qty;
-      }
-    });
-
-    Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
-      const mat = materialsList.find(m => m.id === materialId);
-      if (mat && totalQty > mat.current_stock) {
-        throw new Error(`Save blocked: Total requested quantity for ${mat.name} (${totalQty} ${mat.unit}) exceeds available stock (${mat.current_stock.toFixed(1)} ${mat.unit}).`);
       }
     });
 
@@ -1175,9 +1165,6 @@ class DatabaseService {
       const matIndex = materialsList.findIndex(m => m.id === item.material_id);
       if (matIndex > -1) {
         const nextStock = materialsList[matIndex].current_stock - item.qty;
-        if (nextStock < 0) {
-          throw new Error(`Transaction aborted: Operation would make material ${materialsList[matIndex].name} stock negative (${nextStock.toFixed(1)}).`);
-        }
         materialsList[matIndex].current_stock = nextStock;
         modifiedMaterials.push(materialsList[matIndex]);
       }
@@ -2036,9 +2023,6 @@ class DatabaseService {
   }
 
   async saveInvoice(invoice: Partial<Invoice>, challanIds: string[]): Promise<Invoice> {
-    if (this.hasNegativeStock()) {
-      throw new Error("Stock trust blocked until negative stock is corrected.");
-    }
     const invoiceList = this.getInvoices();
     const invoiceChallanList = this.getInvoiceChallans();
     const challanList = this.getChallans();
@@ -2163,9 +2147,6 @@ class DatabaseService {
   }
 
   editInvoice(invoiceId: string, fields: Partial<Invoice>): Invoice {
-    if (this.hasNegativeStock()) {
-      throw new Error("Stock trust blocked until negative stock is corrected.");
-    }
     const invoiceList = this.getInvoices();
     const currentUser = this.getCurrentUser();
     
