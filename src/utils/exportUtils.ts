@@ -380,277 +380,215 @@ export async function generateChallanPDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
-  if (materials.some(m => m.current_stock < 0)) {
-    const errMsg = "Stock trust blocked until negative stock is corrected.";
-    showPDFError(errMsg);
-    throw new Error(errMsg);
-  }
   const dismiss = showPDFLoading(`Preparing Challan ${challan.challan_no}...`);
   try {
     await new Promise(resolve => setTimeout(resolve, 150));
     const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: 'a4'
-  });
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
 
-  drawLetterhead(doc, 'Material Issue Challan');
+    const drawHalfChallan = (yOffset: number, copyLabel: 'MASTER COPY' | 'OFFICE COPY') => {
+      // 1. Header: ONLY "HARRY FASHION LLP" and "MATERIAL ISSUE CHALLAN"
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(0, 0, 0);
+      doc.text('HARRY FASHION LLP', 10, yOffset + 14);
 
-  // Beautiful Info Card Block (y = 64 to 92)
-  doc.setFillColor(248, 250, 252); // extremely soft slate blue-grey
-  doc.rect(14, 64, 182, 28, 'F');
-  
-  doc.setDrawColor(218, 224, 233);
-  doc.setLineWidth(0.35);
-  doc.rect(14, 64, 182, 28, 'D');
-  
-  // Middle vertical dividing line
-  doc.line(105, 64, 105, 92);
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.text('MATERIAL ISSUE CHALLAN', 10, yOffset + 19.5);
 
-  // Left Column: ISSUED TO (Master)
-  doc.setFontSize(8.5);
-  doc.setTextColor(100, 116, 139); // Slate-500
-  doc.setFont('Helvetica', 'bold');
-  doc.text('ISSUED TO (MASTER CRAFTSMAN)', 18, 70);
+      // Copy Label on the top right
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.text(copyLabel, 200, yOffset + 14, { align: 'right' });
 
-  doc.setFontSize(11);
-  doc.setTextColor(15, 23, 42); // Slate-900 (Deep dark)
-  doc.text(master.name, 18, 76);
+      // Clean Solid separator line under header
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.4);
+      doc.line(10, yOffset + 22, 200, yOffset + 22);
 
-  doc.setFontSize(8.5);
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105); // Slate-600
-  doc.text(`Master Code: ${master.code}`, 18, 82);
-  doc.text(`Department: ${master.type.toUpperCase()} Segment`, 18, 87);
+      // 2. Metadata / Information section
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(8.5);
+      doc.setTextColor(0, 0, 0);
 
-  // Right Column: CHALLAN DETAILS
-  doc.setFont('Helvetica', 'bold');
-  doc.setTextColor(100, 116, 139); // Slate-500
-  doc.text('CHALLAN METADATA', 110, 70);
+      // Column 1: Master Craftsman
+      doc.setFont('Helvetica', 'bold');
+      doc.text('ISSUED TO (MASTER CRAFTSMAN):', 10, yOffset + 27);
+      doc.setFont('Helvetica', 'normal');
+      doc.text(`${master.name} (${master.code})`, 10, yOffset + 31.5);
+      doc.text(`Department: ${master.type.toUpperCase()} Segment`, 10, yOffset + 36);
 
-  doc.setFontSize(11);
-  doc.setTextColor(180, 20, 20); // Accent Red for number
-  doc.text(challan.challan_no, 110, 76);
+      // Column 2: Challan Details
+      doc.setFont('Helvetica', 'bold');
+      doc.text('CHALLAN METADATA:', 120, yOffset + 27);
+      doc.setFont('Helvetica', 'normal');
+      doc.text(`Challan No: ${challan.challan_no}`, 120, yOffset + 31.5);
+      doc.text(`Date: ${formatDate(challan.issued_date)}`, 120, yOffset + 36);
+      doc.text(`Issued By: ${challan.issued_by || 'Office Desk'}`, 120, yOffset + 40.5);
 
-  doc.setFontSize(8.5);
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(71, 85, 105); // Slate-600
-  doc.text(`Issued Date: ${formatDate(challan.issued_date)}`, 110, 82);
-  doc.text(`Issued By: ${challan.issued_by || 'Office Desk'}`, 110, 87);
+      // 3. Compact Dynamic Table Sizing
+      const numItems = items.length;
+      let rowHeight = 5.2;
+      let fontSize = 8;
+      if (numItems > 6) {
+        rowHeight = Math.max(3.2, 5.2 - (numItems - 6) * 0.25);
+        fontSize = Math.max(6.5, 8 - (numItems - 6) * 0.25);
+      }
 
-  // Draw Status Badge at top right
-  const badgeX = 166;
-  const badgeY = 66;
-  const statusUpper = challan.status.toUpperCase();
-  const isBilled = challan.status === 'billed';
-  
-  if (isBilled) {
-    doc.setFillColor(220, 252, 231); // Green-100
-    doc.rect(badgeX, badgeY, 26, 6, 'F');
-    doc.setDrawColor(187, 247, 208); // Green-200
-    doc.rect(badgeX, badgeY, 26, 6, 'D');
-    doc.setTextColor(21, 128, 61); // Green-700
-  } else {
-    doc.setFillColor(254, 243, 199); // Amber-100
-    doc.rect(badgeX, badgeY, 26, 6, 'F');
-    doc.setDrawColor(253, 230, 138); // Amber-200
-    doc.rect(badgeX, badgeY, 26, 6, 'D');
-    doc.setTextColor(180, 83, 9); // Amber-700
-  }
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(7.5);
-  doc.text(statusUpper, badgeX + 13, badgeY + 4.2, { align: 'center' });
+      let tableY = yOffset + 44;
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.35);
+      
+      // Header top line
+      doc.line(10, tableY, 200, tableY);
 
-  // Table header
-  let y = 98;
-  doc.setFillColor(26, 46, 74); // Slate Navy
-  doc.rect(14, y, 182, 8, 'F');
-  
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.text('SR', 18, y + 5.5);
-  doc.text('PARTICULAR / MATERIAL DESCRIPTION', 28, y + 5.5);
-  doc.text('QTY', 115, y + 5.5, { align: 'right' });
-  doc.text('UNIT', 125, y + 5.5);
-  doc.text('RATE (Rs.)', 155, y + 5.5, { align: 'right' });
-  doc.text('AMOUNT (Rs.)', 192, y + 5.5, { align: 'right' });
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(fontSize);
+      doc.setTextColor(0, 0, 0);
 
-  // Rows
-  y += 8;
-  doc.setFont('Helvetica', 'normal');
-  doc.setTextColor(20, 30, 40);
-  doc.setLineWidth(0.2);
-  
-  let runningTotal = 0;
-  
-  items.forEach((item, index) => {
-    const mat = materials.find(m => m.id === item.material_id);
-    const materialLabel = mat ? mat.name : 'Unknown Material';
-    const unitLabel = mat ? mat.unit : 'pc';
+      doc.text('SR', 12, tableY + 4);
+      doc.text('MATERIAL NAME', 20, tableY + 4);
+      doc.text('QUANTITY', 116, tableY + 4, { align: 'right' });
+      doc.text('UNIT', 120, tableY + 4);
+      doc.text('RATE (Rs.)', 160, tableY + 4, { align: 'right' });
+      doc.text('AMOUNT (Rs.)', 198, tableY + 4, { align: 'right' });
 
-    // Draw row background tint for grid readability
-    if (index % 2 === 1) {
-      doc.setFillColor(248, 249, 250);
-      doc.rect(14, y, 182, 8, 'F');
+      // Header bottom line
+      doc.line(10, tableY + 5.5, 200, tableY + 5.5);
+
+      let currentY = tableY + 5.5;
+      let totalQty = 0;
+      let totalAmount = 0;
+
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(fontSize);
+
+      items.forEach((item, index) => {
+        const mat = materials.find(m => m.id === item.material_id);
+        const materialName = mat ? mat.name : 'Unknown Material';
+        const unit = mat ? mat.unit : 'pc';
+        totalQty += item.qty;
+        totalAmount += item.amount;
+
+        doc.text(String(index + 1), 12, currentY + rowHeight - 1);
+        doc.text(materialName, 20, currentY + rowHeight - 1);
+        doc.text(item.qty.toFixed(1), 116, currentY + rowHeight - 1, { align: 'right' });
+        doc.text(unit, 120, currentY + rowHeight - 1);
+        doc.text(formatINR(item.rate), 160, currentY + rowHeight - 1, { align: 'right' });
+        doc.text(formatINR(item.amount), 198, currentY + rowHeight - 1, { align: 'right' });
+
+        // Bottom row border
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.15);
+        doc.line(10, currentY + rowHeight, 200, currentY + rowHeight);
+        currentY += rowHeight;
+      });
+
+      // Table outer borders & vertical grids
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.35);
+      doc.line(10, tableY, 200, tableY); // top
+      doc.line(10, currentY, 200, currentY); // bottom
+      doc.line(10, tableY, 10, currentY); // left
+      doc.line(200, tableY, 200, currentY); // right
+
+      // Vertical separators
+      doc.line(18, tableY, 18, currentY);
+      doc.line(100, tableY, 100, currentY);
+      doc.line(118, tableY, 118, currentY);
+      doc.line(132, tableY, 132, currentY);
+      doc.line(162, tableY, 162, currentY);
+
+      // Summary lines
+      currentY += 4.5;
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(fontSize);
+      doc.text(`Total Items: ${items.length}    |    Total Qty: ${totalQty.toFixed(1)}    |    Total Value: ₹${formatINR(totalAmount)}`, 12, currentY);
+
+      // Notes
+      if (challan.notes) {
+        currentY += 4;
+        doc.setFont('Helvetica', 'bold');
+        doc.setFontSize(fontSize - 1);
+        doc.text('Notes / Remarks:', 12, currentY);
+        doc.setFont('Helvetica', 'normal');
+        doc.text(challan.notes, 38, currentY);
+      }
+
+      // Voided watermark
+      if (challan.status === 'voided') {
+        doc.saveGraphicsState();
+        doc.setTextColor(180, 180, 180);
+        doc.setFont('Helvetica', 'bold');
+        doc.setFontSize(40);
+        doc.text('VOIDED', 105, yOffset + 80, { align: 'center', angle: 25 });
+        doc.restoreGraphicsState();
+      }
+
+      // 4. Signatures (Pinned relative to half height bottom)
+      const sigY = yOffset + 137;
+      doc.setDrawColor(0, 0, 0);
+      doc.setLineWidth(0.3);
+      
+      // Issuer Signature line & label
+      doc.line(12, sigY - 4, 70, sigY - 4);
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.text('ISSUER SIGNATURE', 12, sigY);
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text('(For HARRY FASHION LLP)', 12, sigY + 3.5);
+
+      // Receiver Signature line & label
+      doc.line(140, sigY - 4, 198, sigY - 4);
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.text('RECEIVER SIGNATURE', 140, sigY);
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text('(Master Craftsman Signature)', 140, sigY + 3.5);
+    };
+
+    // Draw MASTER COPY in Top Half
+    drawHalfChallan(0, 'MASTER COPY');
+
+    // Draw Thin dashed Cut Line at middle (y = 148.5)
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.3);
+    doc.setLineDashPattern([2, 2], 0);
+    doc.line(10, 148.5, 200, 148.5);
+    doc.setLineDashPattern([], 0); // reset to solid
+
+    // Draw OFFICE COPY in Bottom Half
+    drawHalfChallan(148.5, 'OFFICE COPY');
+
+    // Return generated PDF blob
+    const pdfBlob = doc.output('blob');
+    
+    if (autoDownload) {
+      smartSavePDF({
+        blob: pdfBlob,
+        category: 'challan',
+        dateText: getFolderChallanDateText(challan.issued_date),
+        masterName: master.name,
+        fileNo: challan.challan_no,
+        isVoided: challan.status === 'voided'
+      });
     }
 
-    doc.setFont('Helvetica', 'normal');
-    doc.text(String(index + 1), 18, y + 5.5);
-    doc.text(materialLabel, 28, y + 5.5);
-    doc.text(item.qty.toFixed(1), 115, y + 5.5, { align: 'right' });
-    doc.text(unitLabel, 125, y + 5.5);
-    doc.text(formatINR(item.rate), 155, y + 5.5, { align: 'right' });
-    doc.text(formatINR(item.amount), 192, y + 5.5, { align: 'right' });
-    
-    runningTotal += item.amount;
-    
-    // Bottom cell border line
-    doc.setDrawColor(220, 225, 230);
-    doc.line(14, y + 8, 196, y + 8);
-    y += 8;
-  });
+    if (shouldPrint) {
+      printPDFDoc(doc);
+    }
 
-  // Gross Total Row
-  doc.setFillColor(240, 245, 250);
-  doc.rect(14, y, 182, 10, 'F');
-  
-  doc.setFont('Helvetica', 'bold');
-  doc.text('TOTAL CHALLAN VALUE (Rs.)', 28, y + 6.5);
-  doc.text(formatINR(runningTotal), 192, y + 6.5, { align: 'right' });
-  
-  doc.setDrawColor(26, 46, 74);
-  doc.setLineWidth(0.4);
-  doc.line(14, y, 196, y);
-  doc.line(14, y + 10, 196, y + 10);
+    const yr = new Date().getFullYear();
+    const mo = String(new Date().getMonth() + 1).padStart(2, '0');
+    console.log(`Saved PDF using Smart Folder System / Cloud: /challans/${yr}-${mo}/CHALLAN_${challan.challan_no}.pdf`);
 
-  y += 15;
-
-  // Print Amount in Words
-  doc.setFont('Helvetica', 'italic');
-  doc.setFontSize(8.5);
-  doc.setTextColor(71, 85, 105);
-  const words = numberToIndianWords(runningTotal);
-  doc.text(`Amount in Words: ${words}`, 14, y);
-  y += 10;
-
-  // Notes area if present
-  if (challan.notes) {
-    doc.setFillColor(254, 254, 254);
-    doc.rect(14, y, 182, 18, 'F');
-    doc.setDrawColor(226, 232, 240);
-    doc.rect(14, y, 182, 18, 'D');
-
-    doc.setFont('Helvetica', 'bold');
-    doc.setFontSize(8.5);
-    doc.setTextColor(26, 46, 74);
-    doc.text('Notes / Jobwork Remarks:', 18, y + 5);
-    
-    doc.setFont('Helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(71, 85, 105);
-    doc.text(challan.notes, 18, y + 11);
-    y += 24;
-  }
-
-  // Standard Jobwork Terms & Conditions Box
-  doc.setFillColor(250, 250, 250);
-  doc.rect(14, y, 182, 22, 'F');
-  doc.setDrawColor(220, 225, 230);
-  doc.setLineWidth(0.2);
-  doc.rect(14, y, 182, 22, 'D');
-
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(7.5);
-  doc.setTextColor(110, 120, 130);
-  doc.text('TERMS & CONDITIONS (JOBWORK SCHEME UNDER GST SECTION 143):', 18, y + 4.5);
-
-  doc.setFont('Helvetica', 'normal');
-  doc.setFontSize(6.5);
-  doc.setTextColor(110, 120, 130);
-  doc.text('1. All materials listed are supplied solely for jobwork/stitching and remain the sole proprietary inventory of Harry Fashion.', 18, y + 8.5);
-  doc.text('2. The job worker (Master) shall return the stitched garments back to our production facility within the stipulated cycle time.', 18, y + 12.5);
-  doc.text('3. Any loss of materials, manufacturing waste exceeding 2%, or damage will be debited to the subcontractor’s ledger index.', 18, y + 16.5);
-
-  y += 28;
-
-  // Signature Block
-  y = Math.max(y, 230); // Pin near bottom above footer
-  doc.setDrawColor(180, 190, 200);
-  doc.setLineWidth(0.4);
-  doc.line(14, y, 70, y);
-  
-  // Stamp Seal Circular Placeholder
-  doc.setDrawColor(220, 225, 230);
-  doc.circle(105, y - 6, 8, 'D');
-  doc.setFont('Helvetica', 'normal');
-  doc.setFontSize(6);
-  doc.setTextColor(180, 190, 200);
-  doc.text('HARRY FASHION', 105, y - 7, { align: 'center' });
-  doc.text('OFC SEAL', 105, y - 4, { align: 'center' });
-
-  doc.setDrawColor(180, 190, 200);
-  doc.line(140, y, 196, y);
-
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(26, 46, 74);
-  doc.text('For HARRY FASHION', 14, y + 4.5);
-  doc.setFont('Helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(100, 110, 120);
-  doc.text('(Authorized Issuing Officer)', 14, y + 8.5);
-
-  doc.setFont('Helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(26, 46, 74);
-  doc.text('RECEIVER SIGNATURE', 140, y + 4.5);
-  doc.setFont('Helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(100, 110, 120);
-  doc.text('(Master Tailor / Representative)', 140, y + 8.5);
-
-  drawFooter(doc, 1, 1);
-
-  if (challan.status === ('voided' as any)) {
-    doc.saveGraphicsState();
-    doc.setTextColor(220, 50, 50);
-    doc.setFont('Helvetica', 'bold');
-    doc.setFontSize(72);
-    // Draw "VOID" watermark diagonally in the center of the page
-    doc.text('VOIDED', 105, 140, { align: 'center', angle: 30 });
-    
-    // Draw diagonal cross lines in red
-    doc.setDrawColor(220, 50, 50);
-    doc.setLineWidth(1.0);
-    doc.line(14, 50, 196, 240);
-    doc.line(196, 50, 14, 240);
-    doc.restoreGraphicsState();
-  }
-
-  // Return generated pdf blob
-  const pdfBlob = doc.output('blob');
-  
-  if (autoDownload) {
-    smartSavePDF({
-      blob: pdfBlob,
-      category: 'challan',
-      dateText: getFolderChallanDateText(challan.issued_date),
-      masterName: master.name,
-      fileNo: challan.challan_no,
-      isVoided: challan.status === ('voided' as any)
-    });
-  }
-
-  if (shouldPrint) {
-    printPDFDoc(doc);
-  }
-
-  const yr = new Date().getFullYear();
-  const mo = String(new Date().getMonth() + 1).padStart(2, '0');
-  console.log(`Saved PDF using Smart Folder System / Cloud: /challans/${yr}-${mo}/CHALLAN_${challan.challan_no}.pdf`);
-
-  return pdfBlob;
+    return pdfBlob;
   } catch (err: any) {
     showPDFError(err.message || `Failed to compile Challan ${challan.challan_no}.`);
     throw err;
@@ -671,11 +609,6 @@ export async function generateInvoicePDF(
   autoDownload = true,
   shouldPrint = false
 ): Promise<Blob> {
-  if (materials.some(m => m.current_stock < 0)) {
-    const errMsg = "Stock trust blocked until negative stock is corrected.";
-    showPDFError(errMsg);
-    throw new Error(errMsg);
-  }
   const dismiss = showPDFLoading(`Preparing Invoice ${invoice.invoice_no}...`);
   try {
     await new Promise(resolve => setTimeout(resolve, 150));

@@ -185,12 +185,12 @@ service cloud.firestore {
 
     match /masters/{masterId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdmin() && isValidId(masterId);
+      allow create, update, delete: if isBilling() && isValidId(masterId);
     }
 
     match /materials/{materialId} {
       allow read: if isSignedIn();
-      allow create, delete: if isAdmin() && isValidId(materialId);
+      allow create, delete: if isBilling() && isValidId(materialId);
       allow update: if isIssueDept() && isValidId(materialId) && isValidMaterial(request.resource.data);
     }
 
