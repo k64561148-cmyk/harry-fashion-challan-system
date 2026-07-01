@@ -646,14 +646,24 @@ export async function generateInvoicePDF(
     // Right side info (aligned right at x=196)
     const tailorInitial = master.code || master.name.split(' ')[0] || 'NA';
     doc.text(`Tailor Initial: ${tailorInitial}`, 196, 28, { align: 'right' });
-    doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
 
     const tailorPanCode = invoice.selected_pan_no || 
                           (master.pan_accounts && master.pan_accounts.length > 0 ? master.pan_accounts[0].pan_no : null) || 
                           `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String(master.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
-    doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
 
-    let y = 48;
+    const selectedPanName = (invoice as any).selected_pan_name || 
+                            (master.pan_accounts?.find(p => p.pan_no === tailorPanCode)?.pan_name) || '';
+
+    if (selectedPanName) {
+      doc.text(`PAN Holder Name: ${selectedPanName}`, 196, 34, { align: 'right' });
+      doc.text(`Tailor Name: ${master.name}`, 196, 40, { align: 'right' });
+      doc.text(`Pan #: ${tailorPanCode}`, 196, 46, { align: 'right' });
+    } else {
+      doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
+      doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
+    }
+
+    let y = selectedPanName ? 52 : 48;
 
     // --- CHAPTER 1: Stitching Job Earnings Table ---
     // Table Headers
@@ -787,6 +797,7 @@ export async function generateInvoicePDF(
     const actualAcNo = invoice.selected_account_no || '';
     const actualIfsc = invoice.selected_ifsc_code || '';
     const actualBranch = invoice.selected_branch_name || '';
+    const actualPanHolder = (invoice as any).selected_pan_name || '';
 
     if (actualAcNo) {
       curLeftY += 6;
@@ -795,6 +806,10 @@ export async function generateInvoicePDF(
       curLeftY += 4.5;
       doc.setFont('Helvetica', 'normal');
       doc.setFontSize(8.5);
+      if (actualPanHolder) {
+        doc.text(`A/C Holder Name: ${actualPanHolder}`, 14, curLeftY);
+        curLeftY += 4.5;
+      }
       doc.text(`Bank: ${actualBankName}`, 14, curLeftY);
       curLeftY += 4.5;
       doc.text(`Account No: ${actualAcNo}`, 14, curLeftY);

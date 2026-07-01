@@ -49,6 +49,7 @@ export const BillingView: React.FC = () => {
   const [editWorkAmount, setEditWorkAmount] = useState<number>(0);
   const [editDiscount, setEditDiscount] = useState<number>(0);
   const [editPanNo, setEditPanNo] = useState<string>('');
+  const [editPanName, setEditPanName] = useState<string>('');
   const [editBankName, setEditBankName] = useState<string>('');
   const [editAccountNo, setEditAccountNo] = useState<string>('');
   const [editIfscCode, setEditIfscCode] = useState<string>('');
@@ -88,6 +89,7 @@ export const BillingView: React.FC = () => {
 
   // Selected PAN and Bank states
   const [selectedPanId, setSelectedPanId] = useState<string>('');
+  const [panName, setPanName] = useState<string>('');
   const [panNo, setPanNo] = useState<string>('');
   const [bankName, setBankName] = useState<string>('');
   const [accountNo, setAccountNo] = useState<string>('');
@@ -108,6 +110,7 @@ export const BillingView: React.FC = () => {
   useEffect(() => {
     if (!selectedMasterId) {
       setSelectedPanId('');
+      setPanName('');
       setPanNo('');
       setBankName('');
       setAccountNo('');
@@ -121,6 +124,7 @@ export const BillingView: React.FC = () => {
       const selectedAccount = master.pan_accounts.find(p => p.id === selectedPanId) || master.pan_accounts[0];
       if (selectedAccount) {
         setSelectedPanId(selectedAccount.id);
+        setPanName(selectedAccount.pan_name || '');
         setPanNo(selectedAccount.pan_no);
         setBankName(selectedAccount.bank_name);
         setAccountNo(selectedAccount.account_no);
@@ -129,6 +133,7 @@ export const BillingView: React.FC = () => {
       }
     } else {
       setSelectedPanId('');
+      setPanName('');
       setPanNo('');
       setBankName('');
       setAccountNo('');
@@ -405,6 +410,7 @@ export const BillingView: React.FC = () => {
         tds_amount: tdsAmount,
         grand_total: preciseGrandTotal,
         selected_pan_no: panNo || undefined,
+        selected_pan_name: panName || undefined,
         selected_bank_name: bankName || undefined,
         selected_account_no: accountNo || undefined,
         selected_ifsc_code: ifscCode || undefined,
@@ -483,6 +489,7 @@ export const BillingView: React.FC = () => {
     setEditWorkAmount(inv.work_amount || 0);
     setEditDiscount(inv.discount || 0);
     setEditPanNo(inv.selected_pan_no || '');
+    setEditPanName((inv as any).selected_pan_name || '');
     setEditBankName(inv.selected_bank_name || '');
     setEditAccountNo(inv.selected_account_no || '');
     setEditIfscCode(inv.selected_ifsc_code || '');
@@ -501,6 +508,7 @@ export const BillingView: React.FC = () => {
         work_amount: editWorkAmount,
         discount: editDiscount,
         selected_pan_no: editPanNo || undefined,
+        selected_pan_name: editPanName || undefined,
         selected_bank_name: editBankName || undefined,
         selected_account_no: editAccountNo || undefined,
         selected_ifsc_code: editIfscCode || undefined,
@@ -669,13 +677,41 @@ export const BillingView: React.FC = () => {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">SELECT MASTER</label>
                 <select
                   className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-800 font-bold"
-                  value={selectedMasterId}
-                  onChange={(e) => setSelectedMasterId(e.target.value)}
+                  value={selectedMasterId ? (selectedPanId ? `${selectedMasterId}_${selectedPanId}` : selectedMasterId) : ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (!val) {
+                      setSelectedMasterId('');
+                      setSelectedPanId('');
+                    } else {
+                      const parts = val.split('_');
+                      setSelectedMasterId(parts[0]);
+                      setSelectedPanId(parts[1] || '');
+                    }
+                  }}
                 >
                   <option value="">-- Choose master craftsman --</option>
-                  {masters.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.type.toUpperCase()})</option>
-                  ))}
+                  {masters.map(m => {
+                    if (m.pan_accounts && m.pan_accounts.length > 0) {
+                      return m.pan_accounts.map((p, idx) => {
+                        const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
+                        const displayLabel = p.pan_name 
+                          ? `${m.name} (${panLabel}: ${p.pan_name})` 
+                          : `${m.name} (${panLabel}: ${p.pan_no})`;
+                        return (
+                          <option key={`${m.id}_${p.id}`} value={`${m.id}_${p.id}`}>
+                            {displayLabel} ({m.type.toUpperCase()})
+                          </option>
+                        );
+                      });
+                    } else {
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.code.toUpperCase()}) ({m.type.toUpperCase()})
+                        </option>
+                      );
+                    }
+                  })}
                 </select>
               </div>
 
@@ -1426,7 +1462,6 @@ export const BillingView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Bank Accounts Dropdown for Autofill */}
               {(() => {
                 const master = masters.find(m => m.id === editingInvoice.master_id);
                 if (master && master.pan_accounts && master.pan_accounts.length > 0) {
@@ -1438,6 +1473,7 @@ export const BillingView: React.FC = () => {
                           const profile = master.pan_accounts?.find(p => p.id === e.target.value);
                           if (profile) {
                             setEditPanNo(profile.pan_no);
+                            setEditPanName(profile.pan_name || '');
                             setEditBankName(profile.bank_name);
                             setEditAccountNo(profile.account_no);
                             setEditIfscCode(profile.ifsc_code);
@@ -1461,6 +1497,15 @@ export const BillingView: React.FC = () => {
               <div className="bg-slate-50/50 p-4 rounded-2xl border border-slate-200 space-y-4">
                 <span className="text-[10px] font-extrabold text-[#1A2E4A] tracking-wider uppercase block">Custom Settle Dispatch Details</span>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-650 uppercase mb-1">PAN Holder Name</label>
+                    <input
+                      type="text"
+                      value={editPanName}
+                      onChange={(e) => setEditPanName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none"
+                    />
+                  </div>
                   <div>
                     <label className="block text-[10px] font-bold text-slate-650 uppercase mb-1">PAN Number</label>
                     <input

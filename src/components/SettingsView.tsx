@@ -117,6 +117,7 @@ export const SettingsView: React.FC = () => {
 
   // Multiple PAN and bank details management state
   const [panAccounts, setPanAccounts] = useState<MasterPanAccount[]>([]);
+  const [tempPanName, setTempPanName] = useState<string>('');
   const [tempPanNo, setTempPanNo] = useState<string>('');
   const [tempBankName, setTempBankName] = useState<string>('');
   const [tempAccountNo, setTempAccountNo] = useState<string>('');
@@ -600,8 +601,8 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleAddOrUpdatePanDetail = () => {
-    if (!tempPanNo.trim() || !tempBankName.trim() || !tempAccountNo.trim() || !tempIfscCode.trim()) {
-      showFeedback('PAN No, Bank Name, Account No and IFSC Code are all required', true);
+    if (!tempPanName.trim() || !tempPanNo.trim() || !tempBankName.trim() || !tempAccountNo.trim() || !tempIfscCode.trim()) {
+      showFeedback('PAN Holder Name, PAN No, Bank Name, Account No and IFSC Code are all required', true);
       return;
     }
 
@@ -612,6 +613,7 @@ export const SettingsView: React.FC = () => {
       // Update
       setPanAccounts(prev => prev.map(p => p.id === editingPanId ? {
         ...p,
+        pan_name: tempPanName.trim(),
         pan_no: panNoClean,
         bank_name: tempBankName.trim(),
         account_no: tempAccountNo.trim(),
@@ -624,6 +626,7 @@ export const SettingsView: React.FC = () => {
       // Add
       const newPan: MasterPanAccount = {
         id: 'pan_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+        pan_name: tempPanName.trim(),
         pan_no: panNoClean,
         bank_name: tempBankName.trim(),
         account_no: tempAccountNo.trim(),
@@ -635,6 +638,7 @@ export const SettingsView: React.FC = () => {
     }
 
     // Clear temp states
+    setTempPanName('');
     setTempPanNo('');
     setTempBankName('');
     setTempAccountNo('');
@@ -643,6 +647,7 @@ export const SettingsView: React.FC = () => {
   };
 
   const handleEditPanDetail = (pan: MasterPanAccount) => {
+    setTempPanName(pan.pan_name || '');
     setTempPanNo(pan.pan_no);
     setTempBankName(pan.bank_name);
     setTempAccountNo(pan.account_no);
@@ -889,7 +894,7 @@ export const SettingsView: React.FC = () => {
                       {panAccounts.map(p => (
                         <div key={p.id} className="p-2 flex justify-between items-start text-[11px] hover:bg-slate-100/50 transition">
                           <div className="space-y-0.5">
-                            <p className="font-bold text-[#1A2E4A] font-mono">{p.pan_no}</p>
+                            <p className="font-bold text-[#1A2E4A] font-mono">{p.pan_no} {p.pan_name ? `(${p.pan_name})` : ''}</p>
                             <p className="text-slate-600 font-medium">{p.bank_name} - <span className="font-mono text-slate-800">{p.account_no}</span></p>
                             <p className="text-[10px] text-slate-400 font-mono">IFSC: {p.ifsc_code} {p.branch_name ? `(${p.branch_name})` : ''}</p>
                           </div>
@@ -921,6 +926,18 @@ export const SettingsView: React.FC = () => {
                     <span className="text-[9px] font-bold text-[#1A2E4A] uppercase tracking-wider block">
                       {editingPanId ? 'Modify PAN-Bank Association' : 'Add PAN-Bank Association'}
                     </span>
+                    
+                    <div>
+                      <label className="block text-[9px] font-semibold text-slate-600">ACCOUNT / PAN HOLDER NAME *</label>
+                      <input
+                        type="text"
+                        placeholder="John Doe"
+                        className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px] font-medium"
+                        value={tempPanName}
+                        onChange={(e) => setTempPanName(e.target.value)}
+                      />
+                    </div>
+
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="block text-[9px] font-semibold text-slate-600">PAN CARD NO *</label>

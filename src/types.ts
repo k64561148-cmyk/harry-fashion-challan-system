@@ -24,6 +24,7 @@ export interface Profile {
 
 export interface MasterPanAccount {
   id: string;
+  pan_name?: string;
   pan_no: string;
   bank_name: string;
   account_no: string;
@@ -137,6 +138,7 @@ export interface Invoice {
   tds_amount?: number;
   grand_total?: number;
   selected_pan_no?: string;
+  selected_pan_name?: string;
   selected_bank_name?: string;
   selected_account_no?: string;
   selected_ifsc_code?: string;

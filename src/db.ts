@@ -2044,6 +2044,7 @@ class DatabaseService {
       tds_amount: invoice.tds_amount !== undefined ? invoice.tds_amount : 0,
       grand_total: invoice.grand_total !== undefined ? invoice.grand_total : 0,
       selected_pan_no: invoice.selected_pan_no,
+      selected_pan_name: invoice.selected_pan_name,
       selected_bank_name: invoice.selected_bank_name,
       selected_account_no: invoice.selected_account_no,
       selected_ifsc_code: invoice.selected_ifsc_code,
