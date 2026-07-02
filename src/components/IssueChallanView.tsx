@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
-import { Master, Material, Challan } from '../types';
+import { Master, Material, Challan, Profile } from '../types';
 import { generateChallanPDF, formatINR } from '../utils/exportUtils';
 import { 
   Plus, 
@@ -68,6 +68,8 @@ const getFilteredAndRankedMaterials = (search: string, allMaterials: Material[])
 
 export const IssueChallanView: React.FC = () => {
   const hasOverStockError = false;
+  const [currentUser, setCurrentUser] = useState<Profile>(db.getCurrentUser());
+  const [backdatedReason, setBackdatedReason] = useState<string>('');
   const [masters, setMasters] = useState<Master[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   
@@ -109,6 +111,7 @@ export const IssueChallanView: React.FC = () => {
     const activeMaterials = db.getMaterials().filter(m => m.is_active);
     setMasters(activeMasters);
     setMaterials(activeMaterials);
+    setCurrentUser(db.getCurrentUser());
 
     // Set auto-increment seq
     setChallanNo(db.getNextChallanNo());
@@ -349,6 +352,27 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // Future date block
+    if (issuedDate > todayStr) {
+      setErrorMessage("Future dated challans are not allowed.");
+      return;
+    }
+
+    // Backdated logic validation
+    const isBackdated = issuedDate < todayStr;
+    if (isBackdated) {
+      if (currentUser.username !== "kunal3012") {
+        setErrorMessage("Backdated challan is allowed only for authorized user.");
+        return;
+      }
+      if (!backdatedReason.trim()) {
+        setErrorMessage("Reason is required for backdated challan.");
+        return;
+      }
+    }
+
     setShowIssueConfirm(true);
   };
 
@@ -358,12 +382,30 @@ export const IssueChallanView: React.FC = () => {
     try {
       setLoading(true);
       
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      // Front-end sanity re-validation
+      if (issuedDate > todayStr) {
+        throw new Error("Future dated challans are not allowed.");
+      }
+
+      const isBackdated = issuedDate < todayStr;
+      if (isBackdated) {
+        if (currentUser.username !== "kunal3012") {
+          throw new Error("Backdated challan is allowed only for authorized user.");
+        }
+        if (!backdatedReason.trim()) {
+          throw new Error("Reason is required for backdated challan.");
+        }
+      }
+
       const validLines = items.filter(item => item.material_id !== '');
       const challanData = {
         challan_no: challanNo,
         master_id: selectedMasterId,
         issued_date: issuedDate,
-        notes: notes
+        notes: notes,
+        backdatedReason: isBackdated ? backdatedReason.trim() : undefined
       };
 
       const lineItems = validLines.map(line => ({
@@ -410,6 +452,8 @@ export const IssueChallanView: React.FC = () => {
     setSuccessChallan(null);
     setOverrideConfirm(false);
     setErrorMessage('');
+    setBackdatedReason('');
+    setIssuedDate(new Date().toISOString().split('T')[0]);
     setChallanNo(db.getNextChallanNo());
     
     // Append 20 empty lines
@@ -648,9 +692,17 @@ export const IssueChallanView: React.FC = () => {
               <input
                 type="date"
                 required
-                className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-medium"
+                disabled={currentUser.username !== 'kunal3012'}
+                max={new Date().toISOString().split('T')[0]}
+                className="w-full bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-medium"
                 value={issuedDate}
-                onChange={(e) => setIssuedDate(e.target.value)}
+                onChange={(e) => {
+                  const newDate = e.target.value;
+                  setIssuedDate(newDate);
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  const isBack = newDate < todayStr;
+                  setChallanNo(db.getNextChallanNo(isBack));
+                }}
               />
             </div>
 
@@ -664,6 +716,21 @@ export const IssueChallanView: React.FC = () => {
                 value={challanNo}
               />
             </div>
+
+            {/* Backdated Reason */}
+            {currentUser.username === 'kunal3012' && issuedDate < new Date().toISOString().split('T')[0] && (
+              <div className="md:col-span-12 bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
+                <label className="block text-xs font-bold text-amber-800 uppercase">Reason for backdated challan <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Reason for backdated challan (e.g. June reconciliation / manual entry backlog)"
+                  className="w-full bg-white border border-amber-300 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-semibold text-amber-900"
+                  value={backdatedReason}
+                  onChange={(e) => setBackdatedReason(e.target.value)}
+                />
+              </div>
+            )}
 
           </div>
 

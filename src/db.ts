@@ -900,6 +900,7 @@ class DatabaseService {
       if (isKunal) {
         user.role = 'admin';
       }
+      user.canCreateBackdatedChallan = username === 'kunal3012';
     }
     return user;
   }
@@ -1260,20 +1261,38 @@ class DatabaseService {
     return items;
   }
 
-  getNextChallanNo(): string {
+  getNextChallanNo(isBackdated?: boolean): string {
     const list = this.getChallans();
     let maxNum = 0;
-    list.forEach(c => {
-      const parts = c.challan_no.split('-');
-      if (parts.length === 3) {
-        const num = parseInt(parts[2], 10);
-        if (!isNaN(num) && num > maxNum) {
-          maxNum = num;
+    if (isBackdated) {
+      list.forEach(c => {
+        if (c.challan_no && c.challan_no.startsWith('HF-BD-')) {
+          const parts = c.challan_no.split('-');
+          if (parts.length === 3) {
+            const num = parseInt(parts[2], 10);
+            if (!isNaN(num) && num > maxNum) {
+              maxNum = num;
+            }
+          }
         }
-      }
-    });
-    const nextNum = String(maxNum + 1).padStart(4, '0');
-    return `HF-2526-${nextNum}`;
+      });
+      const nextNum = String(maxNum + 1).padStart(4, '0');
+      return `HF-BD-${nextNum}`;
+    } else {
+      list.forEach(c => {
+        if (c.challan_no && c.challan_no.startsWith('HF-2526-')) {
+          const parts = c.challan_no.split('-');
+          if (parts.length === 3) {
+            const num = parseInt(parts[2], 10);
+            if (!isNaN(num) && num > maxNum) {
+              maxNum = num;
+            }
+          }
+        }
+      });
+      const nextNum = String(maxNum + 1).padStart(4, '0');
+      return `HF-2526-${nextNum}`;
+    }
   }
 
   saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Challan {
@@ -1281,6 +1300,30 @@ class DatabaseService {
     const allItemsList = this.getChallanItems();
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const challanDate = challan.issued_date || todayStr;
+
+    // Future date block
+    if (challanDate > todayStr) {
+      throw new Error("Future dated challans are not allowed.");
+    }
+
+    // Backdated logic validation
+    const isBackdated = challanDate < todayStr;
+    if (isBackdated) {
+      if (currentUser.username !== "kunal3012") {
+        throw new Error("Backdated challan is allowed only for authorized user.");
+      }
+      if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
+        throw new Error("Reason is required for backdated challan.");
+      }
+    }
+
+    const dateParts = challanDate.split('-');
+    const challanYear = parseInt(dateParts[0], 10);
+    const challanMonth = parseInt(dateParts[1], 10); // 1-indexed
+    const originalCreatedMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
 
     // Validate stock levels before saving - Aggregate by material_id first
     const aggregatedQtys: { [matId: string]: number } = {};
@@ -1291,16 +1334,31 @@ class DatabaseService {
     });
 
     // Create Challan record
-    const nextNo = challan.challan_no || this.getNextChallanNo();
+    let nextNo = challan.challan_no || this.getNextChallanNo(isBackdated);
+    if (isBackdated && (!nextNo || !nextNo.startsWith('HF-BD-'))) {
+      nextNo = this.getNextChallanNo(true);
+    } else if (!isBackdated && nextNo && nextNo.startsWith('HF-BD-')) {
+      nextNo = this.getNextChallanNo(false);
+    }
     const newChallan: Challan = {
       id: generateUUID(),
       challan_no: nextNo,
       master_id: challan.master_id || '',
-      issued_date: challan.issued_date || new Date().toISOString().split('T')[0],
+      issued_date: challanDate,
       issued_by: currentUser.name || 'Office Desk',
       status: 'issued',
       notes: challan.notes || '',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+
+      challanDate: challanDate,
+      createdAt: new Date().toISOString(),
+      createdBy: currentUser.username || currentUser.email || 'unknown',
+      backdated: isBackdated,
+      backdatedBy: isBackdated ? 'kunal3012' : undefined,
+      backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
+      originalCreatedMonth: originalCreatedMonth,
+      challanMonth: challanMonth,
+      challanYear: challanYear
     };
 
     challanList.push(newChallan);
@@ -1333,7 +1391,14 @@ class DatabaseService {
     });
 
     const masterName = this.getMasters().find(m => m.id === newChallan.master_id)?.name || 'Unknown Master';
-    this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${newChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
+    
+    if (isBackdated) {
+      // Create specialized audit log
+      const auditDetails = `challanNo: ${newChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${newChallan.created_at}, createdBy: kunal3012, backdatedReason: "${newChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
+      this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
+    } else {
+      this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${newChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
+    }
 
     this.save('challans', challanList);
     this.save('challan_items', allItemsList);

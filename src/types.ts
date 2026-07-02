@@ -20,6 +20,7 @@ export interface Profile {
   createdAt: string;
   updatedAt: string;
   created_at?: string; // compatibility fallback
+  canCreateBackdatedChallan?: boolean;
 }
 
 export interface MasterPanAccount {
@@ -90,6 +91,15 @@ export interface Challan {
   lastEditedBy?: string;
   editReason?: string;
   editHistory?: ChallanEditVersion[];
+  challanDate?: string;
+  createdAt?: string;
+  createdBy?: string;
+  backdated?: boolean;
+  backdatedBy?: string;
+  backdatedReason?: string;
+  originalCreatedMonth?: string;
+  challanMonth?: number;
+  challanYear?: number;
 }
 
 export interface ChallanItem {
