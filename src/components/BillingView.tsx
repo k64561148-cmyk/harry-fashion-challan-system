@@ -106,6 +106,73 @@ export const BillingView: React.FC = () => {
   const [ownerOverride, setOwnerOverride] = useState<boolean>(false);
   const [overrideReason, setOverrideReason] = useState<string>('');
 
+  // Keyboard navigation & search states
+  const inputRefs = React.useRef<{ [key: string]: HTMLInputElement | HTMLSelectElement | HTMLButtonElement | HTMLTextAreaElement | null }>({});
+  const [masterSearchQuery, setMasterSearchQuery] = useState<string>('');
+  const [showMasterDropdown, setShowMasterDropdown] = useState<boolean>(false);
+  const [highlightedMasterIndex, setHighlightedMasterIndex] = useState<number>(0);
+  const [focusedChallanIndex, setFocusedChallanIndex] = useState<number>(-1);
+  const [isChallanListFocused, setIsChallanListFocused] = useState<boolean>(false);
+
+  // Modal dialog states
+  const [showInvoiceFinalizeConfirm, setShowInvoiceFinalizeConfirm] = useState<boolean>(false);
+  const [showDeleteInvoiceConfirm, setShowDeleteInvoiceConfirm] = useState<string | null>(null);
+  const [showVoidInvoiceConfirm, setShowVoidInvoiceConfirm] = useState<string | null>(null);
+  const [deleteReason, setDeleteReason] = useState<string>('');
+  const [viewingChallanDetails, setViewingChallanDetails] = useState<Challan | null>(null);
+  const [viewingChallanDetailsItems, setViewingChallanDetailsItems] = useState<ChallanItem[]>([]);
+
+  const getFilteredMasters = () => {
+    if (!masterSearchQuery) return masters;
+    const query = masterSearchQuery.toLowerCase();
+    return masters.filter(m => 
+      m.name.toLowerCase().includes(query) || 
+      m.code.toLowerCase().includes(query) ||
+      m.type.toLowerCase().includes(query)
+    );
+  };
+
+  const getFlatMasterOptions = () => {
+    const list: Array<{ masterId: string; panId: string; displayName: string; type: string; code: string }> = [];
+    const filteredMasters = getFilteredMasters();
+    
+    filteredMasters.forEach(m => {
+      if (m.pan_accounts && m.pan_accounts.length > 0) {
+        m.pan_accounts.forEach((p, idx) => {
+          const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
+          const displayLabel = p.pan_name 
+            ? `${m.name} (${panLabel}: ${p.pan_name})` 
+            : `${m.name} (${panLabel}: ${p.pan_no})`;
+          list.push({
+            masterId: m.id,
+            panId: p.id,
+            displayName: displayLabel,
+            type: m.type,
+            code: m.code
+          });
+        });
+      } else {
+        list.push({
+          masterId: m.id,
+          panId: '',
+          displayName: `${m.name} (${m.code.toUpperCase()})`,
+          type: m.type,
+          code: m.code
+        });
+      }
+    });
+    return list;
+  };
+
+  const handleMasterSearchSelect = (masterId: string, panId: string) => {
+    setSelectedMasterId(masterId);
+    setSelectedPanId(panId);
+    setShowMasterDropdown(false);
+    setMasterSearchQuery('');
+    setFocusedChallanIndex(-1);
+    setIsChallanListFocused(false);
+  };
+
   // Auto-fill bank and PAN details when master or specific PAN selection changes.
   useEffect(() => {
     if (!selectedMasterId) {
@@ -170,6 +237,99 @@ export const BillingView: React.FC = () => {
     window.addEventListener('db_sync', loadInitialData);
     return () => window.removeEventListener('db_sync', loadInitialData);
   }, []);
+
+  // Fetch line items for viewed challan details
+  useEffect(() => {
+    if (viewingChallanDetails) {
+      const items = db.getChallanItems(viewingChallanDetails.id);
+      setViewingChallanDetailsItems(items);
+    } else {
+      setViewingChallanDetailsItems([]);
+    }
+  }, [viewingChallanDetails]);
+
+  // Global keydown listeners for BillingView keyboard flow
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // 1. Esc key closes modals
+      if (e.key === 'Escape') {
+        setShowInvoiceFinalizeConfirm(false);
+        setShowDeleteInvoiceConfirm(null);
+        setShowVoidInvoiceConfirm(null);
+        setViewingChallanDetails(null);
+        if (showMasterDropdown) {
+          e.preventDefault();
+          setShowMasterDropdown(false);
+          inputRefs.current['masterSearchQuery']?.focus();
+        }
+        return;
+      }
+
+      // 2. Active modal captures keys
+      if (showInvoiceFinalizeConfirm || showDeleteInvoiceConfirm || showVoidInvoiceConfirm || viewingChallanDetails) {
+        return;
+      }
+
+      // 3. Ctrl+A to select all visible pending challans
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        // Only if we are on the 'create' tab and selectedMasterId is active
+        if (activeBillingTab === 'create' && selectedMasterId && pendingChallans.length > 0) {
+          e.preventDefault();
+          const bulk: { [id: string]: boolean } = {};
+          pendingChallans.forEach(ch => {
+            bulk[ch.id] = true;
+          });
+          setSelectedChallanIds(bulk);
+        }
+        return;
+      }
+
+      // 4. Pending Challan List navigation
+      if (activeBillingTab === 'create' && selectedMasterId && pendingChallans.length > 0) {
+        // If focused elements are input/textarea/select, let them handle basic keys unless they explicitly focus list
+        const activeTag = document.activeElement?.tagName.toLowerCase();
+        const activeId = document.activeElement?.id;
+        
+        if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+          // If master search input is focused, don't hijack unless it's arrow keys on the master search dropdown
+          if (activeId === 'master-search-input') {
+            return;
+          }
+          // If workAmountRaw/discountRaw/pcsRaw etc. are focused, don't hijack!
+          if (activeId !== 'challan-list-container') {
+            return;
+          }
+        }
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setIsChallanListFocused(true);
+          setFocusedChallanIndex(prev => {
+            const nextIdx = prev + 1;
+            return nextIdx < pendingChallans.length ? nextIdx : prev;
+          });
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setIsChallanListFocused(true);
+          setFocusedChallanIndex(prev => {
+            const nextIdx = prev - 1;
+            return nextIdx >= 0 ? nextIdx : 0;
+          });
+        } else if (e.key === ' ' && focusedChallanIndex >= 0 && focusedChallanIndex < pendingChallans.length) {
+          e.preventDefault(); // prevent scroll
+          const targetedCh = pendingChallans[focusedChallanIndex];
+          handleChallanToggle(targetedCh.id);
+        } else if (e.key === 'Enter' && focusedChallanIndex >= 0 && focusedChallanIndex < pendingChallans.length) {
+          e.preventDefault();
+          const targetedCh = pendingChallans[focusedChallanIndex];
+          setViewingChallanDetails(targetedCh);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [activeBillingTab, selectedMasterId, pendingChallans, focusedChallanIndex, showInvoiceFinalizeConfirm, showDeleteInvoiceConfirm, showVoidInvoiceConfirm, viewingChallanDetails, showMasterDropdown]);
 
   // Fetch all pending 'issued' and unbilled challans when master, monthly period, or database version changes
   useEffect(() => {
@@ -526,20 +686,22 @@ export const BillingView: React.FC = () => {
 
   // Void and Settle Cleanup for Administrative invoice Purging
   const handleDeleteInvoiceClick = (invoiceId: string, invoiceNo: string) => {
-    const confirmation = window.confirm(`⚠️ ATTENTION: VOID & DELETE INVOICE ${invoiceNo} ⚠️\n\nDeleting this invoice will:\n1. Permanently remove this billing ledger entry.\n2. Revert all its linked challans back to "Issued / Pending" status instantly.\n\nClick OK to confirm.`);
-    if (!confirmation) return;
+    setDeleteReason('');
+    setShowDeleteInvoiceConfirm(invoiceId);
+  };
 
-    const reason = window.prompt(`Please enter an audit reason for reversing and deleting Invoice ${invoiceNo}:`);
-    if (reason === null) return; // user cancelled
-    if (!reason.trim()) {
+  const handleConfirmDeleteInvoice = (invoiceId: string) => {
+    if (!deleteReason.trim()) {
       alert("❌ Audit reason is required to reverse the bill.");
       return;
     }
 
     try {
-      db.deleteInvoice(invoiceId, reason.trim());
+      db.deleteInvoice(invoiceId, deleteReason.trim());
       loadInitialData();
       window.dispatchEvent(new Event('db_sync'));
+      setShowDeleteInvoiceConfirm(null);
+      setDeleteReason('');
       alert("✅ Invoice voided/deleted successfully. Linked challans are now active again.");
     } catch (err: any) {
       alert("❌ Deletion failed: " + err.message);
@@ -675,44 +837,116 @@ export const BillingView: React.FC = () => {
               
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">SELECT MASTER</label>
-                <select
-                  className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-800 font-bold"
-                  value={selectedMasterId ? (selectedPanId ? `${selectedMasterId}_${selectedPanId}` : selectedMasterId) : ''}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (!val) {
-                      setSelectedMasterId('');
-                      setSelectedPanId('');
-                    } else {
-                      const parts = val.split('_');
-                      setSelectedMasterId(parts[0]);
-                      setSelectedPanId(parts[1] || '');
+                <div className="relative">
+                  <input
+                    type="text"
+                    id="master-search-input"
+                    ref={el => { inputRefs.current['masterSearchQuery'] = el; }}
+                    className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-800 font-bold"
+                    placeholder="Type to search master..."
+                    value={
+                      showMasterDropdown 
+                        ? masterSearchQuery 
+                        : (() => {
+                            if (!selectedMasterId) return '';
+                            const m = masters.find(x => x.id === selectedMasterId);
+                            if (!m) return '';
+                            if (selectedPanId && m.pan_accounts) {
+                              const p = m.pan_accounts.find(x => x.id === selectedPanId);
+                              if (p) {
+                                const idx = m.pan_accounts.indexOf(p);
+                                const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
+                                return p.pan_name 
+                                  ? `${m.name} (${panLabel}: ${p.pan_name})` 
+                                  : `${m.name} (${panLabel}: ${p.pan_no})`;
+                              }
+                            }
+                            return `${m.name} (${m.code.toUpperCase()})`;
+                          })()
                     }
-                  }}
-                >
-                  <option value="">-- Choose master craftsman --</option>
-                  {masters.map(m => {
-                    if (m.pan_accounts && m.pan_accounts.length > 0) {
-                      return m.pan_accounts.map((p, idx) => {
-                        const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
-                        const displayLabel = p.pan_name 
-                          ? `${m.name} (${panLabel}: ${p.pan_name})` 
-                          : `${m.name} (${panLabel}: ${p.pan_no})`;
-                        return (
-                          <option key={`${m.id}_${p.id}`} value={`${m.id}_${p.id}`}>
-                            {displayLabel} ({m.type.toUpperCase()})
-                          </option>
-                        );
-                      });
-                    } else {
-                      return (
-                        <option key={m.id} value={m.id}>
-                          {m.name} ({m.code.toUpperCase()}) ({m.type.toUpperCase()})
-                        </option>
-                      );
-                    }
-                  })}
-                </select>
+                    onChange={(e) => {
+                      setMasterSearchQuery(e.target.value);
+                      setShowMasterDropdown(true);
+                      setHighlightedMasterIndex(0);
+                    }}
+                    onFocus={() => {
+                      setShowMasterDropdown(true);
+                      setHighlightedMasterIndex(0);
+                      // Clear query so it displays all options when focusing
+                      setMasterSearchQuery('');
+                    }}
+                    onBlur={() => {
+                      // Small delay so that options mouse clicks are processed
+                      setTimeout(() => {
+                        setShowMasterDropdown(false);
+                      }, 250);
+                    }}
+                    onKeyDown={(e) => {
+                      const flatOptions = getFlatMasterOptions();
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        if (showMasterDropdown && flatOptions.length > 0) {
+                          setHighlightedMasterIndex(prev => {
+                            const nextIdx = prev + 1;
+                            return nextIdx < flatOptions.length ? nextIdx : prev;
+                          });
+                        } else {
+                          setShowMasterDropdown(true);
+                        }
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        if (showMasterDropdown && highlightedMasterIndex > 0) {
+                          setHighlightedMasterIndex(prev => prev - 1);
+                        }
+                      } else if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (showMasterDropdown && highlightedMasterIndex >= 0 && highlightedMasterIndex < flatOptions.length) {
+                          const option = flatOptions[highlightedMasterIndex];
+                          handleMasterSearchSelect(option.masterId, option.panId);
+                        } else {
+                          setShowMasterDropdown(true);
+                        }
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setShowMasterDropdown(false);
+                      }
+                    }}
+                  />
+
+                  {showMasterDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-56 overflow-y-auto" role="listbox">
+                      {(() => {
+                        const flatOptions = getFlatMasterOptions();
+                        if (flatOptions.length === 0) {
+                          return <p className="p-2.5 text-xs text-slate-400 text-center">No matching masters found</p>;
+                        }
+                        return flatOptions.map((opt, idx) => (
+                          <button
+                            key={`${opt.masterId}_${opt.panId}_${idx}`}
+                            type="button"
+                            onMouseEnter={() => setHighlightedMasterIndex(idx)}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleMasterSearchSelect(opt.masterId, opt.panId);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-xs font-bold transition flex justify-between items-center border-b border-slate-50 last:border-0 ${
+                              idx === highlightedMasterIndex
+                                ? 'bg-slate-100 text-[#1A2E4A]'
+                                : 'bg-white text-slate-700 hover:bg-slate-50'
+                            }`}
+                            role="option"
+                            aria-selected={idx === highlightedMasterIndex}
+                          >
+                            <span>{opt.displayName}</span>
+                            <span className="bg-slate-200 text-slate-600 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase">
+                              {opt.type}
+                            </span>
+                          </button>
+                        ));
+                      })()}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -844,9 +1078,16 @@ export const BillingView: React.FC = () => {
                   
                   {/* List 1: Pending Challans To Bill */}
                   <div>
-                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#1A2E4A] mb-3 border-b border-slate-100 pb-2">
-                      <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
-                      <span className="uppercase tracking-wider">Pending Challans To Bill ({pendingChallans.length})</span>
+                    <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#1A2E4A]">
+                        <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
+                        <span className="uppercase tracking-wider">Pending Challans To Bill ({pendingChallans.length})</span>
+                      </div>
+                      {pendingChallans.length > 0 && (
+                        <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-sm">
+                          Tab + Arrow Keys
+                        </span>
+                      )}
                     </div>
 
                     {pendingChallans.length === 0 ? (
@@ -854,46 +1095,68 @@ export const BillingView: React.FC = () => {
                         No active 'issued' material challans found.
                       </div>
                     ) : (
-                      <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
-                        {pendingChallans.map(ch => {
-                          const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
-                          return (
-                            <label 
-                              key={ch.id}
-                              className={`flex items-start gap-2.5 p-3 rounded-xl border transition cursor-pointer text-left block ${
-                                selectedChallanIds[ch.id] 
-                                  ? 'bg-slate-50 border-[#1A2E4A]/30 shadow-xs' 
-                                  : 'bg-white border-slate-150 hover:bg-slate-50'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer"
-                                checked={!!selectedChallanIds[ch.id]}
-                                onChange={() => handleChallanToggle(ch.id)}
-                              />
-                              <div className="flex-1 text-xs">
-                                <div className="flex justify-between items-center font-bold text-slate-900">
-                                  <span>{ch.challan_no}</span>
-                                  <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
-                                </div>
-                                <p className="text-[10px] text-slate-550 mt-1">
-                                  Issued By: <span className="font-semibold">{ch.issued_by}</span>
-                                </p>
-                                {cleanNotes && (
-                                  <p className="text-[9.5px] text-slate-400 italic mt-1 max-w-[200px] truncate">
-                                    "{cleanNotes}"
-                                  </p>
-                                )}
-                                {ch.editReason && (
-                                  <div className="mt-1.5 text-[9.5px] bg-amber-50/70 text-amber-900 border border-amber-100 p-1 rounded font-medium max-w-[210px] leading-relaxed">
-                                    <span className="font-bold text-amber-950">Edit Reason:</span> "{ch.editReason}"
+                      <div className="space-y-2">
+                        <div 
+                          id="challan-list-container"
+                          tabIndex={0}
+                          onFocus={() => {
+                            setIsChallanListFocused(true);
+                            if (focusedChallanIndex === -1) {
+                              setFocusedChallanIndex(0);
+                            }
+                          }}
+                          onBlur={() => setIsChallanListFocused(false)}
+                          className="space-y-2 max-h-[250px] overflow-y-auto pr-1 focus:outline-2 focus:outline-blue-500 rounded-xl p-0.5"
+                          title="Click here or press Tab to navigate via keyboard arrows"
+                        >
+                          {pendingChallans.map((ch, idx) => {
+                            const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
+                            const isFocused = idx === focusedChallanIndex && isChallanListFocused;
+                            return (
+                              <div
+                                key={ch.id}
+                                onClick={() => {
+                                  setFocusedChallanIndex(idx);
+                                  setIsChallanListFocused(true);
+                                }}
+                                className={`flex items-start gap-2.5 p-3 rounded-xl border transition cursor-pointer text-left block relative ${
+                                  selectedChallanIds[ch.id] 
+                                    ? 'bg-slate-50 border-[#1A2E4A]/40' 
+                                    : 'bg-white border-slate-150'
+                                } ${isFocused ? 'ring-2 ring-blue-500 ring-offset-1 bg-blue-50/20' : ''}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer"
+                                  checked={!!selectedChallanIds[ch.id]}
+                                  onChange={() => handleChallanToggle(ch.id)}
+                                />
+                                <div className="flex-1 text-xs">
+                                  <div className="flex justify-between items-center font-bold text-slate-900">
+                                    <span>{ch.challan_no}</span>
+                                    <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
                                   </div>
-                                )}
+                                  <p className="text-[10px] text-slate-550 mt-1">
+                                    Issued By: <span className="font-semibold">{ch.issued_by}</span>
+                                  </p>
+                                  {cleanNotes && (
+                                    <p className="text-[9.5px] text-slate-400 italic mt-1 max-w-[200px] truncate">
+                                      "{cleanNotes}"
+                                    </p>
+                                  )}
+                                  {ch.editReason && (
+                                    <div className="mt-1.5 text-[9.5px] bg-amber-50/70 text-amber-900 border border-amber-100 p-1 rounded font-medium max-w-[210px] leading-relaxed">
+                                      <span className="font-bold text-amber-950">Edit Reason:</span> "{ch.editReason}"
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            </label>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
+                        <p className="text-[10px] text-slate-400 leading-tight italic pt-1">
+                          💡 <strong>Arrows</strong> to navigate, <strong>Space</strong> to select, <strong>Enter</strong> to inspect materials.
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1380,7 +1643,7 @@ export const BillingView: React.FC = () => {
                     <button
                       type="button"
                       disabled={loading || !isBillingValid}
-                      onClick={() => handleGenerateInvoice('finalised')}
+                      onClick={() => setShowInvoiceFinalizeConfirm(true)}
                       className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-lg text-xs shadow-sm cursor-pointer transition uppercase tracking-wider"
                     >
                       Finalise & Print Bill
@@ -1723,6 +1986,180 @@ export const BillingView: React.FC = () => {
               })()}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 1. VIEW CHALLAN DETAILS MODAL */}
+      {viewingChallanDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 space-y-4">
+            <div className="flex justify-between items-center border-b pb-3 border-slate-100">
+              <div>
+                <h4 className="text-sm font-bold text-[#1A2E4A]">Material Challan Details</h4>
+                <p className="text-[10px] text-slate-400 font-mono">Challan No: {viewingChallanDetails.challan_no}</p>
+              </div>
+              <button 
+                onClick={() => setViewingChallanDetails(null)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs bg-slate-100 p-1 px-2.5 rounded-md cursor-pointer"
+              >
+                ✕ Esc
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+              {viewingChallanDetailsItems.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">No material line items found for this challan.</p>
+              ) : (
+                <div className="border border-slate-150 rounded-xl overflow-hidden divide-y divide-slate-100 text-xs">
+                  <div className="grid grid-cols-12 bg-slate-50 p-2 font-bold text-slate-500 uppercase text-[9px]">
+                    <span className="col-span-6">Material Item</span>
+                    <span className="col-span-3 text-right">Qty</span>
+                    <span className="col-span-3 text-right">Captured Rate</span>
+                  </div>
+                  {viewingChallanDetailsItems.map(item => {
+                    const mat = materials.find(m => m.id === item.material_id);
+                    return (
+                      <div key={item.id} className="grid grid-cols-12 p-2.5 text-slate-700 font-semibold">
+                        <span className="col-span-6">{mat?.name || 'Unknown Item'}</span>
+                        <span className="col-span-3 text-right font-mono text-slate-900">{item.qty} {mat?.unit}</span>
+                        <span className="col-span-3 text-right font-mono text-slate-600">{formatINR(item.rate)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button 
+                autoFocus
+                onClick={() => setViewingChallanDetails(null)}
+                className="bg-[#1A2E4A] hover:bg-[#14233a] text-white text-xs font-bold py-2 px-4 rounded-lg cursor-pointer transition shadow-xs"
+              >
+                Close (Esc)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. INVOICE FINALIZE CONFIRMATION MODAL */}
+      {showInvoiceFinalizeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 bg-amber-50 text-amber-700 rounded-full flex items-center justify-center mx-auto shadow-xs border border-amber-100">
+                <Receipt className="w-6 h-6 animate-bounce" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800">Finalise monthly Stitching Bill?</h4>
+              <p className="text-slate-500 text-xs">
+                You are compiling a finalised billing ledger entry for <strong className="font-bold">{masters.find(m => m.id === selectedMasterId)?.name}</strong> for the period {monthsList.find(m => m.value === periodMonth)?.name} {periodYear}.
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-xl space-y-2 border border-slate-200 text-xs">
+              <div className="flex justify-between font-medium">
+                <span className="text-slate-400">Total Pieces:</span>
+                <span className="font-semibold text-slate-700 font-mono">{pcs} pcs</span>
+              </div>
+              <div className="flex justify-between font-medium">
+                <span className="text-slate-400">Pre-Wages Credit:</span>
+                <span className="font-semibold text-slate-700 font-mono">{formatINR(workAmount)}</span>
+              </div>
+              <div className="flex justify-between font-medium">
+                <span className="text-slate-400">Material Deductions:</span>
+                <span className="font-semibold text-rose-600 font-mono">- {formatINR(materialDeduction)}</span>
+              </div>
+              <hr className="border-slate-200" />
+              <div className="flex justify-between font-extrabold text-[#1A2E4A]">
+                <span>Net Grand Total:</span>
+                <span className="font-mono text-sm">{formatINR(roundedOffGrandTotal)}</span>
+              </div>
+            </div>
+
+            <div className="text-[10px] text-slate-400 italic text-center">
+              Compiling will lock linked challans. Real physical PDFs will download automatically!
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button 
+                type="button"
+                onClick={() => setShowInvoiceFinalizeConfirm(false)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
+              >
+                Cancel (Esc)
+              </button>
+              <button 
+                type="button"
+                autoFocus
+                onClick={() => {
+                  setShowInvoiceFinalizeConfirm(false);
+                  handleGenerateInvoice('finalised');
+                }}
+                className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
+              >
+                Yes, Finalise
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. INVOICE DELETE/VOID AUDIT CONFIRMATION MODAL */}
+      {showDeleteInvoiceConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 bg-rose-50 text-rose-700 rounded-full flex items-center justify-center mx-auto shadow-xs border border-rose-100">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800">Void & Revert Invoice?</h4>
+              <p className="text-slate-500 text-xs">
+                This will permanently void invoice <strong className="font-bold">{allInvoices.find(inv => inv.id === showDeleteInvoiceConfirm)?.invoice_no}</strong> and revert its referenced material challans to "Issued" state instantly.
+              </p>
+            </div>
+
+            <div className="space-y-1.5 text-xs text-left">
+              <label className="block text-[11px] font-bold text-slate-500 uppercase">Input Audit Reason for Deletion:</label>
+              <input 
+                type="text" 
+                autoFocus
+                required
+                placeholder="E.g. Rectifying double billing / erroneous pieces counts..." 
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && deleteReason.trim().length >= 5) {
+                    e.preventDefault();
+                    handleConfirmDeleteInvoice(showDeleteInvoiceConfirm);
+                  }
+                }}
+                className="bg-slate-50 focus:bg-white border border-slate-200 rounded-lg p-2.5 text-xs w-full text-slate-850 font-semibold focus:ring-1 focus:ring-rose-500 focus:outline-none"
+              />
+              <p className="text-[10px] text-slate-400">Audit reason is strictly required (min 5 characters) to log this operation.</p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button 
+                type="button"
+                onClick={() => {
+                  setShowDeleteInvoiceConfirm(null);
+                  setDeleteReason('');
+                }}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
+              >
+                Cancel (Esc)
+              </button>
+              <button 
+                type="button"
+                disabled={deleteReason.trim().length < 5}
+                onClick={() => handleConfirmDeleteInvoice(showDeleteInvoiceConfirm)}
+                className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
+              >
+                Confirm Delete
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

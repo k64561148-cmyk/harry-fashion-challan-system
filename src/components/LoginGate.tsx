@@ -100,8 +100,10 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
         if (
           email.toLowerCase() === 'k64561148@gmail.com' ||
           email.toLowerCase() === 'admin@harryfashion.com' ||
+          email.toLowerCase() === 'kunal@harryfashion.com' ||
           email.toLowerCase().includes('admin') ||
-          email.toLowerCase().includes('owner')
+          email.toLowerCase().includes('owner') ||
+          email.toLowerCase().includes('kunal')
         ) {
           computedRole = 'admin';
         } else if (email.toLowerCase().includes('billing')) {
@@ -453,6 +455,13 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
             <p className="text-[10px] text-slate-500 leading-relaxed">
               Every staff member gets credentials verified in real time against encrypted Firestore records. To transition, simple log out from the workbench taskbar and log in with standard credentials.
             </p>
+
+            <div className="pt-2 border-t border-slate-200/60 text-[10px] space-y-1">
+              <p className="font-bold text-slate-700 uppercase">🛠️ Developer / Testing Account</p>
+              <p className="text-slate-500">
+                Register or Sign In with username <strong className="font-mono text-slate-800 font-bold bg-slate-200/50 px-1 py-0.5 rounded">kunal</strong> for testing and updates without affecting main workflows.
+              </p>
+            </div>
           </div>
 
         </div>

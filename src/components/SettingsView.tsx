@@ -71,6 +71,12 @@ export const SettingsView: React.FC = () => {
     return () => unsubscribe();
   }, []);
   const [currentUser, setCurrentUser] = useState(db.getCurrentUser());
+  const isKunalUser = 
+    currentUser?.email?.toLowerCase().includes('kunal') || 
+    currentUser?.email?.toLowerCase() === 'k64561148@gmail.com' ||
+    currentUser?.name?.toLowerCase().includes('kunal') || 
+    currentUser?.displayName?.toLowerCase().includes('kunal') ||
+    (currentUser as any)?.username?.toLowerCase().includes('kunal');
 
   // Entity lists
   const [masters, setMasters] = useState<Master[]>([]);
@@ -400,8 +406,8 @@ export const SettingsView: React.FC = () => {
   };
 
   const handlePurgeOldRecords = async () => {
-    if (currentUser.role !== 'admin') {
-      showFeedback('Administrative status is required to execute system-wide data purges.', true);
+    if (!isKunalUser) {
+      showFeedback('Developer/Kunal status is required to execute system-wide data purges.', true);
       return;
     }
 
@@ -2241,9 +2247,9 @@ export const SettingsView: React.FC = () => {
                   </p>
                 </div>
 
-                {currentUser.role !== 'admin' ? (
+                {!isKunalUser ? (
                   <div className="p-4 bg-amber-50 rounded-xl border border-amber-100 text-[11px] font-medium leading-relaxed text-amber-800 text-left">
-                    🔒 <strong>Administrative Privileges Required</strong>: Your current profile role is set to <strong className="uppercase">{currentUser.role}</strong>. Old system data purges can only be triggered by the Main business manager (Admin). Swapping to the admin profile inside the "Users" sub-tab unlocks this cleaner!
+                    🔒 <strong>Developer Privileges Required</strong>: Your current profile role is set to <strong className="uppercase">{currentUser.role}</strong>. Old system data purges can only be triggered by the Developer (Kunal).
                   </div>
                 ) : (
                   <div className="space-y-4 text-xs text-left">

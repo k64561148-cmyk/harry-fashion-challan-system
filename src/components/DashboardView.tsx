@@ -45,6 +45,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [lowStockAlerts, setLowStockAlerts] = useState<Material[]>([]);
   const [recentChallans, setRecentChallans] = useState<Challan[]>([]);
   const currentUser = db.getCurrentUser();
+  const isKunalUser = 
+    currentUser?.email?.toLowerCase().includes('kunal') || 
+    currentUser?.email?.toLowerCase() === 'k64561148@gmail.com' ||
+    currentUser?.name?.toLowerCase().includes('kunal') || 
+    currentUser?.displayName?.toLowerCase().includes('kunal') ||
+    (currentUser as any)?.username?.toLowerCase().includes('kunal');
 
   // Stock correction states
   const [negativeStockMaterials, setNegativeStockMaterials] = useState<Material[]>([]);
@@ -421,104 +427,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         </div>
       </div>
 
-      {/* Stock Correction Needed Panel */}
-      {negativeStockMaterials.length > 0 && (
-        <div id="stock-correction-banner" className="bg-rose-50 border border-rose-200 rounded-xl p-5 shadow-sm space-y-4 animate-fade-in">
-          <div className="flex items-center gap-2.5 text-rose-800">
-            <AlertTriangle className="w-5 h-5 text-rose-600 animate-bounce flex-shrink-0" />
-            <div>
-              <h3 className="text-sm font-bold tracking-tight uppercase">Stock Correction Required</h3>
-              <p className="text-xs text-rose-700 mt-0.5">
-                The warehouse system has detected {negativeStockMaterials.length} material(s) with an impossible negative stock level. Stock trust validation is paused until corrected.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* List of Negative Stocks */}
-            <div className="space-y-2 bg-white p-3 rounded-lg border border-rose-150">
-              <p className="text-[10px] uppercase font-bold tracking-widest text-slate-450 border-b pb-1.5 mb-2 font-sans">Negative Inventory Items</p>
-              <div className="divide-y divide-rose-50 max-h-[140px] overflow-y-auto pr-1">
-                {negativeStockMaterials.map(m => (
-                  <div key={m.id} className="py-2 flex items-center justify-between text-xs">
-                    <span className="font-semibold text-slate-800">{m.name}</span>
-                    <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full font-mono">
-                      {m.current_stock.toFixed(1)} {m.unit}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Quick Correction Panel (Admins Only) */}
-            <div className="bg-white p-3 rounded-lg border border-rose-150 flex flex-col justify-between">
-              {currentUser.role === 'admin' ? (
-                <form onSubmit={handleApplyCorrection} className="space-y-3">
-                  <p className="text-[10px] uppercase font-bold tracking-widest text-slate-450 border-b pb-1.5 font-sans">Admin Correction Portal</p>
-                  
-                  {correctionError && (
-                    <p className="text-[10px] font-bold text-rose-600 bg-rose-50/50 p-1.5 rounded">{correctionError}</p>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1 font-sans">Target Material</label>
-                      <select
-                        value={selectedMaterialToCorrect}
-                        onChange={(e) => setSelectedMaterialToCorrect(e.target.value)}
-                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none font-semibold text-slate-700 focus:border-rose-450"
-                      >
-                        {negativeStockMaterials.map(m => (
-                          <option key={m.id} value={m.id}>{m.name} ({m.current_stock.toFixed(1)} {m.unit})</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[9px] font-bold text-slate-400 uppercase mb-1 font-sans">New Stock Level</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        value={correctedValue || ''}
-                        onChange={(e) => setCorrectedValue(parseFloat(e.target.value) || 0)}
-                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none font-bold text-slate-800 focus:border-rose-450"
-                        placeholder="e.g. 10.0"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                      <input
-                        type="text"
-                        placeholder="Reason (e.g. Physical inventory count)..."
-                        value={correctionReason}
-                        onChange={(e) => setCorrectionReason(e.target.value)}
-                        className="w-full text-xs bg-slate-50 border border-slate-200 p-1.5 rounded outline-none text-slate-700 focus:border-rose-450 font-medium"
-                      />
-                    </div>
-                    <button
-                      type="submit"
-                      className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-3.5 rounded transition cursor-pointer select-none whitespace-nowrap font-sans"
-                    >
-                      Apply Fix
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div className="h-full flex flex-col justify-center items-center text-center p-4">
-                  <Lock className="w-5 h-5 text-rose-400 mb-1.5" />
-                  <p className="text-xs font-bold text-slate-755 font-sans">Administrative Correction Required</p>
-                  <p className="text-[11px] text-slate-500 mt-1 max-w-[280px]">
-                    Only administrators are permitted to correct negative stocks. Please notify Harry Admin or authorized personnel to resolve this balance.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Stock Correction Needed Panel removed as per user request */}
 
       {/* KPI Info Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -576,8 +485,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       {/* Main Grid: Low stock alerts and recent list */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
-        {/* Left Side: Actions and Low stock items */}
-        <div className="lg:col-span-8 space-y-6">
+        {/* Left Side: Actions and Low stock items (now spans full-width) */}
+        <div className="lg:col-span-12 space-y-6">
           
           {/* Quick Shortcuts */}
           <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
@@ -805,10 +714,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                             </button>
                                           </>
                                         )}
-                                        {c.status === 'voided' && (
+                                        {c.status === 'voided' && isKunalUser && (
                                           <button
                                             onClick={() => triggerDelete(c)}
-                                            title="[Owner Only] Permanently Purge Voided Challan Record"
+                                            title="[Developer Only] Permanently Purge Voided Challan Record"
                                             className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5"
                                           >
                                             <Trash2 className="w-3.5 h-3.5" />
@@ -1007,56 +916,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </div>
 
-        </div>
-
-        {/* Right Side: Stock Alert Indicators */}
-        <div className="lg:col-span-4">
-          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm h-full flex flex-col">
-            <div className="flex items-center gap-2 mb-4 border-b border-slate-200 pb-3">
-              <Layers className="w-5 h-5 text-[#1A2E4A]" />
-              <h4 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MATERIAL STOCK ROOM</h4>
-            </div>
-
-            <div className="flex-1 overflow-y-auto space-y-3 max-h-[420px] pr-1">
-              {lowStockAlerts.length === 0 ? (
-                <div className="text-center py-12 text-slate-400 text-xs font-medium">
-                  All materials have healthy stock levels. Beautiful!
-                </div>
-              ) : (
-                lowStockAlerts.map(m => {
-                  const percent = Math.min(100, (m.current_stock / 15) * 100);
-                  return (
-                    <div key={m.id} className="p-3 bg-rose-50/50 rounded-lg border border-rose-100/40">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="text-xs font-semibold text-slate-800">{m.name}</p>
-                          <p className="text-[10px] text-slate-400 mt-0.5 font-mono">Standard Rate: ₹{m.default_rate}</p>
-                        </div>
-                        <span className="text-xs font-bold text-rose-600 font-mono">
-                          {m.current_stock.toFixed(1)} {m.unit}
-                        </span>
-                      </div>
-                      
-                      {/* stock level micro-progress */}
-                      <div className="w-full bg-slate-200/60 rounded-full h-1.5 mt-2 overflow-hidden">
-                        <div 
-                          className="bg-rose-500 h-1.5 rounded-full" 
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            <button 
-              onClick={() => onNavigate('inward_entry')}
-              className="mt-4 w-full bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs py-2.5 px-3 rounded-lg font-bold flex items-center justify-center gap-1 cursor-pointer transition shadow-xs"
-            >
-              <Truck className="w-4 h-4" /> Go to Stock Inward Entry
-            </button>
-          </div>
         </div>
 
       </div>

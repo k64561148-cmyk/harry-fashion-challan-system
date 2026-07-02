@@ -194,14 +194,25 @@ export function showPDFError(message = "An error occurred during PDF compiling."
 // Helper to format currency in INR style (Indian Rupees with commas)
 export function formatINR(num: number): string {
   // Handles Indian numbering system (e.g., Lakhs and Crores)
-  const x = Math.round(num);
-  let lastThree = x.toString().slice(-3);
-  const otherNumbers = x.toString().slice(0, -3);
+  const isNegative = num < 0;
+  const absNum = Math.abs(num);
+  
+  // Format with up to 2 decimal places
+  const parts = absNum.toFixed(2).split('.');
+  const integerPart = parts[0];
+  const decimalPart = parts[1];
+
+  let lastThree = integerPart.slice(-3);
+  const otherNumbers = integerPart.slice(0, -3);
   if (otherNumbers !== '') {
     lastThree = ',' + lastThree;
   }
-  const res = otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + lastThree;
-  return `Rs. ${res || '0'}`;
+  const formattedInteger = (otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ',') + lastThree);
+  
+  const decimalStr = decimalPart !== '00' ? `.${decimalPart}` : '';
+  const sign = isNegative ? '-' : '';
+  
+  return `${sign}Rs. ${formattedInteger || '0'}${decimalStr}`;
 }
 
 // Convert DB format dates (YYYY-MM-DD) to friendly DD/MM/YYYY text

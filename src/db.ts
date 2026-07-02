@@ -24,7 +24,7 @@ import {
 
 import { 
   collection, 
-  doc, 
+  doc as firestoreDoc, 
   setDoc, 
   deleteDoc, 
   onSnapshot, 
@@ -33,6 +33,35 @@ import {
   increment
 } from 'firebase/firestore';
 import { firestore, auth } from './firebase';
+
+// Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
+function doc(firestoreInstance: any, collectionName: string, docId: string) {
+  const isKunal = (() => {
+    try {
+      const currentUserStr = localStorage.getItem('hf_current_user');
+      if (currentUserStr) {
+        const u = JSON.parse(currentUserStr);
+        const email = u?.email || '';
+        const name = u?.name || '';
+        const displayName = u?.displayName || '';
+        const username = u?.username || '';
+        return email.toLowerCase().includes('kunal') || 
+               name.toLowerCase().includes('kunal') || 
+               displayName.toLowerCase().includes('kunal') ||
+               username.toLowerCase().includes('kunal');
+      }
+    } catch (_) {}
+    return false;
+  })();
+
+  const isSandbox = isKunal && (localStorage.getItem('hf_sandbox_mode_enabled') === 'true' || localStorage.getItem('hf_sandbox_mode_enabled') === null);
+
+  const resolvedCollection = (isSandbox && collectionName !== 'profiles' && collectionName !== 'test_connection')
+    ? `sandbox_kunal_${collectionName}`
+    : collectionName;
+
+  return firestoreDoc(firestoreInstance, resolvedCollection, docId);
+}
 
 // Helper to generate UUID
 export function generateUUID(): string {
@@ -290,7 +319,123 @@ class DatabaseService {
     }
   }
 
+  public isSandboxModeActive(): boolean {
+    const currentUser = this.getCurrentUser();
+    const email = currentUser?.email || '';
+    const name = currentUser?.name || '';
+    const displayName = currentUser?.displayName || '';
+    const username = currentUser?.username || '';
+    const isKunalUser = 
+      email.toLowerCase().includes('kunal') || 
+      name.toLowerCase().includes('kunal') || 
+      displayName.toLowerCase().includes('kunal') ||
+      username.toLowerCase().includes('kunal');
+      
+    if (!isKunalUser) {
+      return false;
+    }
+    const storedSandbox = localStorage.getItem('hf_sandbox_mode_enabled');
+    if (storedSandbox !== null) {
+      return storedSandbox === 'true';
+    }
+    return true;
+  }
+
+  public setSandboxMode(enabled: boolean): void {
+    localStorage.setItem('hf_sandbox_mode_enabled', enabled ? 'true' : 'false');
+    this.reinitializeCloudListeners();
+    window.dispatchEvent(new Event('db_sync'));
+  }
+
+  public async promoteSandboxToLive(): Promise<void> {
+    if (!this.isSandboxModeActive()) {
+      throw new Error("Sandbox mode is not active. Cannot promote sandbox data to live.");
+    }
+
+    const keysToCopy = [
+      'masters',
+      'materials',
+      'master_rate_overrides',
+      'challans',
+      'challan_items',
+      'inward_entries',
+      'invoices',
+      'invoice_challans',
+      'rate_history',
+      'stock_corrections',
+      'audit_logs',
+      'ledger_transactions'
+    ];
+
+    // Copy each sandbox collection data to live storage keys and Firebase collections
+    for (const key of keysToCopy) {
+      const sandboxStorageKey = `sandbox_kunal_${key}`;
+      const liveStorageKey = `hf_${key}`;
+      const sandboxDataStr = localStorage.getItem(sandboxStorageKey);
+      
+      if (sandboxDataStr) {
+        // Copy in local storage
+        localStorage.setItem(liveStorageKey, sandboxDataStr);
+
+        // Copy in Cloud Firestore
+        if (this.isFirebaseInitialized) {
+          try {
+            const items = JSON.parse(sandboxDataStr);
+            if (Array.isArray(items) && items.length > 0) {
+              const batchLimit = 500;
+              for (let i = 0; i < items.length; i += batchLimit) {
+                const chunk = items.slice(i, i + batchLimit);
+                const batch = writeBatch(firestore);
+                chunk.forEach((item: any) => {
+                  const docId = item.id || (item.invoice_id && item.challan_id ? `${item.invoice_id}_${item.challan_id}` : null) || generateUUID();
+                  const liveDocRef = firestoreDoc(firestore, key, docId);
+                  batch.set(liveDocRef, this.enrichPayload(item));
+                });
+                await this.performCloudWrite(() => batch.commit());
+              }
+            }
+          } catch (err) {
+            console.error(`Error promoting sandbox key ${key} to live Firestore:`, err);
+          }
+        }
+      }
+    }
+
+    // Write audit log on live mode
+    const currentUser = this.getCurrentUser();
+    this.addAuditLog(currentUser.email, 'SANDBOX_PROMOTED', `Successfully promoted all tested sandbox data to live production environment.`);
+
+    // Switch off sandbox mode to switch to live mode instantly
+    localStorage.setItem('hf_sandbox_mode_enabled', 'false');
+    this.reinitializeCloudListeners();
+    window.dispatchEvent(new Event('db_sync'));
+  }
+
+  public getCollectionName(baseName: string): string {
+    if (this.isSandboxModeActive() && baseName !== 'profiles' && baseName !== 'test_connection') {
+      return `sandbox_kunal_${baseName}`;
+    }
+    return baseName;
+  }
+
+  private getDocRef(collectionName: string, docId: string) {
+    const resolvedColl = this.getCollectionName(collectionName);
+    return doc(firestore, resolvedColl, docId);
+  }
+
+  public reinitializeCloudListeners() {
+    this.activeListeners.forEach(unsubscribe => unsubscribe());
+    this.activeListeners = [];
+    this.resetCollectionStatuses();
+
+    const currentUser = this.getCurrentUser();
+    this.setupCloudSyncListeners(currentUser.role);
+  }
+
   private getStorageKey(key: string): string {
+    if (key !== 'current_user' && key !== 'profiles' && key !== 'sandbox_mode_enabled' && this.isSandboxModeActive()) {
+      return `sandbox_kunal_${key}`;
+    }
     return `hf_${key}`;
   }
 
@@ -503,8 +648,10 @@ class DatabaseService {
             if (
               email.toLowerCase() === 'k64561148@gmail.com' ||
               email.toLowerCase() === 'admin@harryfashion.com' ||
+              email.toLowerCase() === 'kunal@harryfashion.com' ||
               email.toLowerCase().includes('admin') ||
-              email.toLowerCase().includes('owner')
+              email.toLowerCase().includes('owner') ||
+              email.toLowerCase().includes('kunal')
             ) {
               roleToUse = 'admin';
             }
@@ -557,8 +704,10 @@ class DatabaseService {
             if (
               email.toLowerCase() === 'k64561148@gmail.com' ||
               email.toLowerCase() === 'admin@harryfashion.com' ||
+              email.toLowerCase() === 'kunal@harryfashion.com' ||
               email.toLowerCase().includes('admin') ||
-              email.toLowerCase().includes('owner')
+              email.toLowerCase().includes('owner') ||
+              email.toLowerCase().includes('kunal')
             ) {
               role = 'admin';
             } else if (email.toLowerCase().includes('billing')) {
@@ -629,7 +778,8 @@ class DatabaseService {
 
     syncCollections.forEach((collName) => {
       try {
-        const unsubscribe = onSnapshot(collection(firestore, collName), { includeMetadataChanges: false }, (snapshot) => {
+        const resolvedCollName = this.getCollectionName(collName);
+        const unsubscribe = onSnapshot(collection(firestore, resolvedCollName), { includeMetadataChanges: false }, (snapshot) => {
           this.cloudHealth.lastRead = new Date().toISOString();
           localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
           this.cloudHealth.syncFailed = false;
@@ -714,7 +864,7 @@ class DatabaseService {
       localData.forEach(item => {
         // Enforce identifier
         const docId = item.id || item.invoice_id + '_' + item.challan_id || generateUUID();
-        const docRef = doc(firestore, collName, docId);
+        const docRef = this.getDocRef(collName, docId);
         batch.set(docRef, item);
       });
       await batch.commit();
@@ -737,7 +887,21 @@ class DatabaseService {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    return this.load<Profile>('current_user', defaultUser);
+    const user = this.load<Profile>('current_user', defaultUser);
+    if (user) {
+      const email = user.email || '';
+      const name = user.displayName || user.name || '';
+      const username = user.username || '';
+      const isKunal = 
+        email.toLowerCase().includes('kunal') || 
+        email.toLowerCase() === 'k64561148@gmail.com' ||
+        name.toLowerCase().includes('kunal') || 
+        username.toLowerCase().includes('kunal');
+      if (isKunal) {
+        user.role = 'admin';
+      }
+    }
+    return user;
   }
 
   setCurrentUser(user: Profile): void {
@@ -955,9 +1119,7 @@ class DatabaseService {
     const currentUser = this.getCurrentUser();
     let result: Material;
 
-    if (material.current_stock !== undefined && material.current_stock < 0) {
-      throw new Error("Material stock can never go below zero.");
-    }
+    // Negative stock is allowed now as per user request
 
     if (material.id) {
       const index = list.findIndex(m => m.id === material.id);
@@ -1215,6 +1377,19 @@ class DatabaseService {
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
 
+    // Verify only Kunal is authorized to delete challans
+    const email = currentUser?.email || '';
+    const name = currentUser?.displayName || currentUser?.name || '';
+    const username = currentUser?.username || '';
+    const isKunal = 
+      email.toLowerCase().includes('kunal') || 
+      email.toLowerCase() === 'k64561148@gmail.com' ||
+      name.toLowerCase().includes('kunal') || 
+      username.toLowerCase().includes('kunal');
+    if (!isKunal) {
+      throw new Error("Unauthorized: Only Kunal (the developer) is allowed to delete challans.");
+    }
+
     const idx = challanList.findIndex(c => c.id === challanId);
     if (idx > -1) {
       const challan = challanList[idx];
@@ -1275,6 +1450,20 @@ class DatabaseService {
     const challanList = this.getChallans();
     const allItemsList = this.getChallanItems();
     const currentUser = this.getCurrentUser();
+
+    // Verify only Kunal is authorized to permanently delete challans
+    const email = currentUser?.email || '';
+    const name = currentUser?.displayName || currentUser?.name || '';
+    const username = currentUser?.username || '';
+    const isKunal = 
+      email.toLowerCase().includes('kunal') || 
+      email.toLowerCase() === 'k64561148@gmail.com' ||
+      name.toLowerCase().includes('kunal') || 
+      username.toLowerCase().includes('kunal');
+    if (!isKunal) {
+      throw new Error("Unauthorized: Only Kunal (the developer) is allowed to delete challans.");
+    }
+
     const mastersList = this.getMasters();
 
     const idx = challanList.findIndex(c => c.id === challanId);
@@ -1416,21 +1605,13 @@ class DatabaseService {
         }
       });
 
-      Object.entries(aggregatedQtys).forEach(([materialId, totalQty]) => {
-        const mat = materialsList.find(m => m.id === materialId);
-        if (mat && totalQty > mat.current_stock) {
-          throw new Error(`Edit blocked: Total requested quantity for ${mat.name} (${totalQty} ${mat.unit || 'pc'}) exceeds available stock plus refunded stock (${mat.current_stock.toFixed(1)} ${mat.unit || 'pc'}).`);
-        }
-      });
+      // No negative stock validation check as per user request to allow negative stock operations everywhere.
 
-      // Deduct new items from stock
+      // Deduct new items from stock (allowing negative stock)
       updatedItems.forEach(item => {
         const matIdx = materialsList.findIndex(m => m.id === item.material_id);
         if (matIdx > -1) {
           const nextStock = materialsList[matIdx].current_stock - item.qty;
-          if (nextStock < 0) {
-            throw new Error(`Transaction aborted: Operation would make material ${materialsList[matIdx].name} stock negative (${nextStock.toFixed(1)}).`);
-          }
           materialsList[matIdx].current_stock = nextStock;
         }
       });
@@ -2387,9 +2568,7 @@ class DatabaseService {
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
 
-    if (afterStock < 0) {
-      throw new Error("Material stock can never go below zero.");
-    }
+    // Negative stock correction allowed as per user request
 
     const matIdx = materialsList.findIndex(m => m.id === materialId);
     if (matIdx === -1) {

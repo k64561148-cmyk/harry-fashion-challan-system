@@ -42,14 +42,51 @@ export default function App() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<string>('');
 
+  const isKunalUser = 
+    currentUser?.email?.toLowerCase().includes('kunal') || 
+    currentUser?.name?.toLowerCase().includes('kunal') || 
+    currentUser?.displayName?.toLowerCase().includes('kunal') ||
+    (currentUser as any)?.username?.toLowerCase().includes('kunal');
+
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
   const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
   const [cloudHealth, setCloudHealth] = useState(() => db.getCloudHealth());
+  const [isSandboxActive, setIsSandboxActive] = useState<boolean>(() => db.isSandboxModeActive());
+  const [isPromoting, setIsPromoting] = useState<boolean>(false);
+  const [showPromoteModal, setShowPromoteModal] = useState<boolean>(false);
+  const [promoteStatus, setPromoteStatus] = useState<string>('');
+
+  const handleToggleSandbox = (val: boolean) => {
+    db.setSandboxMode(val);
+    setIsSandboxActive(val);
+    db.reinitializeCloudListeners();
+    window.dispatchEvent(new Event('db_sync'));
+  };
+
+  const handlePromoteSandbox = async () => {
+    setIsPromoting(true);
+    setPromoteStatus('Publishing all sandbox changes to the live production database...');
+    try {
+      await db.promoteSandboxToLive();
+      setPromoteStatus('Success! All tested sandbox data is now live and sandbox mode has been switched off.');
+      setTimeout(() => {
+        setShowPromoteModal(false);
+        setIsPromoting(false);
+        setPromoteStatus('');
+        setIsSandboxActive(false);
+      }, 2500);
+    } catch (err: any) {
+      console.error(err);
+      setPromoteStatus(`Promotion failed: ${err?.message || String(err)}`);
+      setIsPromoting(false);
+    }
+  };
 
   useEffect(() => {
     const handleSync = () => {
       setCloudHealth(db.getCloudHealth());
+      setIsSandboxActive(db.isSandboxModeActive());
     };
     window.addEventListener('db_sync', handleSync);
     return () => window.removeEventListener('db_sync', handleSync);
@@ -167,11 +204,41 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex flex-col font-sans" id="harry-fashion-app">
       
+      {/* Sandbox Alert Banner */}
+      {isKunalUser && isSandboxActive && (
+        <div className="bg-amber-600 text-white font-bold text-[11px] sm:text-xs py-2 px-4 text-center flex items-center justify-center flex-wrap gap-2 shadow-inner select-none z-50">
+          <span className="flex items-center gap-1.5 uppercase font-sans">
+            <span className="inline-block w-2 h-2 rounded-full bg-white animate-ping"></span>
+            🛠️ <strong>Sandbox Testing Mode Active</strong>:
+          </span>
+          <span className="opacity-95 text-[11px] font-medium font-sans">You are in an isolated playground. Issuing test challans or rates here will NOT affect live production data.</span>
+          <div className="flex items-center gap-2 flex-nowrap ml-1">
+            <button 
+              onClick={() => handleToggleSandbox(false)}
+              className="bg-white text-amber-950 px-2 py-0.5 rounded text-[9px] font-extrabold tracking-wider hover:bg-amber-50 transition uppercase cursor-pointer"
+            >
+              Switch to Live Mode
+            </button>
+            <button 
+              onClick={() => setShowPromoteModal(true)}
+              className="bg-emerald-600 text-white px-2.5 py-0.5 rounded text-[9px] font-extrabold tracking-wider hover:bg-emerald-500 transition uppercase cursor-pointer border border-emerald-500 shadow-sm"
+            >
+              🚀 Publish changes to Live app
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Mobile Header bar */}
       <header className="lg:hidden bg-[#1A2E4A] text-white px-4 py-3 flex items-center justify-between border-b border-[#2D3E5D] shadow-sm">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-blue-400" />
           <h1 className="text-sm font-bold tracking-tight">Harry Fashion</h1>
+          {isKunalUser && isSandboxActive && (
+            <span className="bg-amber-500 text-white text-[8px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse select-none">
+              Sandbox
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeColor(currentUser.role)}`}>
@@ -409,7 +476,7 @@ export default function App() {
           </div>
 
           {/* Quick Active user Profile Panel */}
-          <div className="p-4 border-t border-[#2D3E5D] bg-[#14233a] flex flex-col gap-3.5">
+          <div className="p-4 border-t border-[#2D3E5D] bg-[#14233a] flex flex-col gap-3">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold border border-blue-400/20">
                 {currentUser.name.substring(0, 2).toUpperCase()}
@@ -420,8 +487,42 @@ export default function App() {
               </div>
             </div>
 
+            {/* Sidebar Sandbox Toggle controls */}
+            {isKunalUser && (
+              <div className="pt-2 border-t border-[#2D3E5D]/40 flex flex-col gap-1.5">
+                <button
+                  onClick={() => handleToggleSandbox(!isSandboxActive)}
+                  className={`w-full flex items-center justify-between py-2 px-3 rounded-lg text-xs font-bold transition cursor-pointer border ${
+                    isSandboxActive 
+                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/25 hover:bg-amber-500/20' 
+                      : 'bg-slate-800/40 text-slate-400 border-slate-700/50 hover:bg-slate-800/60'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={`relative flex h-1.5 w-1.5`}>
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isSandboxActive ? 'bg-amber-400' : 'bg-slate-400'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${isSandboxActive ? 'bg-amber-500' : 'bg-slate-550'}`}></span>
+                    </span>
+                    <span>Sandbox (Testing)</span>
+                  </span>
+                  <span className={`text-[8px] font-black uppercase px-1 rounded ${isSandboxActive ? 'bg-amber-500 text-slate-950' : 'bg-slate-700 text-slate-300'}`}>
+                    {isSandboxActive ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                {isSandboxActive && (
+                  <button
+                    onClick={() => setShowPromoteModal(true)}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 border border-emerald-500 text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-sm uppercase text-[10px]"
+                  >
+                    <span>🚀 Publish to Live</span>
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Logout/Lock Station */}
-            <div className="pt-2 border-t border-[#2D3E5D]/60 whitespace-nowrap">
+            <div className="pt-1 whitespace-nowrap">
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/35 hover:border-rose-700/50 rounded-lg text-rose-300 text-xs font-bold transition cursor-pointer"
@@ -458,6 +559,37 @@ export default function App() {
 
             {/* Right clock & clock profile specs */}
             <div className="flex items-center gap-5">
+                        {/* Sandbox Toggle Mode button */}
+              {isKunalUser && (
+                <div className="flex items-center gap-2 pr-5 border-r border-slate-200">
+                  <button
+                    onClick={() => handleToggleSandbox(!isSandboxActive)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer border ${
+                      isSandboxActive 
+                        ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 shadow-xs' 
+                        : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                    title={isSandboxActive ? "Switch to Live production database" : "Switch to isolated sandbox database for testing"}
+                  >
+                    <span className="relative flex h-2 w-2">
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isSandboxActive ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-2 w-2 ${isSandboxActive ? 'bg-amber-500' : 'bg-emerald-500'}`}></span>
+                    </span>
+                    <span>{isSandboxActive ? 'Sandbox Testing' : 'Live Production'}</span>
+                  </button>
+
+                  {isSandboxActive && (
+                    <button
+                      onClick={() => setShowPromoteModal(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-500 shadow-sm"
+                      title="Promote and publish all verified sandbox changes to the Live Production database"
+                    >
+                      <span>🚀 Publish to Live</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Cloud Sync Status available to all employees to bridge isolated sessions */}
               <div className="flex items-center gap-2 pr-5 border-r border-slate-250 relative">
                 {firebaseUser ? (
@@ -569,6 +701,65 @@ export default function App() {
         </main>
 
       </div>
+
+      {/* Custom React Dialog Modal for Sandbox Promotion to Live */}
+      {showPromoteModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[100] p-4 select-none">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-6">
+              <div className="flex items-center gap-3.5 mb-4">
+                <div className="w-12 h-12 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-600">
+                  <svg className="w-6 h-6 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-[#1A2E4A] font-sans">
+                    Publish Sandbox changes to Live App?
+                  </h3>
+                  <p className="text-xs text-slate-500 font-sans mt-0.5">
+                    Tested environment to production deployment
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 mb-5 text-xs text-amber-900 font-sans leading-relaxed">
+                <strong>Attention Kunal:</strong> Promoting sandbox data will merge/overwrite live master rates, material entries, challans, and invoices with your current sandbox state. This operation is permanent and live production mode will be instantly reactivated.
+              </div>
+
+              {promoteStatus ? (
+                <div className="py-4 px-3 bg-slate-50 border border-slate-150 rounded-lg flex flex-col items-center justify-center gap-3.5 mb-2">
+                  <div className={`w-8 h-8 rounded-full border-3 ${isPromoting ? 'border-t-emerald-600 border-r-emerald-200 border-b-emerald-200 border-l-emerald-200 animate-spin' : 'bg-emerald-100 border-emerald-500 text-emerald-600 flex items-center justify-center'}`}>
+                    {!isPromoting && (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                      </svg>
+                    )}
+                  </div>
+                  <span className="text-xs font-bold text-center text-[#1A2E4A] leading-normal font-sans px-2">
+                    {promoteStatus}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    onClick={() => setShowPromoteModal(false)}
+                    className="px-4 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-lg border border-slate-200 cursor-pointer transition uppercase"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handlePromoteSandbox}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg cursor-pointer transition uppercase shadow-sm border border-emerald-500"
+                  >
+                    Confirm & Publish
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

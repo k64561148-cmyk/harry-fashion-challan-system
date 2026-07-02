@@ -67,6 +67,7 @@ const getFilteredAndRankedMaterials = (search: string, allMaterials: Material[])
 };
 
 export const IssueChallanView: React.FC = () => {
+  const hasOverStockError = false;
   const [masters, setMasters] = useState<Master[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   
@@ -92,6 +93,16 @@ export const IssueChallanView: React.FC = () => {
   // Loaded materials search for rows
   const [rowSearchTerms, setRowSearchTerms] = useState<{ [rowId: string]: string }>({});
   const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+
+  // Keyboard navigation & Suggestion Index states
+  const [highlightedMasterIndex, setHighlightedMasterIndex] = useState<number>(-1);
+  const [highlightedMaterialIndex, setHighlightedMaterialIndex] = useState<number>(-1);
+  const inputRefs = React.useRef<{ [key: string]: HTMLElement | null }>({});
+
+  // Custom Confirmation Modal States
+  const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
+  const [showIssueConfirm, setShowIssueConfirm] = useState<boolean>(false);
+  const [rowToDelete, setRowToDelete] = useState<ChallanFormItem | null>(null);
 
   const loadChallanMastersData = () => {
     const activeMasters = db.getMasters().filter(m => m.is_active);
@@ -131,6 +142,59 @@ export const IssueChallanView: React.FC = () => {
     return () => window.removeEventListener('db_sync', loadChallanMastersData);
   }, []);
 
+  // Focus Print/Download button on success
+  useEffect(() => {
+    if (successChallan) {
+      setTimeout(() => {
+        inputRefs.current['downloadBtn']?.focus();
+      }, 100);
+    }
+  }, [successChallan]);
+
+  // Global keydown listeners for shortcuts (Alt+N, Ctrl+Enter, Esc)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Check if any confirmation modal or dropdown is active, to handle Esc
+      if (e.key === 'Escape') {
+        setShowResetConfirm(false);
+        setShowIssueConfirm(false);
+        setRowToDelete(null);
+        setShowMasterList(false);
+        setFocusedRowId(null);
+      }
+
+      // Alt+N shortcut to add a new line and focus it
+      if (e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        setItems(prev => {
+          const nextIdx = prev.length;
+          const newRow = createBlankRows(1, nextIdx)[0];
+          setTimeout(() => {
+            inputRefs.current[`${newRow.id}-material`]?.focus();
+          }, 100);
+          return [...prev, newRow];
+        });
+      }
+
+      // Ctrl+Enter shortcut to trigger final submission modal
+      if (e.ctrlKey && e.key === 'Enter') {
+        e.preventDefault();
+        // Trigger issue challan submit flow (validating first)
+        const validLines = items.filter(item => item.material_id !== '');
+        if (selectedMasterId && validLines.length > 0 && !hasOverStockError) {
+          setShowIssueConfirm(true);
+        } else {
+          // If not valid, trigger submit so validation errors show up
+          const form = document.getElementById('issue-challan-view')?.querySelector('form');
+          form?.requestSubmit();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [items, selectedMasterId, hasOverStockError]);
+
   // Memoized aggregated requested quantities by materialId to prevent state loop updates
   const aggregatedQtys = React.useMemo(() => {
     const agg: { [matId: string]: number } = {};
@@ -168,6 +232,19 @@ export const IssueChallanView: React.FC = () => {
   };
 
   const deleteItemRow = (id: string) => {
+    const row = items.find(item => item.id === id);
+    if (!row) return;
+
+    const isNonEmpty = row.material_id !== '' || (parseFloat(String(row.qty)) || 0) > 0;
+    if (isNonEmpty) {
+      setRowToDelete(row);
+    } else {
+      executeDeleteRow(id);
+    }
+  };
+
+  const executeDeleteRow = (id: string) => {
+    setRowToDelete(null);
     if (items.length > 1) {
       setItems(prev => prev.filter(item => item.id !== id));
     } else {
@@ -272,9 +349,16 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
+    setShowIssueConfirm(true);
+  };
+
+  const executeIssueChallan = async () => {
+    setShowIssueConfirm(false);
+    setErrorMessage('');
     try {
       setLoading(true);
       
+      const validLines = items.filter(item => item.material_id !== '');
       const challanData = {
         challan_no: challanNo,
         master_id: selectedMasterId,
@@ -376,8 +460,6 @@ export const IssueChallanView: React.FC = () => {
     setItems(finalRows);
   };
 
-  const hasOverStockError = false;
-
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm max-w-5xl mx-auto" id="issue-challan-view">
       
@@ -461,13 +543,49 @@ export const IssueChallanView: React.FC = () => {
                 <input
                   type="text"
                   placeholder="Type name / search code (e.g. KK, FARID)..."
+                  ref={el => { inputRefs.current['masterSearch'] = el; }}
                   className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 pl-9 text-xs shadow-xs text-slate-800 font-semibold"
                   value={masterSearch}
                   onChange={(e) => {
                     setMasterSearch(e.target.value);
                     setShowMasterList(true);
+                    setHighlightedMasterIndex(0);
                   }}
-                  onFocus={() => setShowMasterList(true)}
+                  onFocus={() => {
+                    setShowMasterList(true);
+                    setHighlightedMasterIndex(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setHighlightedMasterIndex(prev => {
+                        const nextIdx = prev + 1;
+                        return nextIdx < filteredMasters.length ? nextIdx : prev;
+                      });
+                      setShowMasterList(true);
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setHighlightedMasterIndex(prev => {
+                        const prevIdx = prev - 1;
+                        return prevIdx >= 0 ? prevIdx : 0;
+                      });
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (showMasterList && highlightedMasterIndex >= 0 && highlightedMasterIndex < filteredMasters.length) {
+                        handleMasterChange(filteredMasters[highlightedMasterIndex].id);
+                        setHighlightedMasterIndex(-1);
+                        setTimeout(() => {
+                          inputRefs.current[`${items[0].id}-material`]?.focus();
+                        }, 50);
+                      } else {
+                        setShowMasterList(false);
+                      }
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setShowMasterList(false);
+                      setHighlightedMasterIndex(-1);
+                    }
+                  }}
                 />
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
                 {masterSearch && (
@@ -476,6 +594,7 @@ export const IssueChallanView: React.FC = () => {
                     onClick={() => {
                       setMasterSearch('');
                       setSelectedMasterId('');
+                      setHighlightedMasterIndex(-1);
                     }}
                     className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 text-[10px]"
                   >
@@ -486,19 +605,34 @@ export const IssueChallanView: React.FC = () => {
 
               {/* Suggestions dropdown */}
               {showMasterList && (
-                <div className="absolute z-30 w-full mt-1 bg-white border border-slate-200 shadow-lg rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                <div 
+                  className="absolute z-30 w-full mt-1 bg-white border border-slate-200 shadow-lg rounded-lg overflow-hidden max-h-48 overflow-y-auto"
+                  role="listbox"
+                >
                   {filteredMasters.length === 0 ? (
                     <p className="p-3 text-xs text-slate-400 text-center">No active Master found</p>
                   ) : (
-                    filteredMasters.map(m => (
+                    filteredMasters.map((m, idx) => (
                       <button
                         key={m.id}
                         type="button"
-                        onClick={() => handleMasterChange(m.id)}
-                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 font-bold text-slate-700 hover:text-[#1A2E4A] transition flex justify-between items-center"
+                        onClick={() => {
+                          handleMasterChange(m.id);
+                          setTimeout(() => {
+                            inputRefs.current[`${items[0].id}-material`]?.focus();
+                          }, 50);
+                        }}
+                        onMouseEnter={() => setHighlightedMasterIndex(idx)}
+                        className={`w-full text-left px-3 py-2 text-xs font-bold transition flex justify-between items-center ${
+                          idx === highlightedMasterIndex 
+                            ? 'bg-slate-100 text-[#1A2E4A]' 
+                            : 'bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                        role="option"
+                        aria-selected={idx === highlightedMasterIndex}
                       >
                         <span>{m.name}</span>
-                        <span className="bg-slate-100 text-slate-500 text-[9px] px-1.5 py-0.5 rounded-full font-bold">
+                        <span className="bg-slate-200 text-slate-600 text-[9px] px-1.5 py-0.5 rounded-full font-bold">
                           {m.type.toUpperCase()} • {m.code}
                         </span>
                       </button>
@@ -567,7 +701,8 @@ export const IssueChallanView: React.FC = () => {
                           <div className="relative">
                             <input
                               type="text"
-                              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold"
+                              ref={el => { inputRefs.current[`${item.id}-material`] = el; }}
+                              className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs text-slate-800 font-semibold animate-none"
                               placeholder="Type to search material..."
                               value={rowSearchTerms[item.id] !== undefined ? rowSearchTerms[item.id] : (materials.find(m => m.id === item.material_id)?.name || '')}
                               onChange={(e) => {
@@ -589,9 +724,11 @@ export const IssueChallanView: React.FC = () => {
                                   }
                                 }
                                 setFocusedRowId(item.id);
+                                setHighlightedMaterialIndex(0);
                               }}
                               onFocus={() => {
                                 setFocusedRowId(item.id);
+                                setHighlightedMaterialIndex(0);
                                 if (rowSearchTerms[item.id] === undefined) {
                                   const existingName = materials.find(m => m.id === item.material_id)?.name || '';
                                   setRowSearchTerms(prev => ({ ...prev, [item.id]: existingName }));
@@ -603,11 +740,58 @@ export const IssueChallanView: React.FC = () => {
                                   setFocusedRowId(current => current === item.id ? null : current);
                                 }, 250);
                               }}
+                              onKeyDown={(e) => {
+                                const currentSearch = rowSearchTerms[item.id] || '';
+                                const filtered = getFilteredAndRankedMaterials(currentSearch, materials);
+
+                                if (e.key === 'ArrowDown') {
+                                  e.preventDefault();
+                                  if (focusedRowId === item.id && filtered.length > 0) {
+                                    setHighlightedMaterialIndex(prev => {
+                                      const nextIdx = prev + 1;
+                                      return nextIdx < filtered.length ? nextIdx : prev;
+                                    });
+                                  } else {
+                                    const nextIdx = index + 1;
+                                    if (nextIdx < items.length) {
+                                      inputRefs.current[`${items[nextIdx].id}-material`]?.focus();
+                                    }
+                                  }
+                                } else if (e.key === 'ArrowUp') {
+                                  e.preventDefault();
+                                  if (focusedRowId === item.id && highlightedMaterialIndex > 0) {
+                                    setHighlightedMaterialIndex(prev => prev - 1);
+                                  } else {
+                                    const prevIdx = index - 1;
+                                    if (prevIdx >= 0) {
+                                      inputRefs.current[`${items[prevIdx].id}-material`]?.focus();
+                                    } else {
+                                      inputRefs.current['masterSearch']?.focus();
+                                    }
+                                  }
+                                } else if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  if (focusedRowId === item.id && highlightedMaterialIndex >= 0 && highlightedMaterialIndex < filtered.length) {
+                                    const selectedMat = filtered[highlightedMaterialIndex];
+                                    handleMaterialSelect(item.id, selectedMat.id);
+                                    setHighlightedMaterialIndex(-1);
+                                    setTimeout(() => {
+                                      inputRefs.current[`${item.id}-qty`]?.focus();
+                                    }, 100);
+                                  } else {
+                                    inputRefs.current[`${item.id}-qty`]?.focus();
+                                  }
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault();
+                                  setFocusedRowId(null);
+                                  setHighlightedMaterialIndex(-1);
+                                }
+                              }}
                             />
                             
                             {/* Suggestions Dropdown */}
                             {focusedRowId === item.id && (
-                              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-56 overflow-y-auto">
+                              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden max-h-56 overflow-y-auto" role="listbox">
                                 {(() => {
                                   const currentSearch = rowSearchTerms[item.id] || '';
                                   const filtered = getFilteredAndRankedMaterials(currentSearch, materials);
@@ -616,19 +800,31 @@ export const IssueChallanView: React.FC = () => {
                                     return <p className="p-2.5 text-[11px] text-slate-400 text-center">No matching materials found</p>;
                                   }
 
-                                  return filtered.map(m => {
+                                  return filtered.map((m, idx) => {
                                     const resolvedRate = selectedMasterId ? db.getRateForMaster(selectedMasterId, m.id) : m.default_rate;
                                     return (
                                       <button
                                         key={m.id}
                                         type="button"
-                                        onMouseDown={() => {
+                                        onMouseEnter={() => setHighlightedMaterialIndex(idx)}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
                                           handleMaterialSelect(item.id, m.id);
+                                          setHighlightedMaterialIndex(-1);
+                                          setTimeout(() => {
+                                            inputRefs.current[`${item.id}-qty`]?.focus();
+                                          }, 100);
                                         }}
-                                        className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 font-bold text-slate-700 hover:text-[#1A2E4A] transition flex justify-between items-center border-b border-slate-50 last:border-0"
+                                        className={`w-full text-left px-3 py-2 text-xs font-bold transition flex justify-between items-center border-b border-slate-50 last:border-0 ${
+                                          idx === highlightedMaterialIndex
+                                            ? 'bg-slate-100 text-[#1A2E4A]'
+                                            : 'bg-white text-slate-700 hover:bg-slate-50'
+                                        }`}
+                                        role="option"
+                                        aria-selected={idx === highlightedMaterialIndex}
                                       >
                                         <span>{m.name}</span>
-                                        <span className="bg-slate-100 text-slate-500 text-[10px] px-1.5 py-0.5 rounded font-bold">
+                                        <span className="bg-slate-200 text-slate-600 text-[10px] px-1.5 py-0.5 rounded font-bold">
                                           ₹{resolvedRate}
                                         </span>
                                       </button>
@@ -645,10 +841,43 @@ export const IssueChallanView: React.FC = () => {
                           <input
                             type="text"
                             inputMode="decimal"
+                            ref={el => { inputRefs.current[`${item.id}-qty`] = el; }}
                             placeholder="0.0"
                             className="w-full text-right bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs font-mono font-semibold"
                             value={item.qty}
                             onChange={(e) => handleQtyChange(item.id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                const nextIdx = index + 1;
+                                if (nextIdx < items.length) {
+                                  inputRefs.current[`${items[nextIdx].id}-qty`]?.focus();
+                                }
+                              } else if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                const prevIdx = index - 1;
+                                if (prevIdx >= 0) {
+                                  inputRefs.current[`${items[prevIdx].id}-qty`]?.focus();
+                                }
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const nextIdx = index + 1;
+                                if (nextIdx < items.length) {
+                                  inputRefs.current[`${items[nextIdx].id}-material`]?.focus();
+                                } else {
+                                  addItemRow();
+                                  setTimeout(() => {
+                                    setItems(currentItems => {
+                                      const lastItem = currentItems[currentItems.length - 1];
+                                      setTimeout(() => {
+                                        inputRefs.current[`${lastItem.id}-material`]?.focus();
+                                      }, 50);
+                                      return currentItems;
+                                    });
+                                  }, 50);
+                                }
+                              }
+                            }}
                           />
                         </td>
 
@@ -662,10 +891,43 @@ export const IssueChallanView: React.FC = () => {
                           <input
                             type="text"
                             inputMode="decimal"
+                            ref={el => { inputRefs.current[`${item.id}-rate`] = el; }}
                             placeholder="0.00"
                             className="w-full text-right bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-1.5 px-2.5 text-xs font-mono font-semibold"
                             value={item.rate}
                             onChange={(e) => handleRateChange(item.id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                const nextIdx = index + 1;
+                                if (nextIdx < items.length) {
+                                  inputRefs.current[`${items[nextIdx].id}-rate`]?.focus();
+                                }
+                              } else if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                const prevIdx = index - 1;
+                                if (prevIdx >= 0) {
+                                  inputRefs.current[`${items[prevIdx].id}-rate`]?.focus();
+                                }
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault();
+                                const nextIdx = index + 1;
+                                if (nextIdx < items.length) {
+                                  inputRefs.current[`${items[nextIdx].id}-material`]?.focus();
+                                } else {
+                                  addItemRow();
+                                  setTimeout(() => {
+                                    setItems(currentItems => {
+                                      const lastItem = currentItems[currentItems.length - 1];
+                                      setTimeout(() => {
+                                        inputRefs.current[`${lastItem.id}-material`]?.focus();
+                                      }, 50);
+                                      return currentItems;
+                                    });
+                                  }, 50);
+                                }
+                              }
+                            }}
                           />
                         </td>
 
@@ -678,7 +940,14 @@ export const IssueChallanView: React.FC = () => {
                         <td className="py-3 px-3 text-center align-middle">
                           <button
                             type="button"
+                            ref={el => { inputRefs.current[`${item.id}-delete`] = el; }}
                             onClick={() => deleteItemRow(item.id)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'Enter') {
+                                e.preventDefault();
+                                deleteItemRow(item.id);
+                              }
+                            }}
                             className="text-slate-400 hover:text-rose-600 transition p-1.5 hover:bg-slate-100 rounded-lg cursor-pointer"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -756,7 +1025,7 @@ export const IssueChallanView: React.FC = () => {
             <div className="flex items-center gap-3 w-full sm:w-auto">
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={() => setShowResetConfirm(true)}
                 className="bg-slate-800/40 hover:bg-slate-800 text-white text-xs font-bold py-2.5 px-4 rounded-lg cursor-pointer transition"
               >
                 Reset Fields
@@ -773,6 +1042,120 @@ export const IssueChallanView: React.FC = () => {
           </div>
 
         </form>
+      )}
+
+      {/* Confirmation Modals */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 max-w-sm w-full p-6 shadow-xl space-y-4 text-left animate-none">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5 uppercase">
+              <AlertTriangle className="w-4 h-4 text-amber-500" /> Confirm Reset Fields
+            </h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Are you sure you want to reset all fields? This will clear the current master selection and all entered line items.
+            </p>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowResetConfirm(false)}
+                className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  setShowResetConfirm(false);
+                  resetForm();
+                }}
+                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+              >
+                Confirm Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showIssueConfirm && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 max-w-md w-full p-6 shadow-xl space-y-4 text-left animate-none">
+            <h3 className="text-sm font-bold text-[#1A2E4A] flex items-center gap-1.5 uppercase border-b border-slate-100 pb-2">
+              📝 Finalize & Issue Material Challans
+            </h3>
+            <div className="space-y-2.5 text-xs text-slate-600">
+              <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                <span className="text-slate-400">Master Stitcher:</span>
+                <span className="font-bold text-slate-800">{masters.find(m => m.id === selectedMasterId)?.name}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                <span className="text-slate-400">Total Outflow Value:</span>
+                <span className="font-bold text-[#1A2E4A] text-sm">{formatINR(runningTotal)}</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-50 pb-1.5">
+                <span className="text-slate-400">Date Issued:</span>
+                <span className="font-semibold text-slate-800">{issuedDate.split('-').reverse().join('/')}</span>
+              </div>
+              {notes && (
+                <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-[11px] italic">
+                  " {notes} "
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowIssueConfirm(false)}
+                className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  executeIssueChallan();
+                }}
+                className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-xs font-bold cursor-pointer shadow-xs"
+              >
+                Confirm & Issue Voucher
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rowToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 max-w-sm w-full p-6 shadow-xl space-y-4 text-left animate-none">
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5 uppercase">
+              <AlertTriangle className="w-4 h-4 text-rose-600" /> Confirm Row Deletion
+            </h3>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Are you sure you want to delete the line item for <strong>{materials.find(m => m.id === rowToDelete.material_id)?.name || 'selected material'}</strong> with quantity <strong>{rowToDelete.qty} {rowToDelete.unit}</strong>?
+            </p>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setRowToDelete(null)}
+                className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  executeDeleteRow(rowToDelete.id);
+                }}
+                className="px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+              >
+                Delete Row
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

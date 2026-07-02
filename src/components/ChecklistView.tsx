@@ -96,8 +96,8 @@ export default function ChecklistView() {
     ? Math.max(0, 100 - (criticalAuditLogs.length * 5)) 
     : 100;
 
-  // Total checklist diagnostics pass check
-  const goLiveApproved = !hasNegStock && duplicateMastersList.length === 0 && allStreamsOk && unsettledChallans.length === 0;
+  // Total checklist diagnostics pass check (negative stock allowed now)
+  const goLiveApproved = duplicateMastersList.length === 0 && allStreamsOk && unsettledChallans.length === 0;
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto" id="checklist-view">
@@ -162,31 +162,27 @@ export default function ChecklistView() {
         <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-2">
             <span className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">1. STOCKS TRUST INTEGRITY</span>
-            {hasNegStock ? (
-              <span className="bg-rose-100 text-rose-700 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">BLOCKED</span>
-            ) : (
-              <span className="bg-emerald-100 text-emerald-700 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">CLEARED</span>
-            )}
+            <span className="bg-emerald-100 text-emerald-700 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">CLEARED</span>
           </div>
           
           <div className="flex items-start gap-3.5">
-            <div className={`p-2.5 rounded-lg border ${hasNegStock ? 'bg-rose-50 text-rose-600 border-rose-150' : 'bg-emerald-50 text-emerald-600 border-emerald-150'}`}>
+            <div className={`p-2.5 rounded-lg border bg-emerald-50 text-emerald-600 border-emerald-150`}>
               <Database className="w-5 h-5 shrink-0" />
             </div>
             <div className="flex-1 space-y-1">
               <h5 className="text-xs font-bold text-slate-800 uppercase">NEGATIVE INVENTORY SCAN</h5>
-              <p className="text-xs text-slate-500 font-medium">Any material currentStock &lt; 0 triggers a global business block. Currently:</p>
+              <p className="text-xs text-slate-500 font-medium">Negative stock is fully permitted as requested by management.</p>
               {hasNegStock ? (
                 <div className="pt-2">
-                  <p className="text-xs text-rose-700 font-bold">Negative stocks detected on {negativeMaterials.length} materials:</p>
-                  <ul className="list-disc pl-4 text-[11px] text-rose-650 font-semibold font-mono space-y-1 mt-1">
+                  <p className="text-xs text-blue-700 font-bold">Negative stocks active on {negativeMaterials.length} materials:</p>
+                  <ul className="list-disc pl-4 text-[11px] text-blue-650 font-semibold font-mono space-y-1 mt-1">
                     {negativeMaterials.map(m => (
                       <li key={m.id}>{m.name}: {m.current_stock.toFixed(1)} {m.unit}</li>
                     ))}
                   </ul>
                 </div>
               ) : (
-                <p className="text-xs text-emerald-700 font-bold pt-1">✓ Excellent. All materials are in positive balance. Stocks trust is fully unlocked.</p>
+                <p className="text-xs text-emerald-700 font-bold pt-1">✓ Excellent. All materials are in positive balance.</p>
               )}
             </div>
           </div>

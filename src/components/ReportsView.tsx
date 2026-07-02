@@ -1244,22 +1244,7 @@ export const ReportsView: React.FC = () => {
           <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm space-y-4">
             <h4 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase border-b border-slate-100 pb-2">AUDIT SYSTEM EXECUTION OUTCOMES</h4>
             
-            {db.hasNegativeStock() ? (
-              <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
-                <div className="w-16 h-16 rounded-full bg-rose-50 border border-rose-150 flex items-center justify-center text-rose-600">
-                  <AlertTriangle className="w-9 h-9 animate-bounce" />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-sm font-bold text-rose-950 uppercase tracking-tight">BLOCKED / STOCK MISMATCH</h4>
-                  <p className="text-xs text-rose-700 max-w-md font-medium leading-relaxed">
-                    The reconciliation engine has blocked the system ledger clearance because negative material stock was detected. Core ledger alignment status cannot be verified until all negative stock is corrected.
-                  </p>
-                </div>
-                <div className="text-[10px] bg-rose-100 px-3 py-1 text-rose-700 rounded-md font-mono font-bold uppercase select-none">
-                  STOCK AUDIT LOCK: ON
-                </div>
-              </div>
-            ) : getReconciliationAudit().length === 0 ? (
+            {getReconciliationAudit().length === 0 ? (
               <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
                 <div className="w-16 h-16 rounded-full bg-emerald-50/70 border border-emerald-150 flex items-center justify-center text-emerald-600">
                   <ShieldCheck className="w-9 h-9" />

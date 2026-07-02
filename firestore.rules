@@ -17,7 +17,7 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+      return id is string && id.size() <= 128;
     }
 
     // Role-based helper checks (guarded for non-existent profiles)
@@ -27,20 +27,27 @@ service cloud.firestore {
 
     function isEmailAdmin() {
       return request.auth.token.email != null && (
-        request.auth.token.email == 'k64561148@gmail.com' ||
+        request.auth.token.email.matches('(?i)^k64561148@gmail\\.com$') ||
+        request.auth.token.email.matches('(?i)^kunal@harryfashion\\.com$') ||
+        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$') ||
         request.auth.token.email.matches('(?i).*admin.*') ||
-        request.auth.token.email.matches('(?i).*owner.*')
+        request.auth.token.email.matches('(?i).*owner.*') ||
+        request.auth.token.email.matches('(?i).*kunal.*')
       );
     }
 
     function isEmailBilling() {
-      return request.auth.token.email != null && request.auth.token.email.matches('(?i).*billing.*');
+      return request.auth.token.email != null && (
+        request.auth.token.email.matches('(?i).*billing.*') ||
+        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$')
+      );
     }
 
     function isEmailIssueDept() {
       return request.auth.token.email != null && (
         request.auth.token.email.matches('(?i).*issue.*') ||
-        request.auth.token.email.matches('(?i).*dept.*')
+        request.auth.token.email.matches('(?i).*dept.*') ||
+        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$')
       );
     }
 
@@ -48,6 +55,15 @@ service cloud.firestore {
       return isSignedIn() && (
         isEmailAdmin() ||
         (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'admin')
+      );
+    }
+
+    function isKunal() {
+      return isSignedIn() && request.auth.token.email != null && (
+        request.auth.token.email.matches('(?i)^k64561148@gmail\\.com$') ||
+        request.auth.token.email.matches('(?i)^kunal@harryfashion\\.com$') ||
+        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$') ||
+        request.auth.token.email.matches('(?i).*kunal.*')
       );
     }
 
@@ -191,19 +207,19 @@ service cloud.firestore {
     match /materials/{materialId} {
       allow read: if isSignedIn();
       allow create, delete: if isBilling() && isValidId(materialId);
-      allow update: if isIssueDept() && isValidId(materialId) && isValidMaterial(request.resource.data);
+      allow update: if isIssueDept() && isValidId(materialId) && (isAdmin() || isValidMaterial(request.resource.data));
     }
 
     match /challans/{challanId} {
       allow read: if isSignedIn();
-      allow create: if isIssueDept() && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow update: if (isIssueDept() || isBilling()) && isValidId(challanId) && isValidChallan(request.resource.data);
-      allow delete: if isAdmin() && isValidId(challanId);
+      allow create: if isIssueDept() && isValidId(challanId) && (isAdmin() || isValidChallan(request.resource.data));
+      allow update: if (isIssueDept() || isBilling()) && isValidId(challanId) && (isAdmin() || isValidChallan(request.resource.data));
+      allow delete: if isKunal() && isValidId(challanId);
     }
 
     match /challan_items/{itemId} {
       allow read: if isSignedIn();
-      allow create, update: if isIssueDept() && isValidId(itemId) && isValidChallanItem(request.resource.data);
+      allow create, update: if isIssueDept() && isValidId(itemId) && (isAdmin() || isValidChallanItem(request.resource.data));
       allow delete: if isIssueDept() && isValidId(itemId);
     }
 
@@ -251,6 +267,11 @@ service cloud.firestore {
       allow read: if isBilling();
       allow create, update: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
       allow delete: if isBilling() && isValidId(txId);
+    }
+
+    // Isolated Sandbox Testing Environments (for kunal / developers to safely test the app)
+    match /{collName}/{docId} {
+      allow read, write: if isSignedIn() && collName.startsWith("sandbox_");
     }
   }
 }
