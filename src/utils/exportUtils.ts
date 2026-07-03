@@ -400,182 +400,187 @@ export async function generateChallanPDF(
       format: 'a4'
     });
 
-    const drawHalfChallan = (yOffset: number, copyLabel: 'MASTER COPY' | 'OFFICE COPY') => {
-      // 1. Header: ONLY "HARRY FASHION LLP" and "MATERIAL ISSUE CHALLAN"
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(13);
-      doc.setTextColor(0, 0, 0);
-      doc.text('HARRY FASHION LLP', 10, yOffset + 14);
+    // 1. Header: "HARRY FASHION LLP" and "MATERIAL ISSUE CHALLAN"
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(18); // Increased from 15
+    doc.setTextColor(0, 0, 0);
+    doc.text('HARRY FASHION LLP', 12, 18);
 
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(9.5);
-      doc.text('MATERIAL ISSUE CHALLAN', 10, yOffset + 19.5);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(12.5); // Increased from 10.5
+    doc.text('MATERIAL ISSUE CHALLAN', 12, 24);
 
-      // Copy Label on the top right
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(9.5);
-      doc.text(copyLabel, 200, yOffset + 14, { align: 'right' });
+    // Copy Label on the top right removed as requested
 
-      // Clean Solid separator line under header
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.4);
-      doc.line(10, yOffset + 22, 200, yOffset + 22);
-
-      // 2. Metadata / Information section
-      doc.setFont('Helvetica', 'normal');
-      doc.setFontSize(8.5);
-      doc.setTextColor(0, 0, 0);
-
-      // Column 1: Master Craftsman
-      doc.setFont('Helvetica', 'bold');
-      doc.text('ISSUED TO (MASTER CRAFTSMAN):', 10, yOffset + 27);
-      doc.setFont('Helvetica', 'normal');
-      doc.text(`${master.name} (${master.code})`, 10, yOffset + 31.5);
-      doc.text(`Department: ${master.type.toUpperCase()} Segment`, 10, yOffset + 36);
-
-      // Column 2: Challan Details
-      doc.setFont('Helvetica', 'bold');
-      doc.text('CHALLAN METADATA:', 120, yOffset + 27);
-      doc.setFont('Helvetica', 'normal');
-      doc.text(`Challan No: ${challan.challan_no}`, 120, yOffset + 31.5);
-      doc.text(`Date: ${formatDate(challan.issued_date)}`, 120, yOffset + 36);
-      doc.text(`Issued By: ${challan.issued_by || 'Office Desk'}`, 120, yOffset + 40.5);
-
-      // 3. Compact Dynamic Table Sizing
-      const numItems = items.length;
-      let rowHeight = 5.2;
-      let fontSize = 8;
-      if (numItems > 6) {
-        rowHeight = Math.max(3.2, 5.2 - (numItems - 6) * 0.25);
-        fontSize = Math.max(6.5, 8 - (numItems - 6) * 0.25);
-      }
-
-      let tableY = yOffset + 44;
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.35);
-      
-      // Header top line
-      doc.line(10, tableY, 200, tableY);
-
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(fontSize);
-      doc.setTextColor(0, 0, 0);
-
-      doc.text('SR', 12, tableY + 4);
-      doc.text('MATERIAL NAME', 20, tableY + 4);
-      doc.text('QUANTITY', 116, tableY + 4, { align: 'right' });
-      doc.text('UNIT', 120, tableY + 4);
-      doc.text('RATE (Rs.)', 160, tableY + 4, { align: 'right' });
-      doc.text('AMOUNT (Rs.)', 198, tableY + 4, { align: 'right' });
-
-      // Header bottom line
-      doc.line(10, tableY + 5.5, 200, tableY + 5.5);
-
-      let currentY = tableY + 5.5;
-      let totalQty = 0;
-      let totalAmount = 0;
-
-      doc.setFont('Helvetica', 'normal');
-      doc.setFontSize(fontSize);
-
-      items.forEach((item, index) => {
-        const mat = materials.find(m => m.id === item.material_id);
-        const materialName = mat ? mat.name : 'Unknown Material';
-        const unit = mat ? mat.unit : 'pc';
-        totalQty += item.qty;
-        totalAmount += item.amount;
-
-        doc.text(String(index + 1), 12, currentY + rowHeight - 1);
-        doc.text(materialName, 20, currentY + rowHeight - 1);
-        doc.text(item.qty.toFixed(1), 116, currentY + rowHeight - 1, { align: 'right' });
-        doc.text(unit, 120, currentY + rowHeight - 1);
-        doc.text(formatINR(item.rate), 160, currentY + rowHeight - 1, { align: 'right' });
-        doc.text(formatINR(item.amount), 198, currentY + rowHeight - 1, { align: 'right' });
-
-        // Bottom row border
-        doc.setDrawColor(200, 200, 200);
-        doc.setLineWidth(0.15);
-        doc.line(10, currentY + rowHeight, 200, currentY + rowHeight);
-        currentY += rowHeight;
-      });
-
-      // Table outer borders & vertical grids
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.35);
-      doc.line(10, tableY, 200, tableY); // top
-      doc.line(10, currentY, 200, currentY); // bottom
-      doc.line(10, tableY, 10, currentY); // left
-      doc.line(200, tableY, 200, currentY); // right
-
-      // Vertical separators
-      doc.line(18, tableY, 18, currentY);
-      doc.line(100, tableY, 100, currentY);
-      doc.line(118, tableY, 118, currentY);
-      doc.line(132, tableY, 132, currentY);
-      doc.line(162, tableY, 162, currentY);
-
-      // Summary lines
-      currentY += 4.5;
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(fontSize);
-      doc.text(`Total Items: ${items.length}    |    Total Qty: ${totalQty.toFixed(1)}    |    Total Value: ₹${formatINR(totalAmount)}`, 12, currentY);
-
-      // Notes
-      if (challan.notes) {
-        currentY += 4;
-        doc.setFont('Helvetica', 'bold');
-        doc.setFontSize(fontSize - 1);
-        doc.text('Notes / Remarks:', 12, currentY);
-        doc.setFont('Helvetica', 'normal');
-        doc.text(challan.notes, 38, currentY);
-      }
-
-      // Voided watermark
-      if (challan.status === 'voided') {
-        doc.saveGraphicsState();
-        doc.setTextColor(180, 180, 180);
-        doc.setFont('Helvetica', 'bold');
-        doc.setFontSize(40);
-        doc.text('VOIDED', 105, yOffset + 80, { align: 'center', angle: 25 });
-        doc.restoreGraphicsState();
-      }
-
-      // 4. Signatures (Pinned relative to half height bottom)
-      const sigY = yOffset + 137;
-      doc.setDrawColor(0, 0, 0);
-      doc.setLineWidth(0.3);
-      
-      // Issuer Signature line & label
-      doc.line(12, sigY - 4, 70, sigY - 4);
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.text('ISSUER SIGNATURE', 12, sigY);
-      doc.setFont('Helvetica', 'normal');
-      doc.setFontSize(6.5);
-      doc.text('(For HARRY FASHION LLP)', 12, sigY + 3.5);
-
-      // Receiver Signature line & label
-      doc.line(140, sigY - 4, 198, sigY - 4);
-      doc.setFont('Helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.text('RECEIVER SIGNATURE', 140, sigY);
-      doc.setFont('Helvetica', 'normal');
-      doc.setFontSize(6.5);
-      doc.text('(Master Craftsman Signature)', 140, sigY + 3.5);
-    };
-
-    // Draw MASTER COPY in Top Half
-    drawHalfChallan(0, 'MASTER COPY');
-
-    // Draw Thin dashed Cut Line at middle (y = 148.5)
+    // Clean Solid separator line under header
     doc.setDrawColor(0, 0, 0);
-    doc.setLineWidth(0.3);
-    doc.setLineDashPattern([2, 2], 0);
-    doc.line(10, 148.5, 200, 148.5);
-    doc.setLineDashPattern([], 0); // reset to solid
+    doc.setLineWidth(0.45);
+    doc.line(10, 27, 200, 27);
 
-    // Draw OFFICE COPY in Bottom Half
-    drawHalfChallan(148.5, 'OFFICE COPY');
+    // 2. Metadata / Information section
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(11); // Increased from 9
+    doc.setTextColor(0, 0, 0);
+
+    // Column 1: Master Craftsman (Bold and Beautiful)
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(12); // Bold and prominent as requested
+    doc.text(`ISSUED TO ${master.name.toUpperCase()} MASTER:`, 12, 34);
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.text(`Department: ${master.type.toUpperCase()} Master`, 12, 40);
+
+    // Column 2: Challan Details (No "CHALLAN METADATA:" heading as requested)
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(11); // Increased from 9
+    doc.text(`Challan No: ${challan.challan_no}`, 120, 34);
+    doc.text(`Date: ${formatDate(challan.issued_date)}`, 120, 40);
+    doc.text(`Issued By: ${challan.issued_by || 'Office Desk'}`, 120, 46);
+
+    // 3. Table Sizing & Header
+    const tableY = 53;
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.4);
+    
+    // Header top line
+    doc.line(10, tableY, 200, tableY);
+
+    const fontSize = 10; // increased from 8.5
+    const rowHeight = 7.5; // increased from 6.5
+
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(fontSize);
+    doc.setTextColor(0, 0, 0);
+
+    doc.text('SR', 12, tableY + 5.2);
+    doc.text('MATERIAL NAME', 20, tableY + 5.2);
+    doc.text('QUANTITY', 116, tableY + 5.2, { align: 'right' });
+    doc.text('UNIT', 120, tableY + 5.2);
+    doc.text('RATE (Rs.)', 160, tableY + 5.2, { align: 'right' });
+    doc.text('AMOUNT (Rs.)', 198, tableY + 5.2, { align: 'right' });
+
+    // Header bottom line
+    doc.line(10, tableY + rowHeight, 200, tableY + rowHeight);
+
+    let currentY = tableY + rowHeight;
+    let totalQty = 0;
+    let totalAmount = 0;
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(fontSize);
+
+    items.forEach((item, index) => {
+      const mat = materials.find(m => m.id === item.material_id);
+      const materialName = mat ? mat.name : 'Unknown Material';
+      const unit = mat ? mat.unit : 'pc';
+      totalQty += item.qty;
+      totalAmount += item.amount;
+
+      // Dynamically adjust font size based on the length of materialName to prevent overlap
+      let itemFontSize = 10;
+      if (materialName.length > 35) {
+        itemFontSize = 7.5;
+      } else if (materialName.length > 25) {
+        itemFontSize = 8.5;
+      }
+      doc.setFontSize(itemFontSize);
+
+      doc.text(String(index + 1), 12, currentY + rowHeight - 2.2);
+      doc.text(materialName, 20, currentY + rowHeight - 2.2);
+      
+      // Reset font size for numbers/units
+      doc.setFontSize(10);
+      doc.text(item.qty.toFixed(1), 116, currentY + rowHeight - 2.2, { align: 'right' });
+      doc.text(unit, 120, currentY + rowHeight - 2.2);
+      doc.text(formatINR(item.rate), 160, currentY + rowHeight - 2.2, { align: 'right' });
+      doc.text(formatINR(item.amount), 198, currentY + rowHeight - 2.2, { align: 'right' });
+
+      // Bottom row border
+      doc.setDrawColor(200, 200, 200);
+      doc.setLineWidth(0.15);
+      doc.line(10, currentY + rowHeight, 200, currentY + rowHeight);
+      currentY += rowHeight;
+    });
+
+    // Draw Totals row at the bottom of the table
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.4);
+    doc.line(10, currentY, 200, currentY); // solid line above total row
+
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(fontSize);
+    doc.text('TOTAL', 20, currentY + rowHeight - 2.2);
+    doc.text(totalQty.toFixed(1), 116, currentY + rowHeight - 2.2, { align: 'right' });
+    doc.text(formatINR(totalAmount), 198, currentY + rowHeight - 2.2, { align: 'right' });
+
+    currentY += rowHeight; // increment for totals row
+
+    // Table outer borders & vertical grids
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.4);
+    doc.line(10, tableY, 200, tableY); // top
+    doc.line(10, currentY, 200, currentY); // bottom
+    doc.line(10, tableY, 10, currentY); // left
+    doc.line(200, tableY, 200, currentY); // right
+
+    // Vertical separators
+    doc.line(18, tableY, 18, currentY);
+    doc.line(100, tableY, 100, currentY);
+    doc.line(118, tableY, 118, currentY);
+    doc.line(132, tableY, 132, currentY);
+    doc.line(162, tableY, 162, currentY);
+
+    // Notes
+    if (challan.notes) {
+      currentY += 8;
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.text('Notes / Remarks:', 12, currentY);
+      doc.setFont('Helvetica', 'normal');
+      doc.text(challan.notes, 42, currentY);
+    }
+
+    // Voided watermark
+    if (challan.status === 'voided') {
+      doc.saveGraphicsState();
+      doc.setTextColor(220, 220, 220);
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(60);
+      doc.text('VOIDED', 105, 140, { align: 'center', angle: 25 });
+      doc.restoreGraphicsState();
+    }
+
+    // 4. Signatures (Pinned to bottom of the A4 page)
+    const sigY = 265;
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.35);
+    
+    // 1st column: Issuer Signature
+    doc.line(12, sigY - 4, 65, sigY - 4);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.text('ISSUER SIGNATURE', 12, sigY);
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text('(For HARRY FASHION LLP)', 12, sigY + 3.5);
+
+    // 2nd column: Cutter Signature
+    doc.line(78, sigY - 4, 131, sigY - 4);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.text('CUTTER SIGNATURE', 78, sigY);
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text("(Cutter's Sign)", 78, sigY + 3.5);
+
+    // 3rd column: Receiver Signature
+    doc.line(144, sigY - 4, 198, sigY - 4);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.text('RECEIVER SIGNATURE', 144, sigY);
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.text('(Master Craftsman Signature)', 144, sigY + 3.5);
 
     // Return generated PDF blob
     const pdfBlob = doc.output('blob');

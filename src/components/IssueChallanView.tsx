@@ -77,6 +77,10 @@ export const IssueChallanView: React.FC = () => {
   const [challanNo, setChallanNo] = useState<string>('');
   const [issuedDate, setIssuedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState<string>('');
+  const [issuedBy, setIssuedBy] = useState<string>('');
+  const [customIssuerName, setCustomIssuerName] = useState<string>('');
+  const [isCustomIssuer, setIsCustomIssuer] = useState<boolean>(false);
+  const [issuerNames, setIssuerNames] = useState<string[]>(['Sundar', 'Balaji', 'Shekhar', 'Sumit', 'Riyaz']);
 
   // Search filters
   const [masterSearch, setMasterSearch] = useState<string>('');
@@ -111,10 +115,22 @@ export const IssueChallanView: React.FC = () => {
     const activeMaterials = db.getMaterials().filter(m => m.is_active);
     setMasters(activeMasters);
     setMaterials(activeMaterials);
-    setCurrentUser(db.getCurrentUser());
+    
+    const user = db.getCurrentUser();
+    setCurrentUser(user);
 
     // Set auto-increment seq
     setChallanNo(db.getNextChallanNo());
+
+    // Populate issuer names strictly as requested
+    const combined = ['Sundar', 'Balaji', 'Shekhar', 'Sumit', 'Riyaz'];
+    setIssuerNames(combined);
+    
+    // Set initial issuedBy if empty
+    setIssuedBy(prev => {
+      if (prev) return prev;
+      return 'Sundar';
+    });
   };
 
   const createBlankRows = (count: number, startIdx: number = 0): ChallanFormItem[] => {
@@ -360,6 +376,15 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
+    // Issuer validation
+    if (isCustomIssuer && !customIssuerName.trim()) {
+      setErrorMessage("Please specify the issuer name.");
+      return;
+    } else if (!isCustomIssuer && !issuedBy.trim()) {
+      setErrorMessage("Please select an issuer.");
+      return;
+    }
+
     // Backdated logic validation
     const isBackdated = issuedDate < todayStr;
     if (isBackdated) {
@@ -389,6 +414,12 @@ export const IssueChallanView: React.FC = () => {
         throw new Error("Future dated challans are not allowed.");
       }
 
+      // Issuer validation
+      const finalIssuer = isCustomIssuer ? customIssuerName.trim() : issuedBy;
+      if (!finalIssuer) {
+        throw new Error("Please select or specify the issuer name.");
+      }
+
       const isBackdated = issuedDate < todayStr;
       if (isBackdated) {
         if (currentUser.username !== "kunal3012") {
@@ -405,6 +436,7 @@ export const IssueChallanView: React.FC = () => {
         master_id: selectedMasterId,
         issued_date: issuedDate,
         notes: notes,
+        issued_by: finalIssuer,
         backdatedReason: isBackdated ? backdatedReason.trim() : undefined
       };
 
@@ -686,8 +718,58 @@ export const IssueChallanView: React.FC = () => {
               )}
             </div>
 
+            {/* Issuer name select / input */}
+            <div className="md:col-span-6">
+              <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                <User className="w-3.5 h-3.5 text-slate-400" /> ISSUED BY <span className="text-red-500">*</span>
+              </label>
+              {!isCustomIssuer ? (
+                <div className="relative">
+                  <select
+                    required
+                    className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-semibold text-slate-800"
+                    value={issuedBy}
+                    onChange={(e) => {
+                      if (e.target.value === '__custom__') {
+                        setIsCustomIssuer(true);
+                      } else {
+                        setIssuedBy(e.target.value);
+                      }
+                    }}
+                  >
+                    <option value="" disabled>-- Select Issuer Name --</option>
+                    {issuerNames.map(name => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                    <option value="__custom__" className="text-[#1A2E4A] font-bold">+ Add Custom Name...</option>
+                  </select>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    placeholder="Enter custom issuer's real name..."
+                    className="flex-1 bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-semibold text-slate-800"
+                    value={customIssuerName}
+                    onChange={(e) => setCustomIssuerName(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomIssuer(false);
+                      setCustomIssuerName('');
+                    }}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-3 py-2 rounded-lg text-xs border border-slate-200 transition"
+                  >
+                    Select List
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Datepicker */}
-            <div className="md:col-span-3">
+            <div className="md:col-span-6">
               <label className="block text-xs font-semibold text-slate-700 mb-1">CHALLAN DATE</label>
               <input
                 type="date"
@@ -707,7 +789,7 @@ export const IssueChallanView: React.FC = () => {
             </div>
 
             {/* Auto increment text */}
-            <div className="md:col-span-3">
+            <div className="md:col-span-6">
               <label className="block text-xs font-semibold text-slate-700 mb-1">CHALLAN REFERENCE</label>
               <input
                 type="text"

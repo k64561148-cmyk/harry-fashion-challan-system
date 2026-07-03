@@ -323,18 +323,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       alert('Please explain the reason for editing this challan.');
       return;
     }
-    if (editItems.length === 0) {
+    // Filter out completely empty/unselected material rows to prevent issues
+    const validEditItems = editItems.filter(i => i.material_id && i.material_id !== '');
+    if (validEditItems.length === 0) {
       alert('Must configure at least one material line item.');
       return;
     }
-    const hasInvalidRows = editItems.some(i => !i.material_id || i.qty <= 0 || i.rate < 0);
+    const hasInvalidRows = validEditItems.some(i => i.qty < 0 || i.rate < 0);
     if (hasInvalidRows) {
       alert('Please configure non-negative quantities and rates on all lines.');
       return;
     }
 
     try {
-      db.editChallan(editingChallan.id, editItems, editNotes, editReason.trim());
+      db.editChallan(editingChallan.id, validEditItems, editNotes, editReason.trim());
 
       // Regenerate PDF with updated values automatically
       const updatedChallan = db.getChallans().find(c => c.id === editingChallan.id)!;

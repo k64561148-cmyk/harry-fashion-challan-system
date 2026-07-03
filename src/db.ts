@@ -1345,7 +1345,7 @@ class DatabaseService {
       challan_no: nextNo,
       master_id: challan.master_id || '',
       issued_date: challanDate,
-      issued_by: currentUser.name || 'Office Desk',
+      issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
       status: 'issued',
       notes: challan.notes || '',
       created_at: new Date().toISOString(),

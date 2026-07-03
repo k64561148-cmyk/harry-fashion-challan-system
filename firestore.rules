@@ -27,27 +27,27 @@ service cloud.firestore {
 
     function isEmailAdmin() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i)^k64561148@gmail\\.com$') ||
-        request.auth.token.email.matches('(?i)^kunal@harryfashion\\.com$') ||
-        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$') ||
-        request.auth.token.email.matches('(?i).*admin.*') ||
-        request.auth.token.email.matches('(?i).*owner.*') ||
-        request.auth.token.email.matches('(?i).*kunal.*')
+        request.auth.token.email.lower() == 'k64561148@gmail.com' ||
+        request.auth.token.email.lower() == 'kunal@harryfashion.com' ||
+        request.auth.token.email.lower() == 'kunal3012@harryfashion.com' ||
+        request.auth.token.email.lower().matches('.*admin.*') ||
+        request.auth.token.email.lower().matches('.*owner.*') ||
+        request.auth.token.email.lower().matches('.*kunal.*')
       );
     }
 
     function isEmailBilling() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i).*billing.*') ||
-        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$')
+        request.auth.token.email.lower().matches('.*billing.*') ||
+        request.auth.token.email.lower() == 'kunal3012@harryfashion.com'
       );
     }
 
     function isEmailIssueDept() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i).*issue.*') ||
-        request.auth.token.email.matches('(?i).*dept.*') ||
-        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$')
+        request.auth.token.email.lower().matches('.*issue.*') ||
+        request.auth.token.email.lower().matches('.*dept.*') ||
+        request.auth.token.email.lower() == 'kunal3012@harryfashion.com'
       );
     }
 
@@ -60,10 +60,10 @@ service cloud.firestore {
 
     function isKunal() {
       return isSignedIn() && request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i)^k64561148@gmail\\.com$') ||
-        request.auth.token.email.matches('(?i)^kunal@harryfashion\\.com$') ||
-        request.auth.token.email.matches('(?i)^kunal3012@harryfashion\\.com$') ||
-        request.auth.token.email.matches('(?i).*kunal.*')
+        request.auth.token.email.lower() == 'k64561148@gmail.com' ||
+        request.auth.token.email.lower() == 'kunal@harryfashion.com' ||
+        request.auth.token.email.lower() == 'kunal3012@harryfashion.com' ||
+        request.auth.token.email.lower().matches('.*kunal.*')
       );
     }
 
@@ -111,8 +111,8 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
         && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 20
-        && data.default_rate is number && data.default_rate >= 0
-        && data.current_stock is number
+        && (data.default_rate is int || data.default_rate is float) && data.default_rate >= 0
+        && (data.current_stock is int || data.current_stock is float)
         && data.is_active is bool
         && data.created_at is string;
     }
@@ -134,9 +134,9 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.challan_id is string && data.challan_id.size() <= 128
         && data.material_id is string && data.material_id.size() <= 128
-        && data.qty is number && data.qty >= 0
-        && data.rate is number && data.rate >= 0
-        && data.amount is number && data.amount >= 0
+        && (data.qty is int || data.qty is float) && data.qty >= 0
+        && (data.rate is int || data.rate is float) && data.rate >= 0
+        && (data.amount is int || data.amount is float) && data.amount >= 0
         && data.created_at is string;
     }
 
@@ -144,7 +144,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'material_id', 'qty_received', 'supplier_name', 'bill_no', 'inward_date', 'notes', 'created_by', 'created_at'])
         && data.id is string && data.id.size() <= 128
         && data.material_id is string && data.material_id.size() <= 128
-        && data.qty_received is number && data.qty_received >= 0
+        && (data.qty_received is int || data.qty_received is float) && data.qty_received >= 0
         && data.supplier_name is string && data.supplier_name.size() <= 200
         && data.bill_no is string && data.bill_no.size() <= 200
         && data.inward_date is string
@@ -158,11 +158,11 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.invoice_no is string && data.invoice_no.size() >= 1 && data.invoice_no.size() <= 50
         && data.master_id is string && data.master_id.size() <= 128
-        && data.period_month is number && data.period_month >= 1 && data.period_month <= 12
-        && data.period_year is number && data.period_year >= 2000 && data.period_year <= 2100
-        && data.work_amount is number
-        && data.material_deduction is number
-        && data.net_payable is number
+        && data.period_month is int && data.period_month >= 1 && data.period_month <= 12
+        && data.period_year is int && data.period_year >= 2000 && data.period_year <= 2100
+        && (data.work_amount is int || data.work_amount is float)
+        && (data.material_deduction is int || data.material_deduction is float)
+        && (data.net_payable is int || data.net_payable is float)
         && data.status is string && (data.status == 'draft' || data.status == 'finalised')
         && data.created_at is string;
     }
@@ -171,8 +171,8 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'material_id', 'before_stock', 'after_stock', 'reason', 'admin_user', 'timestamp'])
         && data.id is string && data.id.size() <= 128
         && data.material_id is string && data.material_id.size() <= 128
-        && data.before_stock is number
-        && data.after_stock is number && data.after_stock >= 0
+        && (data.before_stock is int || data.before_stock is float)
+        && (data.after_stock is int || data.after_stock is float) && data.after_stock >= 0
         && data.reason is string && data.reason.size() <= 2000
         && data.admin_user is string && data.admin_user.size() <= 200
         && data.timestamp is string;
@@ -183,7 +183,7 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.type is string && data.type.size() <= 50
         && data.date is string
-        && data.amount is number
+        && (data.amount is int || data.amount is float)
         && data.ref_id is string && data.ref_id.size() <= 128
         && data.ref_no is string && data.ref_no.size() <= 100
         && data.created_at is string;
