@@ -388,7 +388,7 @@ export const IssueChallanView: React.FC = () => {
     // Backdated logic validation
     const isBackdated = issuedDate < todayStr;
     if (isBackdated) {
-      if (currentUser.username !== "kunal3012") {
+      if (!currentUser.canCreateBackdatedChallan) {
         setErrorMessage("Backdated challan is allowed only for authorized user.");
         return;
       }
@@ -422,7 +422,7 @@ export const IssueChallanView: React.FC = () => {
 
       const isBackdated = issuedDate < todayStr;
       if (isBackdated) {
-        if (currentUser.username !== "kunal3012") {
+        if (!currentUser.canCreateBackdatedChallan) {
           throw new Error("Backdated challan is allowed only for authorized user.");
         }
         if (!backdatedReason.trim()) {
@@ -447,7 +447,7 @@ export const IssueChallanView: React.FC = () => {
       }));
 
       // 1. Commit to DB
-      const result = db.saveChallan(challanData, lineItems);
+      const result = await db.saveChallan(challanData, lineItems);
 
       // 2. Generate PDF & Auto Download
       const masterObj = masters.find(m => m.id === selectedMasterId)!;
@@ -774,7 +774,7 @@ export const IssueChallanView: React.FC = () => {
               <input
                 type="date"
                 required
-                disabled={currentUser.username !== 'kunal3012'}
+                disabled={!currentUser.canCreateBackdatedChallan}
                 max={new Date().toISOString().split('T')[0]}
                 className="w-full bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-medium"
                 value={issuedDate}
@@ -800,7 +800,7 @@ export const IssueChallanView: React.FC = () => {
             </div>
 
             {/* Backdated Reason */}
-            {currentUser.username === 'kunal3012' && issuedDate < new Date().toISOString().split('T')[0] && (
+            {currentUser.canCreateBackdatedChallan && issuedDate < new Date().toISOString().split('T')[0] && (
               <div className="md:col-span-12 bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
                 <label className="block text-xs font-bold text-amber-800 uppercase">Reason for backdated challan <span className="text-red-500">*</span></label>
                 <input

@@ -164,9 +164,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return () => window.removeEventListener('db_sync', loadDashboardData);
   }, []);
 
-  const getMasterName = (masterId: string): string => {
+  const getMasterName = (masterId: string, challan?: Challan): string => {
     const masters = db.getMasters();
-    return masters.find(m => m.id === masterId)?.name || 'Unknown Master';
+    const c = challan || db.getChallans().find(ch => ch.id === masterId || ch.master_id === masterId);
+    if (c) {
+      if (c.masterSnapshot?.name) return c.masterSnapshot.name;
+      if (c.masterDisplayName) return c.masterDisplayName;
+      if (c.masterName) return c.masterName;
+    }
+    const foundMaster = masters.find(m => m.id === masterId);
+    if (foundMaster) {
+      return foundMaster.name;
+    }
+    if (db.isCloudSyncEnabled && masters.length === 0) {
+      return "Loading master...";
+    }
+    return 'Unknown Master';
   };
 
   const handleDownloadChallan = async (c: Challan) => {
@@ -227,7 +240,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   // Administrative triggers
   const triggerDelete = (c: Challan) => {
-    const masterName = getMasterName(c.master_id);
+    const masterName = getMasterName(c.master_id, c);
     const confirmDelete = window.confirm(
       `PERMANENTLY DELETE CHALLAN?\n\nChallan Number: ${c.challan_no}\nMaster Maker: ${masterName}\n\nWarning: This action will completely purge the challan document and items from Firestore/IndexedDB. Stocks are not automatically restored. This operation is non-reversible.`
     );
@@ -399,7 +412,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   // Perform search & filters on challans collection
   const filteredChallans = recentChallans.filter(c => {
-    const mName = getMasterName(c.master_id);
+    const mName = getMasterName(c.master_id, c);
     const matchesSearch = c.challan_no.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           mName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === 'all' ? true : c.status === statusFilter;
@@ -639,7 +652,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                 </div>
                               )}
                             </td>
-                            <td className="py-3 px-3 font-medium">{getMasterName(c.master_id)}</td>
+                            <td className="py-3 px-3 font-medium">{getMasterName(c.master_id, c)}</td>
                             <td className="py-3 px-3 font-mono text-[10.5px] text-slate-500">{c.issued_date.split('-').reverse().join('/')}</td>
                             <td className="py-3 px-3 text-slate-500">{c.issued_by}</td>
                             <td className="py-3 px-3 text-right">

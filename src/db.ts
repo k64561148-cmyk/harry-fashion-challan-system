@@ -29,6 +29,7 @@ import {
   deleteDoc, 
   onSnapshot, 
   getDocFromServer,
+  getDoc,
   writeBatch,
   increment
 } from 'firebase/firestore';
@@ -198,6 +199,10 @@ const DEFAULT_MATERIALS_RAW = [
 class DatabaseService {
   private activeListeners: (() => void)[] = [];
   private isFirebaseInitialized: boolean = false;
+  
+  get isCloudSyncEnabled(): boolean {
+    return this.isFirebaseInitialized;
+  }
   private profilesAttemptedToWrite = new Set<string>();
   private cloudHealth = {
     lastSuccessfulWrite: localStorage.getItem('hf_health_last_write') || null,
@@ -900,7 +905,7 @@ class DatabaseService {
       if (isKunal) {
         user.role = 'admin';
       }
-      user.canCreateBackdatedChallan = username === 'kunal3012';
+      user.canCreateBackdatedChallan = username === 'kunal3012' || email.toLowerCase() === 'k64561148@gmail.com' || username.toLowerCase() === 'kunal';
     }
     return user;
   }
@@ -1295,7 +1300,7 @@ class DatabaseService {
     }
   }
 
-  saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Challan {
+  async saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Promise<Challan> {
     const challanList = this.getChallans();
     const allItemsList = this.getChallanItems();
     const materialsList = this.getMaterials();
@@ -1312,12 +1317,51 @@ class DatabaseService {
     // Backdated logic validation
     const isBackdated = challanDate < todayStr;
     if (isBackdated) {
-      if (currentUser.username !== "kunal3012") {
+      if (!currentUser.canCreateBackdatedChallan) {
         throw new Error("Backdated challan is allowed only for authorized user.");
       }
       if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
         throw new Error("Reason is required for backdated challan.");
       }
+    }
+
+    // Master validation and Snapshot reading
+    const masterId = challan.master_id || '';
+    if (!masterId) {
+      throw new Error("Please select a valid master from synced master list.");
+    }
+
+    let masterSnapshotData: any = null;
+    if (this.isFirebaseInitialized) {
+      try {
+        const masterRef = doc(firestore, 'masters', masterId);
+        const masterSnap = await getDoc(masterRef);
+        if (!masterSnap.exists()) {
+          throw new Error("Please select a valid master from synced master list.");
+        }
+        masterSnapshotData = masterSnap.data();
+      } catch (e: any) {
+        if (e.message?.includes("Please select a valid master")) {
+          throw e;
+        }
+        // Fallback to local check if offline/lagging
+        const localMaster = this.getMasters().find(m => m.id === masterId);
+        if (!localMaster) {
+          throw new Error("Please select a valid master from synced master list.");
+        }
+        masterSnapshotData = localMaster;
+      }
+    } else {
+      // Local fallback
+      const localMaster = this.getMasters().find(m => m.id === masterId);
+      if (!localMaster) {
+        throw new Error("Please select a valid master from synced master list.");
+      }
+      masterSnapshotData = localMaster;
+    }
+
+    if (!masterSnapshotData) {
+      throw new Error("Please select a valid master from synced master list.");
     }
 
     const dateParts = challanDate.split('-');
@@ -1343,7 +1387,7 @@ class DatabaseService {
     const newChallan: Challan = {
       id: generateUUID(),
       challan_no: nextNo,
-      master_id: challan.master_id || '',
+      master_id: masterId,
       issued_date: challanDate,
       issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
       status: 'issued',
@@ -1354,11 +1398,25 @@ class DatabaseService {
       createdAt: new Date().toISOString(),
       createdBy: currentUser.username || currentUser.email || 'unknown',
       backdated: isBackdated,
-      backdatedBy: isBackdated ? 'kunal3012' : undefined,
+      backdatedBy: isBackdated ? (currentUser.username || currentUser.name || 'Office Desk') : undefined,
       backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
       originalCreatedMonth: originalCreatedMonth,
       challanMonth: challanMonth,
-      challanYear: challanYear
+      challanYear: challanYear,
+
+      // Master snapshot details
+      masterId: masterId,
+      masterName: masterSnapshotData.name || '',
+      masterCode: masterSnapshotData.code || '',
+      masterType: masterSnapshotData.type || masterSnapshotData.category || '',
+      masterDisplayName: masterSnapshotData.displayName || masterSnapshotData.name || '',
+      masterSnapshot: {
+        id: masterSnapshotData.id || masterId,
+        name: masterSnapshotData.name || '',
+        code: masterSnapshotData.code || '',
+        type: masterSnapshotData.type || masterSnapshotData.category || '',
+        activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : (masterSnapshotData.activeStatus !== undefined ? masterSnapshotData.activeStatus : true)
+      }
     };
 
     challanList.push(newChallan);
@@ -1390,11 +1448,11 @@ class DatabaseService {
       }
     });
 
-    const masterName = this.getMasters().find(m => m.id === newChallan.master_id)?.name || 'Unknown Master';
+    const masterName = masterSnapshotData.name || 'Unknown Master';
     
     if (isBackdated) {
       // Create specialized audit log
-      const auditDetails = `challanNo: ${newChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${newChallan.created_at}, createdBy: kunal3012, backdatedReason: "${newChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
+      const auditDetails = `challanNo: ${newChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${newChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${newChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
       this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
     } else {
       this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${newChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
@@ -1426,7 +1484,7 @@ class DatabaseService {
           });
         });
 
-        this.performCloudWrite(() => batch.commit())
+        await this.performCloudWrite(() => batch.commit())
           .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
       } catch (err) {
         console.warn('Batch cloud write failed, logged fallback.', err);
@@ -1434,6 +1492,83 @@ class DatabaseService {
     }
 
     return newChallan;
+  }
+
+  async runDataRepair(): Promise<void> {
+    const isRepaired = localStorage.getItem('hf_challans_repaired_sg_v2') === 'true';
+    if (isRepaired) return;
+
+    // Delay briefly to allow Firestore listeners to sync initial collections
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const masters = this.getMasters();
+    const sgMaster = masters.find(m => m.name === 'SG');
+    if (!sgMaster) {
+      console.warn("SG master not found during repair process.");
+      return;
+    }
+
+    const challans = this.getChallans();
+    const targetNos = ['HF-BD-0006', 'HF-BD-0005', 'HF-BD-0003'];
+    const toRepair = challans.filter(c => targetNos.includes(c.challan_no));
+
+    if (toRepair.length === 0) {
+      return;
+    }
+
+    let updatedAny = false;
+    for (const c of toRepair) {
+      if (c.masterDisplayName === 'SG' && c.master_id === sgMaster.id) {
+        continue;
+      }
+
+      console.log(`Repairing backdated challan ${c.challan_no}: setting master to SG master (snapshot + masterId).`);
+      
+      c.master_id = sgMaster.id;
+      c.masterId = sgMaster.id;
+      c.masterName = sgMaster.name;
+      c.masterCode = sgMaster.code;
+      c.masterType = sgMaster.type;
+      c.masterDisplayName = sgMaster.name;
+      c.masterSnapshot = {
+        id: sgMaster.id,
+        name: sgMaster.name,
+        code: sgMaster.code,
+        type: sgMaster.type,
+        activeStatus: sgMaster.is_active
+      };
+
+      updatedAny = true;
+    }
+
+    if (updatedAny) {
+      this.save('challans', challans);
+
+      if (this.isFirebaseInitialized) {
+        try {
+          const batch = writeBatch(firestore);
+          for (const c of toRepair) {
+            batch.update(doc(firestore, 'challans', c.id), {
+              master_id: sgMaster.id,
+              masterId: sgMaster.id,
+              masterName: sgMaster.name,
+              masterCode: sgMaster.code,
+              masterType: sgMaster.type,
+              masterDisplayName: sgMaster.name,
+              masterSnapshot: c.masterSnapshot,
+              ...this.enrichPayload({})
+            });
+          }
+          await this.performCloudWrite(() => batch.commit());
+          console.log("[Repair] Firestore update committed successfully for target challans.");
+        } catch (err) {
+          console.error("[Repair] Cloud write failed, local updated.", err);
+        }
+      }
+      window.dispatchEvent(new Event('db_sync'));
+    }
+
+    localStorage.setItem('hf_challans_repaired_sg_v2', 'true');
   }
 
   deleteChallan(challanId: string): void {

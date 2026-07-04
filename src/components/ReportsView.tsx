@@ -392,7 +392,11 @@ export const ReportsView: React.FC = () => {
     challans.forEach(ch => {
       if (ch.issued_date >= startDate && ch.issued_date <= endDate) {
         const matchingItems = challanItems.filter(item => item.challan_id === ch.id && item.material_id === selectedMaterialId);
-        const masterName = masters.find(m => m.id === ch.master_id)?.name || 'Unknown Master';
+        const masterName = ch.masterSnapshot?.name || 
+                           ch.masterDisplayName || 
+                           ch.masterName || 
+                           masters.find(m => m.id === ch.master_id)?.name || 
+                           (db.isCloudSyncEnabled && masters.length === 0 ? "Loading master..." : 'Unknown Master');
         
         matchingItems.forEach(item => {
           events.push({

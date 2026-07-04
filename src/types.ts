@@ -100,6 +100,19 @@ export interface Challan {
   originalCreatedMonth?: string;
   challanMonth?: number;
   challanYear?: number;
+  masterId?: string;
+  masterName?: string;
+  masterCode?: string;
+  masterType?: string;
+  masterDisplayName?: string;
+  masterSnapshot?: {
+    id: string;
+    name: string;
+    code: string;
+    type?: string;
+    activeStatus?: boolean;
+    is_active?: boolean;
+  };
 }
 
 export interface ChallanItem {

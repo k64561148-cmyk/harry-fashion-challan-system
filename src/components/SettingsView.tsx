@@ -320,7 +320,13 @@ export const SettingsView: React.FC = () => {
         setBatchCompileStatus(`Generating Challan [${compiledCount}/${totalDocs}]: ${challan.challan_no}...`);
 
         const items = allChallanItems.filter(item => item.challan_id === challan.id);
-        const master = allMasters.find(m => m.id === challan.master_id) || { name: 'Unknown Master' } as Master;
+        const master = allMasters.find(m => m.id === challan.master_id) || {
+          id: challan.master_id || challan.masterId || '',
+          name: challan.masterSnapshot?.name || challan.masterDisplayName || challan.masterName || 'Unknown Master',
+          code: challan.masterSnapshot?.code || challan.masterCode || '',
+          type: challan.masterSnapshot?.type || challan.masterType || 'jacket',
+          is_active: true
+        } as Master;
         
         // Generate the PDF representation as blob on the fly without prompt or browser iframe block
         const blob = await generateChallanPDF(

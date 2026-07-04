@@ -146,6 +146,10 @@ export default function App() {
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
+    
+    // Automatically execute the developer-only data repair process
+    db.runDataRepair();
+
     return () => clearInterval(interval);
   }, []);
 
