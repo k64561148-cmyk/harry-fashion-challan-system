@@ -120,6 +120,9 @@ export const SettingsView: React.FC = () => {
   // Master Merge States
   const [mergeSourceId, setMergeSourceId] = useState<string>('');
   const [mergeTargetId, setMergeTargetId] = useState<string>('');
+  const [duplicateGroups, setDuplicateGroups] = useState<any[]>([]);
+  const [canonicalSelections, setCanonicalSelections] = useState<{ [groupKey: string]: string }>({});
+  const [isScanning, setIsScanning] = useState<boolean>(false);
 
   // Multiple PAN and bank details management state
   const [panAccounts, setPanAccounts] = useState<MasterPanAccount[]>([]);
@@ -199,6 +202,27 @@ export const SettingsView: React.FC = () => {
     setRateHistories(db.getRateHistory());
     setProfiles(db.getProfiles());
     setCurrentUser(db.getCurrentUser());
+
+    // Background scan for duplicate groups to keep states fresh
+    try {
+      const groups = db.detectDuplicateMasters();
+      setDuplicateGroups(groups);
+      setCanonicalSelections(prev => {
+        const nextSelections = { ...prev };
+        groups.forEach(group => {
+          if (!nextSelections[group.key]) {
+            const sorted = [...group.records].sort((a, b) => {
+              const activeA = a.is_active !== false ? 1 : 0;
+              const activeB = b.is_active !== false ? 1 : 0;
+              if (activeA !== activeB) return activeB - activeA;
+              return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+            });
+            nextSelections[group.key] = sorted[0].id;
+          }
+        });
+        return nextSelections;
+      });
+    } catch (_) {}
   };
 
   const showFeedback = (text: string, isError = false) => {
@@ -609,6 +633,71 @@ export const SettingsView: React.FC = () => {
       reloadAllData();
     } catch (err: any) {
       showFeedback(err.message, true);
+    }
+  };
+
+  const handleScanDuplicates = () => {
+    setIsScanning(true);
+    try {
+      const groups = db.detectDuplicateMasters();
+      setDuplicateGroups(groups);
+      
+      const initialSelections: { [groupKey: string]: string } = {};
+      groups.forEach(group => {
+        const sorted = [...group.records].sort((a, b) => {
+          const activeA = a.is_active !== false ? 1 : 0;
+          const activeB = b.is_active !== false ? 1 : 0;
+          if (activeA !== activeB) return activeB - activeA;
+          return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+        });
+        initialSelections[group.key] = sorted[0].id;
+      });
+      setCanonicalSelections(initialSelections);
+
+      if (groups.length === 0) {
+        showFeedback('Awesome! No duplicate master groups detected in your database.');
+      } else {
+        showFeedback(`Detected ${groups.length} duplicate groups. Review and repair them below!`);
+      }
+    } catch (e: any) {
+      showFeedback(e.message, true);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleMergeDuplicateGroup = async (groupKey: string, duplicateIds: string[]) => {
+    const canonicalId = canonicalSelections[groupKey];
+    if (!canonicalId) {
+      showFeedback('Please select a canonical master record to preserve.', true);
+      return;
+    }
+
+    const group = duplicateGroups.find(g => g.key === groupKey);
+    const canonicalRecord = group?.records.find((r: any) => r.id === canonicalId);
+    
+    if (!canonicalRecord) {
+      showFeedback('Selected canonical record is invalid.', true);
+      return;
+    }
+
+    const confirmMerge = window.confirm(
+      `AUTOMATED REPAIR ENGINE:\n\nAre you sure you want to merge this duplicate group into "${canonicalRecord.name}" (${canonicalRecord.code})?\n\nThis will safely migrate all historical records from other duplicate entries, mark those duplicates as merged/inactive, and preserve "${canonicalRecord.name}" as the single source of truth.`
+    );
+
+    if (!confirmMerge) return;
+
+    try {
+      const result = await db.mergeDuplicateGroup(duplicateIds, canonicalId);
+      showFeedback(
+        `Successfully consolidated group! Migrated ${result.affectedChallans} challans and ${result.affectedInvoices} invoices to "${canonicalRecord.name}".`
+      );
+      
+      const updatedGroups = db.detectDuplicateMasters();
+      setDuplicateGroups(updatedGroups);
+      reloadAllData();
+    } catch (e: any) {
+      showFeedback(e.message, true);
     }
   };
 
@@ -1171,6 +1260,92 @@ export const SettingsView: React.FC = () => {
                     Consolidate and Merge Records
                   </button>
                 </div>
+              </div>
+
+              {/* AUTOMATED DUPLICATE SCAN & REPAIR ENGINE */}
+              <div className="mt-6 pt-5 border-t border-slate-100">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                  <div>
+                    <h4 className="text-xs font-extrabold text-[#1A2E4A] uppercase tracking-wide">Automated Duplicate Group Scanner</h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Scans the live database using normalized name, abbreviation code, and tailoring category to detect device synchronization duplicates.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleScanDuplicates}
+                    disabled={isScanning}
+                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-extrabold px-3 py-1.5 rounded-lg border border-slate-200 cursor-pointer transition flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} /> Scan Database
+                  </button>
+                </div>
+
+                {duplicateGroups.length === 0 ? (
+                  <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-3 text-center">
+                    <p className="text-xs text-emerald-700 font-semibold flex items-center justify-center gap-1.5">
+                      <Check className="w-4 h-4 text-emerald-600" /> Live Database Status: Healthy &amp; Clean! No master duplicates found.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3.5">
+                    <div className="bg-amber-50/50 border border-amber-200/50 rounded-lg p-3">
+                      <p className="text-xs text-amber-800 font-semibold leading-relaxed">
+                        ⚠️ <strong>Action Required:</strong> Detected {duplicateGroups.length} duplicate group(s) across connected devices.
+                        Please select the primary canonical record for each group that represents the true master. All historical challans and settles will be safely preserved and merged into your choice.
+                      </p>
+                    </div>
+
+                    {duplicateGroups.map((group) => {
+                      const recordIds = group.records.map((r: any) => r.id);
+                      return (
+                        <div key={group.key} className="bg-slate-50 border border-slate-200/85 rounded-xl p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="bg-[#1A2E4A] text-white text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                {group.type.toUpperCase()}
+                              </span>
+                              <span className="bg-slate-200 text-slate-700 text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                CODE: {group.code}
+                              </span>
+                            </div>
+                            <h5 className="text-xs font-bold text-slate-800">{group.name}</h5>
+                            <p className="text-[10px] text-slate-400 font-mono">
+                              Normalized Key: {group.key} • Duplicates: {group.records.length} records
+                            </p>
+                          </div>
+
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                            <div className="min-w-[240px]">
+                              <label className="block text-[9px] font-extrabold text-[#1A2E4A] uppercase mb-1">Select Canonical Record (To Preserve)</label>
+                              <select
+                                value={canonicalSelections[group.key] || ''}
+                                onChange={(e) => setCanonicalSelections(prev => ({ ...prev, [group.key]: e.target.value }))}
+                                className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-1.5 text-[11px] font-bold text-slate-700 shadow-2xs"
+                              >
+                                {group.records.map((r: any) => {
+                                  const dateFormatted = new Date(r.created_at || 0).toLocaleString();
+                                  const statusText = r.is_active !== false ? 'Active' : 'Inactive';
+                                  return (
+                                    <option key={r.id} value={r.id}>
+                                      {r.name} ({r.code}) [Created: {dateFormatted}] [{statusText}]
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleMergeDuplicateGroup(group.key, recordIds)}
+                              className="self-end bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold px-3 py-2 rounded-lg cursor-pointer transition shadow-xs flex items-center justify-center gap-1 uppercase"
+                            >
+                              <Scissors className="w-3.5 h-3.5 text-white" /> Merge &amp; Repair
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
           </div>

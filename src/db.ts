@@ -196,8 +196,68 @@ const DEFAULT_MATERIALS_RAW = [
 
 // Clear hardcoded demo users to prevent credentials exposure in client bundle.
 
+export function deduplicateMasters(masters: Master[]): Master[] {
+  const uniqueMasters: Master[] = [];
+  const seenIds = new Set<string>();
+  const seenNormalizedKeys = new Set<string>();
+  const seenNormalizedCodes = new Set<string>();
+
+  // Sort masters to prioritize active ones and older ones (stable order)
+  const sorted = [...masters].sort((a, b) => {
+    const activeA = a.is_active !== false ? 1 : 0;
+    const activeB = b.is_active !== false ? 1 : 0;
+    if (activeA !== activeB) return activeB - activeA;
+    
+    const timeA = new Date(a.created_at || 0).getTime();
+    const timeB = new Date(b.created_at || 0).getTime();
+    return timeA - timeB;
+  });
+
+  for (const m of sorted) {
+    if (!m.id) continue;
+    
+    const normName = (m.name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .trim();
+      
+    const normCode = (m.code || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .trim();
+      
+    const type = (m.type || '').trim().toLowerCase();
+
+    // Deduplicate logic
+    if (seenIds.has(m.id)) {
+      continue;
+    }
+
+    if (normCode && seenNormalizedCodes.has(normCode)) {
+      continue;
+    }
+
+    const nameTypeKey = `${normName}_${type}`;
+    if (seenNormalizedKeys.has(nameTypeKey)) {
+      continue;
+    }
+
+    uniqueMasters.push(m);
+    seenIds.add(m.id);
+    if (normCode) seenNormalizedCodes.add(normCode);
+    seenNormalizedKeys.add(nameTypeKey);
+  }
+
+  return uniqueMasters;
+}
+
 class DatabaseService {
   private activeListeners: (() => void)[] = [];
+  private activeSyncListeners = new Map<string, () => void>();
   private isFirebaseInitialized: boolean = false;
   
   get isCloudSyncEnabled(): boolean {
@@ -431,6 +491,8 @@ class DatabaseService {
   public reinitializeCloudListeners() {
     this.activeListeners.forEach(unsubscribe => unsubscribe());
     this.activeListeners = [];
+    this.activeSyncListeners.forEach(unsubscribe => unsubscribe());
+    this.activeSyncListeners.clear();
     this.resetCollectionStatuses();
 
     const currentUser = this.getCurrentUser();
@@ -624,6 +686,8 @@ class DatabaseService {
       // Clear active listeners
       this.activeListeners.forEach(unsubscribe => unsubscribe());
       this.activeListeners = [];
+      this.activeSyncListeners.forEach(unsubscribe => unsubscribe());
+      this.activeSyncListeners.clear();
       this.resetCollectionStatuses();
 
       if (user) {
@@ -784,6 +848,13 @@ class DatabaseService {
     syncCollections.forEach((collName) => {
       try {
         const resolvedCollName = this.getCollectionName(collName);
+
+        // Clean up any duplicate listener for this collection
+        if (this.activeSyncListeners.has(collName)) {
+          this.activeSyncListeners.get(collName)!();
+          this.activeSyncListeners.delete(collName);
+        }
+
         const unsubscribe = onSnapshot(collection(firestore, resolvedCollName), { includeMetadataChanges: false }, (snapshot) => {
           this.cloudHealth.lastRead = new Date().toISOString();
           localStorage.setItem('hf_health_last_read', this.cloudHealth.lastRead);
@@ -800,6 +871,13 @@ class DatabaseService {
 
           // Only sync if there are active cloud records to avoid empty-source overwrites initially
           if (snapshot.size > 0) {
+            if (collName === 'masters') {
+              // 1. Single source of truth: replace entirely with snapshot results, do not merge or append
+              this.save('masters', remoteRecords);
+              window.dispatchEvent(new Event('db_sync'));
+              return;
+            }
+
             // Robust local-remote merge to prevent local data loss/wipeouts!
             const localRecords = this.load<any[]>(collName, []);
             const getKey = (item: any) => {
@@ -850,6 +928,7 @@ class DatabaseService {
           }
         });
 
+        this.activeSyncListeners.set(collName, unsubscribe);
         this.activeListeners.push(unsubscribe);
       } catch (err) {
         console.warn(`Could not attach snapshot listener on ${collName}:`, err);
@@ -954,7 +1033,8 @@ class DatabaseService {
 
   // --- Masters ---
   getMasters(): Master[] {
-    return this.load<Master[]>('masters', []);
+    const rawMasters = this.load<Master[]>('masters', []);
+    return deduplicateMasters(rawMasters);
   }
 
   saveMaster(master: Partial<Master>): Master {
@@ -962,20 +1042,52 @@ class DatabaseService {
     const currentUser = this.getCurrentUser();
     let result: Master;
 
-    // Validate duplicates
-    const nameCheck = (master.name || '').trim().toLowerCase();
-    const codeCheck = (master.code || '').trim().toLowerCase();
+    // 6. Prevent future duplicates
+    // When creating or editing master, check existing active masters using normalized name/code/category
+    const normName = (master.name || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .trim();
 
-    if (nameCheck) {
-      const duplicateName = list.find(m => m.id !== master.id && m.name.trim().toLowerCase() === nameCheck);
-      if (duplicateName) {
-        throw new Error(`Master insertion/update failed: A Master with the name "${duplicateName.name}" already exists.`);
-      }
-    }
-    if (codeCheck) {
-      const duplicateCode = list.find(m => m.id !== master.id && m.code.trim().toLowerCase() === codeCheck);
-      if (duplicateCode) {
-        throw new Error(`Master insertion/update failed: A Master with the short code "${duplicateCode.code}" already exists.`);
+    const normCode = (master.code || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .trim();
+
+    const type = (master.type || '').trim().toLowerCase();
+
+    // If master is being toggled inactive, we bypass the duplicate check
+    const isTogglingInactive = master.id && master.is_active === false;
+
+    if (!isTogglingInactive && (normName || normCode)) {
+      const activeMasters = list.filter(m => m.id !== master.id && m.is_active !== false);
+      for (const m of activeMasters) {
+        const existingNormName = m.name
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+          .trim();
+          
+        const existingNormCode = m.code
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+          .trim();
+
+        const existingType = (m.type || '').trim().toLowerCase();
+
+        const nameMatch = normName && existingNormName === normName && existingType === type;
+        const codeMatch = normCode && existingNormCode === normCode;
+
+        if (nameMatch || codeMatch) {
+          throw new Error("Master already exists. Please use existing master.");
+        }
       }
     }
 
@@ -1109,6 +1221,183 @@ class DatabaseService {
       this.performCloudWrite(() => deleteDoc(doc(firestore, 'masters', sourceId)))
         .catch(err => console.error("Cloud write source delete failed in merge:", err));
     }
+  }
+
+  detectDuplicateMasters(): { key: string, name: string, code: string, type: string, records: Master[] }[] {
+    // We load raw masters from localStorage to see actual duplicates
+    const masters = this.load<Master[]>('masters', []);
+    const groupsMap = new Map<string, Master[]>();
+
+    masters.forEach(m => {
+      const normName = (m.name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+        .trim();
+        
+      const normCode = (m.code || '')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+        .trim();
+        
+      const type = (m.type || '').trim().toLowerCase();
+      
+      const key = `${normName}_${type}`;
+      
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, []);
+      }
+      groupsMap.get(key)!.push(m);
+    });
+
+    const duplicateGroups: { key: string, name: string, code: string, type: string, records: Master[] }[] = [];
+    groupsMap.forEach((records, key) => {
+      if (records.length > 1) {
+        duplicateGroups.push({
+          key,
+          name: records[0].name,
+          code: records[0].code,
+          type: records[0].type,
+          records
+        });
+      }
+    });
+
+    return duplicateGroups;
+  }
+
+  async mergeDuplicateGroup(duplicateIds: string[], canonicalId: string): Promise<{ affectedChallans: number, affectedInvoices: number }> {
+    const masters = this.load<Master[]>('masters', []);
+    const canonicalMaster = masters.find(m => m.id === canonicalId);
+    if (!canonicalMaster) {
+      throw new Error("Canonical master not found.");
+    }
+
+    const currentUser = this.getCurrentUser();
+    let totalAffectedChallans = 0;
+    let totalAffectedInvoices = 0;
+
+    const challanList = this.getChallans();
+    const invoiceList = this.getInvoices();
+    const ledgerTransList = this.getTransactions();
+    const overridesList = this.getMasterRateOverrides();
+
+    for (const dupId of duplicateIds) {
+      if (dupId === canonicalId) continue;
+      
+      const dupMaster = masters.find(m => m.id === dupId);
+      if (!dupMaster) continue;
+
+      let affectedChallans = 0;
+      let affectedInvoices = 0;
+
+      // 1. Migrate Challans
+      challanList.forEach(ch => {
+        if (ch.master_id === dupId) {
+          ch.master_id = canonicalId;
+          ch.masterId = canonicalId;
+          ch.masterName = canonicalMaster.name;
+          ch.masterCode = canonicalMaster.code;
+          ch.masterType = canonicalMaster.type;
+          ch.masterDisplayName = (canonicalMaster as any).displayName || canonicalMaster.name;
+          ch.masterSnapshot = {
+            id: canonicalMaster.id,
+            name: canonicalMaster.name,
+            code: canonicalMaster.code,
+            type: canonicalMaster.type,
+            activeStatus: canonicalMaster.is_active !== false
+          };
+          affectedChallans++;
+        }
+      });
+
+      // 2. Migrate Invoices
+      invoiceList.forEach(inv => {
+        if (inv.master_id === dupId) {
+          inv.master_id = canonicalId;
+          affectedInvoices++;
+        }
+      });
+
+      // 3. Migrate Ledger
+      ledgerTransList.forEach(tx => {
+        if (tx.master_id === dupId) {
+          tx.master_id = canonicalId;
+        }
+      });
+
+      // 4. Migrate overrides
+      overridesList.forEach(o => {
+        if (o.master_id === dupId) {
+          const exists = overridesList.some(tg => tg.master_id === canonicalId && tg.material_id === o.material_id);
+          if (!exists) {
+            o.master_id = canonicalId;
+          }
+        }
+      });
+
+      // 5. Merge pan accounts
+      const dupPANs = dupMaster.pan_accounts || [];
+      const canonPANs = canonicalMaster.pan_accounts || [];
+      dupPANs.forEach(span => {
+        const exists = canonPANs.some(tpan => tpan.pan_no.toLowerCase() === span.pan_no.toLowerCase());
+        if (!exists) {
+          canonPANs.push(span);
+        }
+      });
+      canonicalMaster.pan_accounts = canonPANs;
+
+      // 6. Mark duplicate master as inactive and merged, do not hard delete initially
+      dupMaster.is_active = false;
+      (dupMaster as any).merged_into = canonicalId;
+      (dupMaster as any).is_merged = true;
+
+      totalAffectedChallans += affectedChallans;
+      totalAffectedInvoices += affectedInvoices;
+
+      // Write specialized audit log
+      const auditPayload = {
+        action: "MERGED_DUPLICATE_MASTER",
+        duplicateMasterId: dupId,
+        canonicalMasterId: canonicalId,
+        masterName: dupMaster.name,
+        affectedChallans: affectedChallans,
+        affectedInvoices: affectedInvoices,
+        mergedBy: currentUser.email || currentUser.username || 'admin',
+        mergedAt: new Date().toISOString()
+      };
+      this.addAuditLog(currentUser.email, 'MERGED_DUPLICATE_MASTER', JSON.stringify(auditPayload));
+
+      // Sync duplicate update to cloud
+      if (this.isFirebaseInitialized) {
+        await this.performCloudWrite(() => setDoc(doc(firestore, 'masters', dupId), this.enrichPayload(dupMaster)))
+          .catch(err => console.error(`Cloud write duplicate merge failed for ${dupId}:`, err));
+      }
+    }
+
+    // Save lists locally
+    this.save('masters', masters);
+    this.save('challans', challanList);
+    this.save('invoices', invoiceList);
+    this.save('transactions', ledgerTransList);
+    this.save('master_rate_overrides', overridesList);
+
+    // Sync canonical master update to cloud
+    if (this.isFirebaseInitialized) {
+      await this.performCloudWrite(() => setDoc(doc(firestore, 'masters', canonicalId), this.enrichPayload(canonicalMaster)))
+        .catch(err => console.error("Cloud write canonical master failed:", err));
+    }
+
+    // Dispatch global sync event
+    window.dispatchEvent(new Event('db_sync'));
+
+    return {
+      affectedChallans: totalAffectedChallans,
+      affectedInvoices: totalAffectedInvoices
+    };
   }
 
   // --- Materials ---
@@ -1328,7 +1617,7 @@ class DatabaseService {
     // Master validation and Snapshot reading
     const masterId = challan.master_id || '';
     if (!masterId) {
-      throw new Error("Please select a valid master from synced master list.");
+      throw new Error("Invalid Master selected. Please choose a valid active master.");
     }
 
     let masterSnapshotData: any = null;
@@ -1337,17 +1626,17 @@ class DatabaseService {
         const masterRef = doc(firestore, 'masters', masterId);
         const masterSnap = await getDoc(masterRef);
         if (!masterSnap.exists()) {
-          throw new Error("Please select a valid master from synced master list.");
+          throw new Error("Invalid Master selected. Please choose a valid active master.");
         }
         masterSnapshotData = masterSnap.data();
       } catch (e: any) {
-        if (e.message?.includes("Please select a valid master")) {
+        if (e.message?.includes("Invalid Master selected")) {
           throw e;
         }
         // Fallback to local check if offline/lagging
         const localMaster = this.getMasters().find(m => m.id === masterId);
         if (!localMaster) {
-          throw new Error("Please select a valid master from synced master list.");
+          throw new Error("Invalid Master selected. Please choose a valid active master.");
         }
         masterSnapshotData = localMaster;
       }
@@ -1355,13 +1644,13 @@ class DatabaseService {
       // Local fallback
       const localMaster = this.getMasters().find(m => m.id === masterId);
       if (!localMaster) {
-        throw new Error("Please select a valid master from synced master list.");
+        throw new Error("Invalid Master selected. Please choose a valid active master.");
       }
       masterSnapshotData = localMaster;
     }
 
-    if (!masterSnapshotData) {
-      throw new Error("Please select a valid master from synced master list.");
+    if (!masterSnapshotData || masterSnapshotData.is_active === false) {
+      throw new Error("Invalid Master selected. Please choose a valid active master.");
     }
 
     const dateParts = challanDate.split('-');
@@ -2904,7 +3193,23 @@ class DatabaseService {
 
     // Seed jackets
     seedJackets.forEach(jacket => {
-      const existsIdx = updatedMasters.findIndex(m => m.name.toLowerCase() === jacket.name.toLowerCase());
+      const normJacketName = jacket.name
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+        .trim();
+
+      const existsIdx = updatedMasters.findIndex(m => {
+        const normMName = m.name
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+          .trim();
+        return normMName === normJacketName && m.type === 'jacket';
+      });
+
       if (existsIdx > -1) {
         updatedMasters[existsIdx] = {
           ...updatedMasters[existsIdx],
@@ -2925,7 +3230,23 @@ class DatabaseService {
 
     // Seed pants
     seedPants.forEach(pant => {
-      const existsIdx = updatedMasters.findIndex(m => m.name.toLowerCase() === pant.name.toLowerCase());
+      const normPantName = pant.name
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+        .trim();
+
+      const existsIdx = updatedMasters.findIndex(m => {
+        const normMName = m.name
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+          .trim();
+        return normMName === normPantName && m.type === 'pant';
+      });
+
       if (existsIdx > -1) {
         updatedMasters[existsIdx] = {
           ...updatedMasters[existsIdx],
