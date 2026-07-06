@@ -1666,20 +1666,20 @@ class DatabaseService {
         throw new Error("Please add at least one material to issue.");
       }
 
-      const masterRef = doc(firestore, 'masters', masterId);
+      const masterRef = doc(firestore, this.getCollectionName('masters'), masterId);
       const challanId = generateUUID();
-      const challanRef = doc(firestore, 'challans', challanId);
+      const challanRef = doc(firestore, this.getCollectionName('challans'), challanId);
       const auditId = generateUUID();
-      const auditRef = doc(firestore, 'audit_logs', auditId);
+      const auditRef = doc(firestore, this.getCollectionName('audit_logs'), auditId);
 
       let masterSnapshotData: any = null;
       let generatedChallanNo = '';
       const savedChallanItems: ChallanItem[] = [];
 
       const uid = auth.currentUser?.uid || currentUser.uid || 'guest-01';
-      const profileRef = doc(firestore, 'profiles', uid);
-      const counterRef = doc(firestore, 'counters', 'challan_backdated');
-      const materialRefs = items.map((item) => doc(firestore, 'materials', item.material_id));
+      const profileRef = doc(firestore, this.getCollectionName('profiles'), uid);
+      const counterRef = doc(firestore, this.getCollectionName('counters'), 'challan_backdated');
+      const materialRefs = items.map((item) => doc(firestore, this.getCollectionName('materials'), item.material_id));
 
       // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION
       await runTransaction(firestore, async (transaction) => {
@@ -1848,13 +1848,13 @@ class DatabaseService {
 
         // Set Challan Items
         savedChallanItems.forEach((item) => {
-          const itemRef = doc(firestore, 'challan_items', item.id);
+          const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
           transaction.set(itemRef, this.enrichPayload(item));
         });
 
         // Update Materials Stock
         items.forEach((item) => {
-          const matRef = doc(firestore, 'materials', item.material_id);
+          const matRef = doc(firestore, this.getCollectionName('materials'), item.material_id);
           const enrichUpdate = this.enrichPayload({});
           transaction.update(matRef, {
             current_stock: increment(-item.qty),
