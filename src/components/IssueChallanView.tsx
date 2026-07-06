@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
+import { getLocalTodayString } from '../utils/dateUtils';
 import { Master, Material, Challan, Profile } from '../types';
 import { generateChallanPDF, formatINR } from '../utils/exportUtils';
 import { 
@@ -75,7 +76,7 @@ export const IssueChallanView: React.FC = () => {
   
   const [selectedMasterId, setSelectedMasterId] = useState<string>('');
   const [challanNo, setChallanNo] = useState<string>('');
-  const [issuedDate, setIssuedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [issuedDate, setIssuedDate] = useState<string>(getLocalTodayString());
   const [notes, setNotes] = useState<string>('');
   const [issuedBy, setIssuedBy] = useState<string>('');
   const [customIssuerName, setCustomIssuerName] = useState<string>('');
@@ -368,7 +369,7 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getLocalTodayString();
 
     // Future date block
     if (issuedDate > todayStr) {
@@ -407,7 +408,7 @@ export const IssueChallanView: React.FC = () => {
     try {
       setLoading(true);
       
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getLocalTodayString();
 
       // Front-end sanity re-validation
       if (issuedDate > todayStr) {
@@ -485,7 +486,7 @@ export const IssueChallanView: React.FC = () => {
     setOverrideConfirm(false);
     setErrorMessage('');
     setBackdatedReason('');
-    setIssuedDate(new Date().toISOString().split('T')[0]);
+    setIssuedDate(getLocalTodayString());
     setChallanNo(db.getNextChallanNo());
     
     // Append 20 empty lines
@@ -775,13 +776,13 @@ export const IssueChallanView: React.FC = () => {
                 type="date"
                 required
                 disabled={!currentUser.canCreateBackdatedChallan}
-                max={new Date().toISOString().split('T')[0]}
+                max={getLocalTodayString()}
                 className="w-full bg-white disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs shadow-xs font-medium"
                 value={issuedDate}
                 onChange={(e) => {
                   const newDate = e.target.value;
                   setIssuedDate(newDate);
-                  const todayStr = new Date().toISOString().split('T')[0];
+                  const todayStr = getLocalTodayString();
                   const isBack = newDate < todayStr;
                   setChallanNo(db.getNextChallanNo(isBack));
                 }}
@@ -800,7 +801,7 @@ export const IssueChallanView: React.FC = () => {
             </div>
 
             {/* Backdated Reason */}
-            {currentUser.canCreateBackdatedChallan && issuedDate < new Date().toISOString().split('T')[0] && (
+            {currentUser.canCreateBackdatedChallan && issuedDate < getLocalTodayString() && (
               <div className="md:col-span-12 bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
                 <label className="block text-xs font-bold text-amber-800 uppercase">Reason for backdated challan <span className="text-red-500">*</span></label>
                 <input

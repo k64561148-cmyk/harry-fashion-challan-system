@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
+import { getLocalTodayString } from '../utils/dateUtils';
 import { Master, Material, Challan, ChallanItem, InwardEntry, LedgerTransaction } from '../types';
 import { 
   formatINR, 
@@ -46,7 +47,7 @@ export const ReportsView: React.FC = () => {
   const [manualTxAmount, setManualTxAmount] = useState('');
   const [manualTxRefNo, setManualTxRefNo] = useState('');
   const [manualTxNotes, setManualTxNotes] = useState('');
-  const [manualTxDate, setManualTxDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [manualTxDate, setManualTxDate] = useState(() => getLocalTodayString());
   const [manualTxError, setManualTxError] = useState('');
   const [manualTxSuccess, setManualTxSuccess] = useState('');
 
@@ -56,9 +57,12 @@ export const ReportsView: React.FC = () => {
   const [startDate, setStartDate] = useState<string>(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return d.toISOString().split('T')[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   });
-  const [endDate, setEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState<string>(getLocalTodayString());
   
   const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());

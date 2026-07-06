@@ -34,17 +34,18 @@ import {
   increment
 } from 'firebase/firestore';
 import { firestore, auth } from './firebase';
+import { getLocalTodayString } from './utils/dateUtils';
 
 // Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
 function doc(firestoreInstance: any, collectionName: string, docId: string) {
   const isKunal = (() => {
     try {
-      const currentUserStr = localStorage.getItem('hf_current_user');
+      const currentUserStr = localStorage.getItem('current_user');
       if (currentUserStr) {
         const u = JSON.parse(currentUserStr);
         const email = u?.email || '';
-        const name = u?.name || '';
-        const displayName = u?.displayName || '';
+        const name = u?.name || u?.displayName || '';
+        const displayName = u?.displayName || u?.name || '';
         const username = u?.username || '';
         return email.toLowerCase().includes('kunal') || 
                name.toLowerCase().includes('kunal') || 
@@ -1595,7 +1596,7 @@ class DatabaseService {
     const materialsList = this.getMaterials();
     const currentUser = this.getCurrentUser();
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getLocalTodayString();
     const challanDate = challan.issued_date || todayStr;
 
     // Future date block
@@ -1766,11 +1767,12 @@ class DatabaseService {
       // Post-save verification: Re-read saved challan from Firestore
       const reReadSnap = await getDoc(doc(firestore, 'challans', newChallan.id));
       if (!reReadSnap.exists()) {
-        throw new Error("Challan was not synced to cloud. Please retry.");
+        throw new Error("Re-read verification failed: Document does not exist on Firestore.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Firestore batch write or re-read verification failed:', err);
-      throw new Error("Challan was not synced to cloud. Please retry.");
+      const detailedMessage = err.message || String(err);
+      throw new Error(`Challan was not synced to cloud: ${detailedMessage}. Please check internet connection, sync local PC clock, or try re-logging in.`);
     }
 
     // Now that Firestore write and re-read both succeeded, we let our real-time snapshot listeners
@@ -2036,7 +2038,7 @@ class DatabaseService {
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < getLocalTodayString());
         if (!(isKunal && isBackdated)) {
           throw new Error('Completed/Billed challans cannot be deleted');
         }
@@ -2115,7 +2117,7 @@ class DatabaseService {
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < getLocalTodayString());
         if (!(isKunal && isBackdated)) {
           throw new Error('Completed/Billed challans cannot be deleted unless the bill is first reversed');
         }
@@ -2173,7 +2175,7 @@ class DatabaseService {
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < getLocalTodayString());
         if (!(isKunal && isBackdated)) {
           throw new Error('Completed/Billed challans cannot be voided');
         }
@@ -2478,7 +2480,7 @@ class DatabaseService {
       amount: -amount, // credit is a deduction (negative) from master balance
       ref_no: refNo.trim(),
       notes: `POST-BILL ADJ: "${reason.trim()}" for locked Challan ${challan.challan_no}`,
-      date: new Date().toISOString().split('T')[0],
+      date: getLocalTodayString(),
     });
 
     // 2. Add to edit history
@@ -2674,7 +2676,7 @@ class DatabaseService {
 
   saveManualTransaction(tx: Partial<LedgerTransaction>): LedgerTransaction {
     const list = this.load<LedgerTransaction[]>('ledger_transactions', []);
-    const txDate = tx.date || new Date().toISOString().split('T')[0];
+    const txDate = tx.date || getLocalTodayString();
     const parsedM = parseInt(txDate.split('-')[1], 10) || (new Date().getMonth() + 1);
     const parsedY = parseInt(txDate.split('-')[0], 10) || new Date().getFullYear();
 
@@ -2762,7 +2764,7 @@ class DatabaseService {
       qty_received: qty,
       supplier_name: entry.supplier_name || entry.supplier || 'Generic Supplier',
       bill_no: entry.bill_no || entry.billNo || 'NA',
-      inward_date: entry.inward_date || entry.date || new Date().toISOString().split('T')[0],
+      inward_date: entry.inward_date || entry.date || getLocalTodayString(),
       notes: entry.notes || '',
       created_by: currentUser.name || 'Store Department',
       created_at: new Date().toISOString(),
@@ -2775,7 +2777,7 @@ class DatabaseService {
       rateSnapshot: mat.default_rate,
       supplier: entry.supplier_name || entry.supplier || 'Generic Supplier',
       billNo: entry.bill_no || entry.billNo || 'NA',
-      date: entry.inward_date || entry.date || new Date().toISOString().split('T')[0],
+      date: entry.inward_date || entry.date || getLocalTodayString(),
     };
 
     list.push(newEntry);

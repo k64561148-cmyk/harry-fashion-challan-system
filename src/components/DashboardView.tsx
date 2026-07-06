@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
+import { getLocalTodayString } from '../utils/dateUtils';
 import { Challan, Invoice, Material, ChallanItem } from '../types';
 import { formatINR, generateChallanPDF } from '../utils/exportUtils';
 import { 
@@ -88,7 +89,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   const loadDashboardData = () => {
     // 1. Fetch Today's Challans
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = getLocalTodayString();
     const challans = db.getChallans();
     const todayList = challans.filter(c => c.issued_date === todayStr && c.status !== 'voided');
     setTodayChallans(todayList);
@@ -747,7 +748,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                     )}
 
                                     {/* Backdated deletion for Kunal ID */}
-                                    {((c.backdated === true) || (c.issued_date && c.issued_date < new Date().toISOString().split('T')[0])) && isKunalUser && (
+                                    {((c.backdated === true) || (c.issued_date && c.issued_date < getLocalTodayString())) && isKunalUser && (
                                       <button
                                         onClick={() => triggerDelete(c)}
                                         title="[Developer Only] Permanently Delete Backdated Challan"

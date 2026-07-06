@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
+import { getLocalTodayString } from '../utils/dateUtils';
 import { Material, InwardEntry } from '../types';
 import { formatDate } from '../utils/exportUtils';
 import { 
@@ -28,7 +29,7 @@ export const InwardEntryView: React.FC = () => {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [supplierName, setSupplierName] = useState<string>('');
   const [billNo, setBillNo] = useState<string>('');
-  const [inwardDate, setInwardDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [inwardDate, setInwardDate] = useState<string>(getLocalTodayString());
   const [notes, setNotes] = useState<string>('');
 
   // Row states
