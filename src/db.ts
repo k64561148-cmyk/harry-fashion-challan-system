@@ -417,7 +417,7 @@ class DatabaseService {
     if (storedSandbox !== null) {
       return storedSandbox === 'true';
     }
-    return true;
+    return false;
   }
 
   public setSandboxMode(enabled: boolean): void {
@@ -581,8 +581,9 @@ class DatabaseService {
       const initialMasters: Master[] = [];
       
       DEFAULT_JACKETS.forEach((item) => {
+        const id = 'master_jacket_' + item.code.toLowerCase().trim();
         initialMasters.push({
-          id: generateUUID(),
+          id,
           name: item.name,
           code: item.code,
           type: 'jacket',
@@ -592,8 +593,9 @@ class DatabaseService {
       });
 
       DEFAULT_PANTS.forEach((item) => {
+        const id = 'master_pant_' + item.code.toLowerCase().trim();
         initialMasters.push({
-          id: generateUUID(),
+          id,
           name: item.name,
           code: item.code,
           type: 'pant',
@@ -608,15 +610,18 @@ class DatabaseService {
     // 2. Initialize materials
     const materials = this.load<Material[]>('materials', []);
     if (materials.length === 0) {
-      const initialMaterials: Material[] = DEFAULT_MATERIALS_RAW.map((item) => ({
-        id: generateUUID(),
-        name: item.name,
-        unit: item.unit,
-        default_rate: item.default_rate,
-        current_stock: item.stock,
-        is_active: true,
-        created_at: new Date().toISOString()
-      }));
+      const initialMaterials: Material[] = DEFAULT_MATERIALS_RAW.map((item) => {
+        const id = 'material_' + item.name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+        return {
+          id,
+          name: item.name,
+          unit: item.unit,
+          default_rate: item.default_rate,
+          current_stock: item.stock,
+          is_active: true,
+          created_at: new Date().toISOString()
+        };
+      });
 
       this.save('materials', initialMaterials);
     }
@@ -899,7 +904,7 @@ class DatabaseService {
 
           // Only sync if there are active cloud records to avoid empty-source overwrites initially
           if (snapshot.size > 0) {
-            if (collName === 'masters' || collName === 'challans' || collName === 'challan_items') {
+            if (collName === 'masters' || collName === 'materials' || collName === 'challans' || collName === 'challan_items' || collName === 'master_rate_overrides') {
               // 1. Single source of truth: replace entirely with snapshot results, do not merge or append
               this.save(collName, remoteRecords);
               window.dispatchEvent(new Event('db_sync'));
@@ -1874,7 +1879,7 @@ class DatabaseService {
       const verifiedChallan = reReadChallanSnap.data() as Challan;
 
       for (const item of savedChallanItems) {
-        const itemRef = doc(firestore, 'challan_items', item.id);
+        const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
         const reReadItemSnap = await getDocFromServer(itemRef);
         if (!reReadItemSnap.exists()) {
           throw new Error("Re-read verification failed: Challan line item not found on Firestore server.");
