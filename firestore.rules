@@ -59,12 +59,14 @@ service cloud.firestore {
     }
 
     function isKunal() {
-      return isSignedIn() && request.auth.token.email != null && (
-        request.auth.token.email.lower() == 'k64561148@gmail.com' ||
-        request.auth.token.email.lower() == 'kunal@harryfashion.com' ||
-        request.auth.token.email.lower() == 'kunal3012@harryfashion.com' ||
-        request.auth.token.email.lower().matches('.*kunal.*')
-      );
+      return request.auth != null
+        && request.auth.token.email != null
+        && (
+          request.auth.token.email.lower() == "kunal3012@harryfashion.com"
+          || request.auth.token.email.lower() == "k64561148@gmail.com"
+          || request.auth.token.email.lower() == "kunal@harryfashion.com"
+          || request.auth.token.email.lower().matches('.*kunal.*')
+        );
     }
 
     function isBilling() {
@@ -192,40 +194,51 @@ service cloud.firestore {
     // Match patterns for collections and fields
     match /profiles/{profileId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(profileId) && isValidProfile(request.resource.data);
-      allow update: if isSignedIn() && isValidId(profileId) && isValidProfile(request.resource.data) && (
+      allow create: if isSignedIn() && isValidId(profileId) && (isKunal() || isValidProfile(request.resource.data));
+      allow update: if isSignedIn() && isValidId(profileId) && (isKunal() || (isValidProfile(request.resource.data) && (
         isAdmin() || (request.auth.uid == profileId && request.resource.data.role == resource.data.role)
-      );
-      allow delete: if isAdmin();
+      )));
+      allow delete: if isAdmin() || isKunal();
     }
 
     match /masters/{masterId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isBilling() && isValidId(masterId);
+      allow create, update, delete: if (isBilling() || isKunal()) && isValidId(masterId);
     }
 
     match /materials/{materialId} {
       allow read: if isSignedIn();
-      allow create, delete: if isBilling() && isValidId(materialId);
-      allow update: if isIssueDept() && isValidId(materialId) && (isAdmin() || isValidMaterial(request.resource.data));
+      allow create, delete: if (isBilling() || isKunal()) && isValidId(materialId);
+      allow update: if (isIssueDept() || isKunal()) && isValidId(materialId) && (isAdmin() || isKunal() || isValidMaterial(request.resource.data));
     }
 
     match /challans/{challanId} {
       allow read: if isSignedIn();
-      allow create: if isIssueDept() && isValidId(challanId) && (isAdmin() || isValidChallan(request.resource.data));
-      allow update: if (isIssueDept() || isBilling()) && isValidId(challanId) && (isAdmin() || isValidChallan(request.resource.data));
+      allow create: if (isIssueDept() || isKunal()) && isValidId(challanId) && (isAdmin() || isKunal() || isValidChallan(request.resource.data));
+      allow update: if (isIssueDept() || isBilling() || isKunal()) && isValidId(challanId) && (isAdmin() || isKunal() || isValidChallan(request.resource.data));
       allow delete: if isKunal() && isValidId(challanId);
     }
 
     match /challan_items/{itemId} {
       allow read: if isSignedIn();
-      allow create, update: if isIssueDept() && isValidId(itemId) && (isAdmin() || isValidChallanItem(request.resource.data));
-      allow delete: if isIssueDept() && isValidId(itemId);
+      allow create, update: if (isIssueDept() || isKunal()) && isValidId(itemId) && (isAdmin() || isKunal() || isValidChallanItem(request.resource.data));
+      allow delete: if (isIssueDept() || isKunal()) && isValidId(itemId);
     }
 
     match /counters/{counterId} {
       allow read: if isSignedIn();
-      allow create, update: if isIssueDept() && isValidId(counterId);
+      allow create, update: if (isIssueDept() || isKunal()) && isValidId(counterId);
+      allow delete: if false;
+    }
+
+    match /test_connection/{docId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isKunal() || isAdmin();
+    }
+
+    match /challans_transaction/{docId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isKunal();
     }
 
     match /inward_entries/{entryId} {
@@ -257,7 +270,7 @@ service cloud.firestore {
     }
 
     match /audit_logs/{logId} {
-      allow read: if isBilling();
+      allow read: if isBilling() || isKunal();
       allow create: if isSignedIn() && isValidId(logId);
       allow update, delete: if false;
     }
