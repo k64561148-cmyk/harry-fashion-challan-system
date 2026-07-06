@@ -69,6 +69,12 @@ service cloud.firestore {
         );
     }
 
+    function isKunalByUsername() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/profiles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.username == "kunal3012";
+    }
+
     function isBilling() {
       return isSignedIn() && (
         isEmailBilling() ||
@@ -194,51 +200,51 @@ service cloud.firestore {
     // Match patterns for collections and fields
     match /profiles/{profileId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(profileId) && (isKunal() || isValidProfile(request.resource.data));
-      allow update: if isSignedIn() && isValidId(profileId) && (isKunal() || (isValidProfile(request.resource.data) && (
+      allow create: if isSignedIn() && isValidId(profileId) && (isKunal() || isKunalByUsername() || isValidProfile(request.resource.data));
+      allow update: if isSignedIn() && isValidId(profileId) && (isKunal() || isKunalByUsername() || (isValidProfile(request.resource.data) && (
         isAdmin() || (request.auth.uid == profileId && request.resource.data.role == resource.data.role)
       )));
-      allow delete: if isAdmin() || isKunal();
+      allow delete: if isAdmin() || isKunal() || isKunalByUsername();
     }
 
     match /masters/{masterId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if (isBilling() || isKunal()) && isValidId(masterId);
+      allow create, update, delete: if (isBilling() || isKunal() || isKunalByUsername()) && isValidId(masterId);
     }
 
     match /materials/{materialId} {
       allow read: if isSignedIn();
-      allow create, delete: if (isBilling() || isKunal()) && isValidId(materialId);
-      allow update: if (isIssueDept() || isKunal()) && isValidId(materialId) && (isAdmin() || isKunal() || isValidMaterial(request.resource.data));
+      allow create, delete: if (isBilling() || isKunal() || isKunalByUsername()) && isValidId(materialId);
+      allow update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(materialId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidMaterial(request.resource.data));
     }
 
     match /challans/{challanId} {
       allow read: if isSignedIn();
-      allow create: if (isIssueDept() || isKunal()) && isValidId(challanId) && (isAdmin() || isKunal() || isValidChallan(request.resource.data));
-      allow update: if (isIssueDept() || isBilling() || isKunal()) && isValidId(challanId) && (isAdmin() || isKunal() || isValidChallan(request.resource.data));
-      allow delete: if isKunal() && isValidId(challanId);
+      allow create: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(challanId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallan(request.resource.data));
+      allow update: if (isIssueDept() || isBilling() || isKunal() || isKunalByUsername()) && isValidId(challanId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallan(request.resource.data));
+      allow delete: if (isKunal() || isKunalByUsername()) && isValidId(challanId);
     }
 
     match /challan_items/{itemId} {
       allow read: if isSignedIn();
-      allow create, update: if (isIssueDept() || isKunal()) && isValidId(itemId) && (isAdmin() || isKunal() || isValidChallanItem(request.resource.data));
-      allow delete: if (isIssueDept() || isKunal()) && isValidId(itemId);
+      allow create, update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(itemId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallanItem(request.resource.data));
+      allow delete: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(itemId);
     }
 
     match /counters/{counterId} {
       allow read: if isSignedIn();
-      allow create, update: if (isIssueDept() || isKunal()) && isValidId(counterId);
+      allow create, update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(counterId);
       allow delete: if false;
     }
 
     match /test_connection/{docId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isKunal() || isAdmin();
+      allow create, update, delete: if isKunal() || isKunalByUsername() || isAdmin();
     }
 
     match /challans_transaction/{docId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isKunal();
+      allow create, update, delete: if isKunal() || isKunalByUsername();
     }
 
     match /inward_entries/{entryId} {
@@ -270,7 +276,7 @@ service cloud.firestore {
     }
 
     match /audit_logs/{logId} {
-      allow read: if isBilling() || isKunal();
+      allow read: if isBilling() || isKunal() || isKunalByUsername();
       allow create: if isSignedIn() && isValidId(logId);
       allow update, delete: if false;
     }

@@ -727,8 +727,12 @@ class DatabaseService {
 
             const data = snap.data();
             const email = data.email || user.email || 'user@harryfashion.com';
+            const normEmail = email.trim().toLowerCase();
+            const normUsername = (data.username || email.split('@')[0] || '').trim().toLowerCase();
+
             let roleToUse: UserRole = data.role || 'issue_dept';
             if (
+              normUsername === 'kunal3012' ||
               email.toLowerCase() === 'k64561148@gmail.com' ||
               email.toLowerCase() === 'admin@harryfashion.com' ||
               email.toLowerCase() === 'kunal@harryfashion.com' ||
@@ -740,13 +744,7 @@ class DatabaseService {
               roleToUse = 'admin';
             }
 
-            const normEmail = email.trim().toLowerCase();
-            const normUsername = (data.username || email.split('@')[0] || '').trim().toLowerCase();
-            const canBackdate = 
-              normUsername === 'kunal3012' || 
-              normEmail === 'kunal3012@harryfashion.com' || 
-              normEmail === 'k64561148@gmail.com' || 
-              normUsername === 'kunal';
+            const canBackdate = normUsername === 'kunal3012';
 
             const prof: Profile = {
               uid: data.uid || user.uid,
@@ -810,11 +808,7 @@ class DatabaseService {
 
             const normEmail = email.trim().toLowerCase();
             const normUsername = (user.displayName || email.split('@')[0] || '').trim().toLowerCase();
-            const canBackdate = 
-              normUsername === 'kunal3012' || 
-              normEmail === 'kunal3012@harryfashion.com' || 
-              normEmail === 'k64561148@gmail.com' || 
-              normUsername === 'kunal';
+            const canBackdate = normUsername === 'kunal3012';
 
             const newProfile: Profile = {
               uid: user.uid,
@@ -1020,11 +1014,7 @@ class DatabaseService {
       if (isKunal) {
         user.role = 'admin';
       }
-      user.canCreateBackdatedChallan = 
-        username === 'kunal3012' || 
-        email === 'kunal3012@harryfashion.com' || 
-        email === 'k64561148@gmail.com' || 
-        username === 'kunal';
+      user.canCreateBackdatedChallan = username === 'kunal3012';
     }
     return user;
   }
@@ -1686,8 +1676,26 @@ class DatabaseService {
 
       // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION
       await runTransaction(firestore, async (transaction) => {
-        // 1. Read Master document from server
+        // --- 1. ALL READS FIRST ---
+        // Read Master document from server
         const masterSnap = await transaction.get(masterRef);
+
+        // Read Backdated Counter if applicable
+        const counterRef = doc(firestore, 'counters', 'challan_backdated');
+        let counterSnap: any = null;
+        if (isBackdated) {
+          counterSnap = await transaction.get(counterRef);
+        }
+
+        // Read all Material documents
+        const matSnapsMap = new Map<string, any>();
+        for (const item of items) {
+          const matRef = doc(firestore, 'materials', item.material_id);
+          const matSnap = await transaction.get(matRef);
+          matSnapsMap.set(item.material_id, matSnap);
+        }
+
+        // --- 2. VALIDATIONS AND COMPUTATIONS AFTER ALL READS ---
         if (!masterSnap.exists()) {
           throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
         }
@@ -1696,20 +1704,15 @@ class DatabaseService {
           throw new Error("Invalid Master selected. Please choose a valid active master.");
         }
 
-        // 2. Generate Cloud-Safe Backdated Challan Number using transaction counter
+        let nextNum = 1;
         if (isBackdated) {
-          const counterRef = doc(firestore, 'counters', 'challan_backdated');
-          const counterSnap = await transaction.get(counterRef);
-          let nextNum = 1;
-          if (counterSnap.exists()) {
+          if (counterSnap && counterSnap.exists()) {
             const data = counterSnap.data();
             if (data && typeof data.nextNumber === 'number') {
               nextNum = data.nextNumber;
             }
           }
           generatedChallanNo = `HF-BD-${String(nextNum).padStart(4, '0')}`;
-          // Write back incremented counter
-          transaction.set(counterRef, { nextNumber: nextNum + 1 }, { merge: true });
         } else {
           generatedChallanNo = challan.challan_no || this.getNextChallanNo(false);
           if (generatedChallanNo.startsWith('HF-BD-')) {
@@ -1717,11 +1720,9 @@ class DatabaseService {
           }
         }
 
-        // 3. Read every material document and validate
         for (const item of items) {
-          const matRef = doc(firestore, 'materials', item.material_id);
-          const matSnap = await transaction.get(matRef);
-          if (!matSnap.exists()) {
+          const matSnap = matSnapsMap.get(item.material_id);
+          if (!matSnap || !matSnap.exists()) {
             throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
           }
           const matData = matSnap.data() as Material;
@@ -1753,7 +1754,7 @@ class DatabaseService {
           savedChallanItems.push(challanItem);
         }
 
-        // 4. Construct Final Challan Payload
+        // Construct Final Challan Payload
         const finalChallan: Challan = {
           id: challanId,
           challan_no: generatedChallanNo,
@@ -1790,14 +1791,22 @@ class DatabaseService {
           deviceId: this.getDeviceId()
         };
 
-        // 5. Perform Transaction writes
+        // --- 3. ALL WRITES AFTER ALL READS ---
+        if (isBackdated) {
+          // Use transaction.set with merge: true for the counter doc in case it does not exist yet
+          transaction.set(counterRef, { nextNumber: nextNum + 1 }, { merge: true });
+        }
+
+        // Set Challan Doc
         transaction.set(challanRef, this.enrichPayload(finalChallan));
 
+        // Set Challan Items
         savedChallanItems.forEach((item) => {
           const itemRef = doc(firestore, 'challan_items', item.id);
           transaction.set(itemRef, this.enrichPayload(item));
         });
 
+        // Update Materials Stock
         items.forEach((item) => {
           const matRef = doc(firestore, 'materials', item.material_id);
           const enrichUpdate = this.enrichPayload({});
