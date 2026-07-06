@@ -223,6 +223,11 @@ service cloud.firestore {
       allow delete: if isIssueDept() && isValidId(itemId);
     }
 
+    match /counters/{counterId} {
+      allow read: if isSignedIn();
+      allow create, update: if isIssueDept() && isValidId(counterId);
+    }
+
     match /inward_entries/{entryId} {
       allow read: if isSignedIn();
       allow create: if isIssueDept() && isValidId(entryId) && isValidInwardEntry(request.resource.data);

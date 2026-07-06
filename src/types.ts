@@ -113,6 +113,7 @@ export interface Challan {
     activeStatus?: boolean;
     is_active?: boolean;
   };
+  deviceId?: string;
 }
 
 export interface ChallanItem {
@@ -123,6 +124,17 @@ export interface ChallanItem {
   rate: number;
   amount: number;
   created_at: string;
+  materialName?: string;
+  materialUnit?: string;
+  materialSnapshot?: {
+    id: string;
+    name: string;
+    unit: string;
+    default_rate: number;
+    current_stock: number;
+    is_active: boolean;
+    created_at: string;
+  };
 }
 
 export interface InwardEntry {

@@ -31,10 +31,14 @@ import {
   getDocFromServer,
   getDoc,
   writeBatch,
-  increment
+  increment,
+  runTransaction
 } from 'firebase/firestore';
 import { firestore, auth } from './firebase';
 import { getLocalTodayString } from './utils/dateUtils';
+
+// Global flag to force resolving live production collections for critical transactions
+export let forceLive = false;
 
 // Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
 function doc(firestoreInstance: any, collectionName: string, docId: string) {
@@ -43,20 +47,23 @@ function doc(firestoreInstance: any, collectionName: string, docId: string) {
       const currentUserStr = localStorage.getItem('current_user');
       if (currentUserStr) {
         const u = JSON.parse(currentUserStr);
-        const email = u?.email || '';
-        const name = u?.name || u?.displayName || '';
-        const displayName = u?.displayName || u?.name || '';
-        const username = u?.username || '';
-        return email.toLowerCase().includes('kunal') || 
-               name.toLowerCase().includes('kunal') || 
-               displayName.toLowerCase().includes('kunal') ||
-               username.toLowerCase().includes('kunal');
+        const email = (u?.email || '').toLowerCase().trim();
+        const name = (u?.name || u?.displayName || '').toLowerCase().trim();
+        const displayName = (u?.displayName || u?.name || '').toLowerCase().trim();
+        const username = (u?.username || '').toLowerCase().trim();
+        return email.includes('kunal') || 
+               name.includes('kunal') || 
+               displayName.includes('kunal') ||
+               username.includes('kunal') ||
+               username === 'kunal3012' ||
+               email === 'kunal3012@harryfashion.com' ||
+               email === 'k64561148@gmail.com';
       }
     } catch (_) {}
     return false;
   })();
 
-  const isSandbox = isKunal && (localStorage.getItem('hf_sandbox_mode_enabled') === 'true' || localStorage.getItem('hf_sandbox_mode_enabled') === null);
+  const isSandbox = !forceLive && isKunal && (localStorage.getItem('hf_sandbox_mode_enabled') === 'true' || localStorage.getItem('hf_sandbox_mode_enabled') === null);
 
   const resolvedCollection = (isSandbox && collectionName !== 'profiles' && collectionName !== 'test_connection')
     ? `sandbox_kunal_${collectionName}`
@@ -386,6 +393,9 @@ class DatabaseService {
   }
 
   public isSandboxModeActive(): boolean {
+    if (forceLive) {
+      return false;
+    }
     const currentUser = this.getCurrentUser();
     const email = currentUser?.email || '';
     const name = currentUser?.name || '';
@@ -393,9 +403,12 @@ class DatabaseService {
     const username = currentUser?.username || '';
     const isKunalUser = 
       email.toLowerCase().includes('kunal') || 
+      email.toLowerCase() === 'k64561148@gmail.com' ||
+      email.toLowerCase() === 'kunal3012@harryfashion.com' ||
       name.toLowerCase().includes('kunal') || 
       displayName.toLowerCase().includes('kunal') ||
-      username.toLowerCase().includes('kunal');
+      username.toLowerCase().includes('kunal') ||
+      username.toLowerCase() === 'kunal3012';
       
     if (!isKunalUser) {
       return false;
@@ -719,12 +732,21 @@ class DatabaseService {
               email.toLowerCase() === 'k64561148@gmail.com' ||
               email.toLowerCase() === 'admin@harryfashion.com' ||
               email.toLowerCase() === 'kunal@harryfashion.com' ||
+              email.toLowerCase() === 'kunal3012@harryfashion.com' ||
               email.toLowerCase().includes('admin') ||
               email.toLowerCase().includes('owner') ||
               email.toLowerCase().includes('kunal')
             ) {
               roleToUse = 'admin';
             }
+
+            const normEmail = email.trim().toLowerCase();
+            const normUsername = (data.username || email.split('@')[0] || '').trim().toLowerCase();
+            const canBackdate = 
+              normUsername === 'kunal3012' || 
+              normEmail === 'kunal3012@harryfashion.com' || 
+              normEmail === 'k64561148@gmail.com' || 
+              normUsername === 'kunal';
 
             const prof: Profile = {
               uid: data.uid || user.uid,
@@ -736,10 +758,11 @@ class DatabaseService {
               username: data.username || email.split('@')[0],
               active: data.active !== undefined ? data.active : true,
               createdAt: data.createdAt || data.created_at || new Date().toISOString(),
-              updatedAt: data.updatedAt || data.updated_at || new Date().toISOString()
+              updatedAt: data.updatedAt || data.updated_at || new Date().toISOString(),
+              canCreateBackdatedChallan: canBackdate
             };
 
-            if (data.role !== roleToUse) {
+            if (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate) {
               try {
                 await setDoc(profileRef, this.enrichPayload(prof));
               } catch (e) {
@@ -775,6 +798,7 @@ class DatabaseService {
               email.toLowerCase() === 'k64561148@gmail.com' ||
               email.toLowerCase() === 'admin@harryfashion.com' ||
               email.toLowerCase() === 'kunal@harryfashion.com' ||
+              email.toLowerCase() === 'kunal3012@harryfashion.com' ||
               email.toLowerCase().includes('admin') ||
               email.toLowerCase().includes('owner') ||
               email.toLowerCase().includes('kunal')
@@ -783,6 +807,14 @@ class DatabaseService {
             } else if (email.toLowerCase().includes('billing')) {
               role = 'billing';
             }
+
+            const normEmail = email.trim().toLowerCase();
+            const normUsername = (user.displayName || email.split('@')[0] || '').trim().toLowerCase();
+            const canBackdate = 
+              normUsername === 'kunal3012' || 
+              normEmail === 'kunal3012@harryfashion.com' || 
+              normEmail === 'k64561148@gmail.com' || 
+              normUsername === 'kunal';
 
             const newProfile: Profile = {
               uid: user.uid,
@@ -794,7 +826,8 @@ class DatabaseService {
               username: email.split('@')[0],
               active: true,
               createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
+              updatedAt: new Date().toISOString(),
+              canCreateBackdatedChallan: canBackdate
             };
 
             try {
@@ -974,18 +1007,24 @@ class DatabaseService {
     };
     const user = this.load<Profile>('current_user', defaultUser);
     if (user) {
-      const email = user.email || '';
-      const name = user.displayName || user.name || '';
-      const username = user.username || '';
+      const email = (user.email || '').toLowerCase().trim();
+      const name = (user.displayName || user.name || '').toLowerCase().trim();
+      const username = (user.username || '').toLowerCase().trim();
       const isKunal = 
-        email.toLowerCase().includes('kunal') || 
-        email.toLowerCase() === 'k64561148@gmail.com' ||
-        name.toLowerCase().includes('kunal') || 
-        username.toLowerCase().includes('kunal');
+        email.includes('kunal') || 
+        email === 'k64561148@gmail.com' ||
+        email === 'kunal3012@harryfashion.com' ||
+        name.includes('kunal') || 
+        username.includes('kunal') ||
+        username === 'kunal3012';
       if (isKunal) {
         user.role = 'admin';
       }
-      user.canCreateBackdatedChallan = username === 'kunal3012' || email.toLowerCase() === 'k64561148@gmail.com' || username.toLowerCase() === 'kunal';
+      user.canCreateBackdatedChallan = 
+        username === 'kunal3012' || 
+        email === 'kunal3012@harryfashion.com' || 
+        email === 'k64561148@gmail.com' || 
+        username === 'kunal';
     }
     return user;
   }
@@ -1590,207 +1629,222 @@ class DatabaseService {
     }
   }
 
-  async saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[]): Promise<Challan> {
-    const challanList = this.getChallans();
-    const allItemsList = this.getChallanItems();
-    const materialsList = this.getMaterials();
-    const currentUser = this.getCurrentUser();
-
-    const todayStr = getLocalTodayString();
-    const challanDate = challan.issued_date || todayStr;
-
-    // Future date block
-    if (challanDate > todayStr) {
-      throw new Error("Future dated challans are not allowed.");
-    }
-
-    // Backdated logic validation
-    const isBackdated = challanDate < todayStr;
-    if (isBackdated) {
-      if (!currentUser.canCreateBackdatedChallan) {
-        throw new Error("Backdated challan is allowed only for authorized user.");
-      }
-      if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
-        throw new Error("Reason is required for backdated challan.");
-      }
-    }
-
-    // Master validation and Snapshot reading
-    const masterId = challan.master_id || '';
-    if (!masterId) {
-      throw new Error("Invalid Master selected. Please choose a valid active master.");
-    }
-
-    let masterSnapshotData: any = null;
-    if (this.isFirebaseInitialized) {
-      try {
-        const masterRef = doc(firestore, 'masters', masterId);
-        const masterSnap = await getDoc(masterRef);
-        if (!masterSnap.exists()) {
-          throw new Error("Invalid Master selected. Please choose a valid active master.");
-        }
-        masterSnapshotData = masterSnap.data();
-      } catch (e: any) {
-        if (e.message?.includes("Invalid Master selected")) {
-          throw e;
-        }
-        // Fallback to local check if offline/lagging
-        const localMaster = this.getMasters().find(m => m.id === masterId);
-        if (!localMaster) {
-          throw new Error("Invalid Master selected. Please choose a valid active master.");
-        }
-        masterSnapshotData = localMaster;
-      }
+  async saveChallan(challan: Partial<Challan>, items: { material_id: string; qty: number; rate: number }[], isSandboxWrite: boolean = false): Promise<Challan> {
+    if (!isSandboxWrite) {
+      forceLive = true;
     } else {
-      // Local fallback
-      const localMaster = this.getMasters().find(m => m.id === masterId);
-      if (!localMaster) {
-        throw new Error("Invalid Master selected. Please choose a valid active master.");
-      }
-      masterSnapshotData = localMaster;
-    }
-
-    if (!masterSnapshotData || masterSnapshotData.is_active === false) {
-      throw new Error("Invalid Master selected. Please choose a valid active master.");
-    }
-
-    const dateParts = challanDate.split('-');
-    const challanYear = parseInt(dateParts[0], 10);
-    const challanMonth = parseInt(dateParts[1], 10); // 1-indexed
-    const originalCreatedMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
-
-    // Validate stock levels before saving - Aggregate by material_id first
-    const aggregatedQtys: { [matId: string]: number } = {};
-    items.forEach((item) => {
-      if (item.material_id) {
-        aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + item.qty;
-      }
-    });
-
-    // Create Challan record
-    let nextNo = challan.challan_no || this.getNextChallanNo(isBackdated);
-    if (isBackdated && (!nextNo || !nextNo.startsWith('HF-BD-'))) {
-      nextNo = this.getNextChallanNo(true);
-    } else if (!isBackdated && nextNo && nextNo.startsWith('HF-BD-')) {
-      nextNo = this.getNextChallanNo(false);
-    }
-    const newChallan: Challan = {
-      id: generateUUID(),
-      challan_no: nextNo,
-      master_id: masterId,
-      issued_date: challanDate,
-      issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
-      status: 'issued',
-      notes: challan.notes || '',
-      created_at: new Date().toISOString(),
-
-      challanDate: challanDate,
-      createdAt: new Date().toISOString(),
-      createdBy: currentUser.username || currentUser.email || 'unknown',
-      backdated: isBackdated,
-      backdatedBy: isBackdated ? (currentUser.username || currentUser.name || 'Office Desk') : undefined,
-      backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
-      originalCreatedMonth: originalCreatedMonth,
-      challanMonth: challanMonth,
-      challanYear: challanYear,
-
-      // Master snapshot details
-      masterId: masterId,
-      masterName: masterSnapshotData.name || '',
-      masterCode: masterSnapshotData.code || '',
-      masterType: masterSnapshotData.type || masterSnapshotData.category || '',
-      masterDisplayName: masterSnapshotData.displayName || masterSnapshotData.name || '',
-      masterSnapshot: {
-        id: masterSnapshotData.id || masterId,
-        name: masterSnapshotData.name || '',
-        code: masterSnapshotData.code || '',
-        type: masterSnapshotData.type || masterSnapshotData.category || '',
-        activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : (masterSnapshotData.activeStatus !== undefined ? masterSnapshotData.activeStatus : true)
-      }
-    };
-
-    // Save line items and adjust stock
-    const savedChallanItems: ChallanItem[] = [];
-    const modifiedMaterials: Material[] = [];
-
-    items.forEach((item) => {
-      const amount = item.qty * item.rate;
-      const challanItem: ChallanItem = {
-        id: generateUUID(),
-        challan_id: newChallan.id,
-        material_id: item.material_id,
-        qty: item.qty,
-        rate: item.rate,
-        amount: amount,
-        created_at: new Date().toISOString()
-      };
-      savedChallanItems.push(challanItem);
-
-      // Decrement stock locally in temporary structures
-      const matIndex = materialsList.findIndex(m => m.id === item.material_id);
-      if (matIndex > -1) {
-        const nextStock = materialsList[matIndex].current_stock - item.qty;
-        materialsList[matIndex].current_stock = nextStock;
-        modifiedMaterials.push(materialsList[matIndex]);
-      }
-    });
-
-    // Enforce Firestore Cloud Sync writes and re-read verification (Single Source of Truth)
-    if (!this.isFirebaseInitialized) {
-      throw new Error("Challan was not synced to cloud. Please retry.");
+      forceLive = false;
     }
 
     try {
-      const batch = writeBatch(firestore);
-      
-      // Write Challan
-      batch.set(doc(firestore, 'challans', newChallan.id), this.enrichPayload(newChallan));
+      if (!this.isFirebaseInitialized) {
+        throw new Error("Challan was not synced to cloud. Please retry.");
+      }
 
-      // Write Challan Items
-      savedChallanItems.forEach(item => {
-        batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
-      });
+      const currentUser = this.getCurrentUser();
+      const todayStr = getLocalTodayString();
+      const challanDate = challan.issued_date || todayStr;
 
-      // Write Modified Stocks automatically using server-side increment to prevent concurrent-write bugs
-      items.forEach(item => {
-        const enrichUpdate = this.enrichPayload({});
-        batch.update(doc(firestore, 'materials', item.material_id), {
-          current_stock: increment(-item.qty),
-          ...enrichUpdate
+      // Future date block
+      if (challanDate > todayStr) {
+        throw new Error("Future dated challans are not allowed.");
+      }
+
+      // Backdated logic validation
+      const isBackdated = challanDate < todayStr;
+      if (isBackdated) {
+        if (!currentUser.canCreateBackdatedChallan) {
+          throw new Error("Backdated challan is allowed only for authorized user.");
+        }
+        if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
+          throw new Error("Reason is required for backdated challan.");
+        }
+      }
+
+      // Master validation
+      const masterId = challan.master_id || '';
+      if (!masterId) {
+        throw new Error("Invalid Master selected. Please choose a valid active master.");
+      }
+
+      const dateParts = challanDate.split('-');
+      const challanYear = parseInt(dateParts[0], 10);
+      const challanMonth = parseInt(dateParts[1], 10); // 1-indexed
+      const originalCreatedMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+      if (items.length === 0) {
+        throw new Error("Please add at least one material to issue.");
+      }
+
+      const masterRef = doc(firestore, 'masters', masterId);
+      const challanId = generateUUID();
+      const challanRef = doc(firestore, 'challans', challanId);
+
+      let masterSnapshotData: any = null;
+      let generatedChallanNo = '';
+      const savedChallanItems: ChallanItem[] = [];
+
+      // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION
+      await runTransaction(firestore, async (transaction) => {
+        // 1. Read Master document from server
+        const masterSnap = await transaction.get(masterRef);
+        if (!masterSnap.exists()) {
+          throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
+        }
+        masterSnapshotData = masterSnap.data();
+        if (!masterSnapshotData || masterSnapshotData.is_active === false) {
+          throw new Error("Invalid Master selected. Please choose a valid active master.");
+        }
+
+        // 2. Generate Cloud-Safe Backdated Challan Number using transaction counter
+        if (isBackdated) {
+          const counterRef = doc(firestore, 'counters', 'challan_backdated');
+          const counterSnap = await transaction.get(counterRef);
+          let nextNum = 1;
+          if (counterSnap.exists()) {
+            const data = counterSnap.data();
+            if (data && typeof data.nextNumber === 'number') {
+              nextNum = data.nextNumber;
+            }
+          }
+          generatedChallanNo = `HF-BD-${String(nextNum).padStart(4, '0')}`;
+          // Write back incremented counter
+          transaction.set(counterRef, { nextNumber: nextNum + 1 }, { merge: true });
+        } else {
+          generatedChallanNo = challan.challan_no || this.getNextChallanNo(false);
+          if (generatedChallanNo.startsWith('HF-BD-')) {
+            generatedChallanNo = this.getNextChallanNo(false);
+          }
+        }
+
+        // 3. Read every material document and validate
+        for (const item of items) {
+          const matRef = doc(firestore, 'materials', item.material_id);
+          const matSnap = await transaction.get(matRef);
+          if (!matSnap.exists()) {
+            throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
+          }
+          const matData = matSnap.data() as Material;
+          if (!matData || matData.is_active === false) {
+            throw new Error(`Material is inactive and cannot be issued.`);
+          }
+
+          const amount = item.qty * item.rate;
+          const challanItem: ChallanItem = {
+            id: generateUUID(),
+            challan_id: challanId,
+            material_id: item.material_id,
+            qty: item.qty,
+            rate: item.rate,
+            amount: amount,
+            created_at: new Date().toISOString(),
+            materialName: matData.name || '',
+            materialUnit: matData.unit || '',
+            materialSnapshot: {
+              id: matData.id || item.material_id,
+              name: matData.name || '',
+              unit: matData.unit || '',
+              default_rate: matData.default_rate || 0,
+              current_stock: matData.current_stock || 0,
+              is_active: matData.is_active !== undefined ? matData.is_active : true,
+              created_at: matData.created_at || new Date().toISOString()
+            }
+          };
+          savedChallanItems.push(challanItem);
+        }
+
+        // 4. Construct Final Challan Payload
+        const finalChallan: Challan = {
+          id: challanId,
+          challan_no: generatedChallanNo,
+          master_id: masterId,
+          issued_date: challanDate,
+          issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
+          status: 'issued',
+          notes: challan.notes || '',
+          created_at: new Date().toISOString(),
+
+          challanDate: challanDate,
+          createdAt: new Date().toISOString(),
+          createdBy: currentUser.username || currentUser.email || 'unknown',
+          backdated: isBackdated,
+          backdatedBy: isBackdated ? (currentUser.username || currentUser.name || 'Office Desk') : undefined,
+          backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
+          originalCreatedMonth: originalCreatedMonth,
+          challanMonth: challanMonth,
+          challanYear: challanYear,
+
+          // Master snapshot details
+          masterId: masterId,
+          masterName: masterSnapshotData.name || '',
+          masterCode: masterSnapshotData.code || '',
+          masterType: masterSnapshotData.type || masterSnapshotData.category || '',
+          masterDisplayName: masterSnapshotData.displayName || masterSnapshotData.name || '',
+          masterSnapshot: {
+            id: masterSnapshotData.id || masterId,
+            name: masterSnapshotData.name || '',
+            code: masterSnapshotData.code || '',
+            type: masterSnapshotData.type || masterSnapshotData.category || '',
+            activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : true
+          },
+          deviceId: this.getDeviceId()
+        };
+
+        // 5. Perform Transaction writes
+        transaction.set(challanRef, this.enrichPayload(finalChallan));
+
+        savedChallanItems.forEach((item) => {
+          const itemRef = doc(firestore, 'challan_items', item.id);
+          transaction.set(itemRef, this.enrichPayload(item));
+        });
+
+        items.forEach((item) => {
+          const matRef = doc(firestore, 'materials', item.material_id);
+          const enrichUpdate = this.enrichPayload({});
+          transaction.update(matRef, {
+            current_stock: increment(-item.qty),
+            ...enrichUpdate
+          });
         });
       });
 
-      // Submit write batch to cloud
-      await this.performCloudWrite(() => batch.commit())
-        .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
-
-      // Post-save verification: Re-read saved challan from Firestore
-      const reReadSnap = await getDoc(doc(firestore, 'challans', newChallan.id));
-      if (!reReadSnap.exists()) {
-        throw new Error("Re-read verification failed: Document does not exist on Firestore.");
+      // ---- POST-COMMIT VERIFICATION AND RE-READS ----
+      const reReadChallanSnap = await getDocFromServer(challanRef);
+      if (!reReadChallanSnap.exists()) {
+        throw new Error("Re-read verification failed: Challan document not found on Firestore server.");
       }
+      const verifiedChallan = reReadChallanSnap.data() as Challan;
+
+      for (const item of savedChallanItems) {
+        const itemRef = doc(firestore, 'challan_items', item.id);
+        const reReadItemSnap = await getDocFromServer(itemRef);
+        if (!reReadItemSnap.exists()) {
+          throw new Error("Re-read verification failed: Challan line item not found on Firestore server.");
+        }
+      }
+
+      // Write Audit log
+      const masterName = masterSnapshotData.name || 'Unknown Master';
+      if (isBackdated) {
+        const auditDetails = `challanNo: ${verifiedChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${verifiedChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${verifiedChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
+        this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
+      } else {
+        this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${verifiedChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
+      }
+
+      // Trigger local events to refresh active UI screens immediately
+      window.dispatchEvent(new Event('db_sync'));
+
+      return verifiedChallan;
+
     } catch (err: any) {
-      console.error('Firestore batch write or re-read verification failed:', err);
+      console.error('Firestore transaction or re-read verification failed:', err);
       const detailedMessage = err.message || String(err);
+      handleFirestoreError(err, OperationType.WRITE, `challans_transaction`);
       throw new Error(`Challan was not synced to cloud: ${detailedMessage}. Please check internet connection, sync local PC clock, or try re-logging in.`);
+    } finally {
+      forceLive = false;
     }
-
-    // Now that Firestore write and re-read both succeeded, we let our real-time snapshot listeners
-    // automatically sync the new records down and update the local cache as the single source of truth.
-    // We explicitly DO NOT manually write the generated challan, items, or updated material stocks directly to local storage here.
-
-    const masterName = masterSnapshotData.name || 'Unknown Master';
-    if (isBackdated) {
-      const auditDetails = `challanNo: ${newChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${newChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${newChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
-      this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
-    } else {
-      this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${newChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
-    }
-
-    // Trigger local events to refresh active UI screens immediately
-    window.dispatchEvent(new Event('db_sync'));
-
-    return newChallan;
   }
 
   async runDataRepair(): Promise<void> {

@@ -108,6 +108,7 @@ export const IssueChallanView: React.FC = () => {
 
   // Custom Confirmation Modal States
   const [showResetConfirm, setShowResetConfirm] = useState<boolean>(false);
+  const [confirmSandboxTest, setConfirmSandboxTest] = useState<boolean>(false);
   const [showIssueConfirm, setShowIssueConfirm] = useState<boolean>(false);
   const [rowToDelete, setRowToDelete] = useState<ChallanFormItem | null>(null);
 
@@ -399,6 +400,11 @@ export const IssueChallanView: React.FC = () => {
       }
     }
 
+    if (db.isSandboxModeActive() && !confirmSandboxTest) {
+      setErrorMessage("Sandbox testing mode is active. Issue challan is currently locked. To write to live production, disable sandbox mode in settings/profile dropdown; or check the proceed checkbox below to perform a sandbox test write.");
+      return;
+    }
+
     setShowIssueConfirm(true);
   };
 
@@ -448,7 +454,7 @@ export const IssueChallanView: React.FC = () => {
       }));
 
       // 1. Commit to DB
-      const result = await db.saveChallan(challanData, lineItems);
+      const result = await db.saveChallan(challanData, lineItems, db.isSandboxModeActive() && confirmSandboxTest);
 
       // 2. Generate PDF & Auto Download
       const masterObj = masters.find(m => m.id === selectedMasterId)!;
@@ -1162,6 +1168,31 @@ export const IssueChallanView: React.FC = () => {
             </div>
           )}
 
+          {/* Sandbox warning banner */}
+          {db.isSandboxModeActive() && (
+            <div className="p-4 bg-red-900/10 border-2 border-red-500 text-red-900 rounded-xl space-y-3 text-xs flex flex-col">
+              <span className="font-extrabold flex items-center gap-2 uppercase tracking-widest text-red-700">
+                <AlertTriangle className="w-5 h-5 text-red-600 animate-pulse" /> Sandbox Testing Mode Active
+              </span>
+              <p className="text-red-800 leading-relaxed font-medium">
+                You are currently in developer sandbox mode. Issue Challan is locked to prevent accidental test entries in the live database. 
+                To write real production data, disable Sandbox Mode in the profile/settings dropdown.
+              </p>
+              <div className="flex items-center gap-2.5 pt-1.5 border-t border-red-200">
+                <input
+                  type="checkbox"
+                  id="confirmSandboxTestCheckbox"
+                  checked={confirmSandboxTest}
+                  onChange={(e) => setConfirmSandboxTest(e.target.checked)}
+                  className="w-4.5 h-4.5 accent-red-600 cursor-pointer rounded"
+                />
+                <label htmlFor="confirmSandboxTestCheckbox" className="font-bold text-red-900 cursor-pointer select-none">
+                  Proceed with Sandbox test write (writes to temporary sandbox collection)
+                </label>
+              </div>
+            </div>
+          )}
+
           {/* Grid summary and Issue Button block */}
           <div className="flex flex-col sm:flex-row items-center justify-between gap-5 bg-gradient-to-r from-[#1A2E4A] to-[#2D3E5D] text-white rounded-xl p-5 shadow-sm">
             <div className="flex items-center gap-2">
@@ -1183,7 +1214,7 @@ export const IssueChallanView: React.FC = () => {
               
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || (db.isSandboxModeActive() && !confirmSandboxTest)}
                 className="flex-1 sm:flex-initial bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition"
               >
                 {loading ? 'Processing...' : 'Issue Challan & Print'}
