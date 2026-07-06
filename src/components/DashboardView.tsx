@@ -76,6 +76,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   const [voidingChallan, setVoidingChallan] = useState<Challan | null>(null);
   const [voidReason, setVoidReason] = useState('');
+  const [deletingChallan, setDeletingChallan] = useState<Challan | null>(null);
 
   // Post-billing adjustment states (Requirement 8)
   const [adjustingChallan, setAdjustingChallan] = useState<Challan | null>(null);
@@ -240,18 +241,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   // Administrative triggers
   const triggerDelete = (c: Challan) => {
-    const masterName = getMasterName(c.master_id, c);
-    const confirmDelete = window.confirm(
-      `PERMANENTLY DELETE CHALLAN?\n\nChallan Number: ${c.challan_no}\nMaster Maker: ${masterName}\n\nWarning: This action will completely purge the challan document and items from Firestore/IndexedDB. Stocks are not automatically restored. This operation is non-reversible.`
-    );
-    if (confirmDelete) {
-      try {
-        db.permanentlyDeleteChallan(c.id);
-        setAlertMsg({ text: `Challan ${c.challan_no} permanently purged successfully.` });
-        loadDashboardData();
-      } catch (err: any) {
-        setAlertMsg({ text: err.message || 'Purge action failed', isError: true });
-      }
+    setDeletingChallan(c);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deletingChallan) return;
+    try {
+      db.permanentlyDeleteChallan(deletingChallan.id);
+      setAlertMsg({ text: `Challan ${deletingChallan.challan_no} permanently purged successfully.` });
+      setDeletingChallan(null);
+      loadDashboardData();
+    } catch (err: any) {
+      setAlertMsg({ text: err.message || 'Purge action failed', isError: true });
+      setDeletingChallan(null);
     }
   };
 
@@ -700,7 +702,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
  
                                 {/* Admin Exclusive Controls */}
                                 {currentUser.role === 'admin' && (
-                                  <>
+                                  <div className="flex items-center gap-1.5">
                                     {c.status === 'billed' ? (
                                       <div 
                                         className="flex items-center gap-1 text-[10px] text-slate-450 bg-slate-50 border border-slate-150 rounded px-1.5 py-0.5 select-none"
@@ -720,13 +722,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                             >
                                               <Edit className="w-3.5 h-3.5" />
                                             </button>
-                                            <button
-                                              onClick={() => triggerVoid(c)}
-                                              title="Void & Reverse Challan stocks"
-                                              className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
-                                            >
-                                              <Ban className="w-3.5 h-3.5" />
-                                            </button>
+                                            {isKunalUser && (
+                                              <button
+                                                onClick={() => triggerVoid(c)}
+                                                title="Void & Reverse Challan stocks"
+                                                className="p-1 hover:bg-amber-50 text-amber-600 border border-transparent hover:border-amber-200 rounded transition cursor-pointer flex items-center justify-center"
+                                              >
+                                                <Ban className="w-3.5 h-3.5" />
+                                              </button>
+                                            )}
                                           </>
                                         )}
                                         {c.status === 'voided' && isKunalUser && (
@@ -741,7 +745,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                         )}
                                       </>
                                     )}
-                                  </>
+
+                                    {/* Backdated deletion for Kunal ID */}
+                                    {((c.backdated === true) || (c.issued_date && c.issued_date < new Date().toISOString().split('T')[0])) && isKunalUser && (
+                                      <button
+                                        onClick={() => triggerDelete(c)}
+                                        title="[Developer Only] Permanently Delete Backdated Challan"
+                                        className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5 shadow-sm"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5 text-rose-600 font-bold" />
+                                        <span className="text-[9.5px] font-bold ml-1 text-rose-600">DELETE BACKDATED</span>
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </td>
@@ -1232,6 +1248,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 className="text-xs font-bold bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white disabled:opacity-50 disabled:cursor-not-allowed transition py-2 px-4.5 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 <Check className="w-4 h-4" /> Save Corrections
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- PERMANENT PURGE / DELETION MODAL --- */}
+      {deletingChallan && (
+        <div className="fixed inset-0 bg-slate-900/65 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-xl shadow-xl border border-rose-100 max-w-md w-full overflow-hidden">
+            <div className="bg-rose-50 border-b border-rose-100 px-5 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+                <h3 className="text-xs font-bold text-rose-900 tracking-wider uppercase">PERMANENTLY PURGE CHALLAN</h3>
+              </div>
+              <button 
+                onClick={() => setDeletingChallan(null)} 
+                className="text-slate-400 hover:text-slate-700 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="p-5 space-y-4">
+              <div className="text-xs font-semibold text-slate-600 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100">
+                <p>Challan Number: <span className="font-bold text-slate-900">{deletingChallan.challan_no}</span></p>
+                <p>Stitching Master: <span className="font-bold text-slate-900">{getMasterName(deletingChallan.master_id, deletingChallan)}</span></p>
+                <p>Issue Date: <span className="font-bold text-slate-900">{deletingChallan.issued_date.split('-').reverse().join('/')}</span></p>
+                <p>Status: <span className="font-bold text-rose-600 uppercase">{deletingChallan.status}</span></p>
+              </div>
+
+              <div className="p-3 bg-rose-50 border border-rose-200/50 rounded-lg text-rose-850 text-xs leading-relaxed space-y-1.5">
+                <p className="font-bold text-rose-950 flex items-center gap-1.5">
+                  ⚠️ WARNING: CRITICAL ACTION
+                </p>
+                <p>
+                  This action will <strong>completely purge</strong> the challan document and all of its items from Firestore and the central cloud database permanently.
+                </p>
+                <p>
+                  This is non-reversible. Materials stocks are not automatically restored when deleting.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 px-5 py-3.5 flex gap-2 justify-end border-t border-slate-200/50">
+              <button
+                onClick={() => setDeletingChallan(null)}
+                className="text-xs font-bold text-slate-600 hover:text-slate-900 transition py-2 px-3.5 rounded-lg border border-slate-200 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition py-2 px-4.5 rounded-lg flex items-center gap-1 cursor-pointer shadow-sm"
+              >
+                <Check className="w-4 h-4" /> Yes, Permanently Delete
               </button>
             </div>
           </div>

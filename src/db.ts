@@ -871,9 +871,9 @@ class DatabaseService {
 
           // Only sync if there are active cloud records to avoid empty-source overwrites initially
           if (snapshot.size > 0) {
-            if (collName === 'masters') {
+            if (collName === 'masters' || collName === 'challans' || collName === 'challan_items') {
               // 1. Single source of truth: replace entirely with snapshot results, do not merge or append
-              this.save('masters', remoteRecords);
+              this.save(collName, remoteRecords);
               window.dispatchEvent(new Event('db_sync'));
               return;
             }
@@ -1708,8 +1708,6 @@ class DatabaseService {
       }
     };
 
-    challanList.push(newChallan);
-
     // Save line items and adjust stock
     const savedChallanItems: ChallanItem[] = [];
     const modifiedMaterials: Material[] = [];
@@ -1725,10 +1723,9 @@ class DatabaseService {
         amount: amount,
         created_at: new Date().toISOString()
       };
-      allItemsList.push(challanItem);
       savedChallanItems.push(challanItem);
 
-      // Decrement stock in materials
+      // Decrement stock locally in temporary structures
       const matIndex = materialsList.findIndex(m => m.id === item.material_id);
       if (matIndex > -1) {
         const nextStock = materialsList[matIndex].current_stock - item.qty;
@@ -1737,127 +1734,283 @@ class DatabaseService {
       }
     });
 
+    // Enforce Firestore Cloud Sync writes and re-read verification (Single Source of Truth)
+    if (!this.isFirebaseInitialized) {
+      throw new Error("Challan was not synced to cloud. Please retry.");
+    }
+
+    try {
+      const batch = writeBatch(firestore);
+      
+      // Write Challan
+      batch.set(doc(firestore, 'challans', newChallan.id), this.enrichPayload(newChallan));
+
+      // Write Challan Items
+      savedChallanItems.forEach(item => {
+        batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
+      });
+
+      // Write Modified Stocks automatically using server-side increment to prevent concurrent-write bugs
+      items.forEach(item => {
+        const enrichUpdate = this.enrichPayload({});
+        batch.update(doc(firestore, 'materials', item.material_id), {
+          current_stock: increment(-item.qty),
+          ...enrichUpdate
+        });
+      });
+
+      // Submit write batch to cloud
+      await this.performCloudWrite(() => batch.commit())
+        .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
+
+      // Post-save verification: Re-read saved challan from Firestore
+      const reReadSnap = await getDoc(doc(firestore, 'challans', newChallan.id));
+      if (!reReadSnap.exists()) {
+        throw new Error("Challan was not synced to cloud. Please retry.");
+      }
+    } catch (err) {
+      console.error('Firestore batch write or re-read verification failed:', err);
+      throw new Error("Challan was not synced to cloud. Please retry.");
+    }
+
+    // Now that Firestore write and re-read both succeeded, we let our real-time snapshot listeners
+    // automatically sync the new records down and update the local cache as the single source of truth.
+    // We explicitly DO NOT manually write the generated challan, items, or updated material stocks directly to local storage here.
+
     const masterName = masterSnapshotData.name || 'Unknown Master';
-    
     if (isBackdated) {
-      // Create specialized audit log
       const auditDetails = `challanNo: ${newChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${newChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${newChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
       this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
     } else {
       this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${newChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
     }
 
-    this.save('challans', challanList);
-    this.save('challan_items', allItemsList);
-    this.save('materials', materialsList);
-
-    // Multi-write Firestore Transaction Batch equivalent
-    if (this.isFirebaseInitialized) {
-      try {
-        const batch = writeBatch(firestore);
-        
-        // Write Challan
-        batch.set(doc(firestore, 'challans', newChallan.id), this.enrichPayload(newChallan));
-
-        // Write Challan Items
-        savedChallanItems.forEach(item => {
-          batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
-        });
-
-        // Write Modified Stocks atomatically using server-side increment to prevent concurrent-write bugs
-        items.forEach(item => {
-          const enrichUpdate = this.enrichPayload({});
-          batch.update(doc(firestore, 'materials', item.material_id), {
-            current_stock: increment(-item.qty),
-            ...enrichUpdate
-          });
-        });
-
-        await this.performCloudWrite(() => batch.commit())
-          .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_batch/${newChallan.id}`));
-      } catch (err) {
-        console.warn('Batch cloud write failed, logged fallback.', err);
-      }
-    }
+    // Trigger local events to refresh active UI screens immediately
+    window.dispatchEvent(new Event('db_sync'));
 
     return newChallan;
   }
 
   async runDataRepair(): Promise<void> {
+    // 1. Existing SG Master repair logic
     const isRepaired = localStorage.getItem('hf_challans_repaired_sg_v2') === 'true';
-    if (isRepaired) return;
+    if (!isRepaired) {
+      // Delay briefly to allow Firestore listeners to sync initial collections
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Delay briefly to allow Firestore listeners to sync initial collections
-    await new Promise(resolve => setTimeout(resolve, 3000));
+      const masters = this.getMasters();
+      const sgMaster = masters.find(m => m.name === 'SG');
+      if (sgMaster) {
+        const challans = this.getChallans();
+        const targetNos = ['HF-BD-0006', 'HF-BD-0005', 'HF-BD-0003'];
+        const toRepair = challans.filter(c => targetNos.includes(c.challan_no));
 
-    const masters = this.getMasters();
-    const sgMaster = masters.find(m => m.name === 'SG');
-    if (!sgMaster) {
-      console.warn("SG master not found during repair process.");
-      return;
-    }
+        if (toRepair.length > 0) {
+          let updatedAny = false;
+          for (const c of toRepair) {
+            if (c.masterDisplayName === 'SG' && c.master_id === sgMaster.id) {
+              continue;
+            }
 
-    const challans = this.getChallans();
-    const targetNos = ['HF-BD-0006', 'HF-BD-0005', 'HF-BD-0003'];
-    const toRepair = challans.filter(c => targetNos.includes(c.challan_no));
+            console.log(`Repairing backdated challan ${c.challan_no}: setting master to SG master (snapshot + masterId).`);
+            
+            c.master_id = sgMaster.id;
+            c.masterId = sgMaster.id;
+            c.masterName = sgMaster.name;
+            c.masterCode = sgMaster.code;
+            c.masterType = sgMaster.type;
+            c.masterDisplayName = sgMaster.name;
+            c.masterSnapshot = {
+              id: sgMaster.id,
+              name: sgMaster.name,
+              code: sgMaster.code,
+              type: sgMaster.type,
+              activeStatus: sgMaster.is_active
+            };
 
-    if (toRepair.length === 0) {
-      return;
-    }
+            updatedAny = true;
+          }
 
-    let updatedAny = false;
-    for (const c of toRepair) {
-      if (c.masterDisplayName === 'SG' && c.master_id === sgMaster.id) {
-        continue;
+          if (updatedAny) {
+            this.save('challans', challans);
+
+            if (this.isFirebaseInitialized) {
+              try {
+                const batch = writeBatch(firestore);
+                for (const c of toRepair) {
+                  batch.update(doc(firestore, 'challans', c.id), {
+                    master_id: sgMaster.id,
+                    masterId: sgMaster.id,
+                    masterName: sgMaster.name,
+                    masterCode: sgMaster.code,
+                    masterType: sgMaster.type,
+                    masterDisplayName: sgMaster.name,
+                    masterSnapshot: c.masterSnapshot,
+                    ...this.enrichPayload({})
+                  });
+                }
+                await this.performCloudWrite(() => batch.commit());
+                console.log("[Repair] Firestore update committed successfully for target challans.");
+              } catch (err) {
+                console.error("[Repair] Cloud write failed, local updated.", err);
+              }
+            }
+            window.dispatchEvent(new Event('db_sync'));
+          }
+        }
       }
-
-      console.log(`Repairing backdated challan ${c.challan_no}: setting master to SG master (snapshot + masterId).`);
-      
-      c.master_id = sgMaster.id;
-      c.masterId = sgMaster.id;
-      c.masterName = sgMaster.name;
-      c.masterCode = sgMaster.code;
-      c.masterType = sgMaster.type;
-      c.masterDisplayName = sgMaster.name;
-      c.masterSnapshot = {
-        id: sgMaster.id,
-        name: sgMaster.name,
-        code: sgMaster.code,
-        type: sgMaster.type,
-        activeStatus: sgMaster.is_active
-      };
-
-      updatedAny = true;
+      localStorage.setItem('hf_challans_repaired_sg_v2', 'true');
     }
 
-    if (updatedAny) {
-      this.save('challans', challans);
+    // 2. Custom repair for Sagir Master's backdated challan HF-BD-0015
+    try {
+      await this.repairSagirChallan();
+    } catch (e) {
+      console.error("[Repair] Error running Sagir Master HF-BD-0015 check & repair:", e);
+    }
+  }
+
+  private async repairSagirChallan(): Promise<void> {
+    const KEY_REPAIRED = 'hf_challan_hf_bd_0015_repaired_v3';
+    if (localStorage.getItem(KEY_REPAIRED) === 'true') {
+      return;
+    }
+
+    console.log("[Repair] Running Sagir Master HF-BD-0015 check & repair...");
+
+    // Find if the challan exists in any local/sandbox cache
+    let existingChallan: any = null;
+    const localChallansRaw = localStorage.getItem('hf_challans');
+    const sandboxChallansRaw = localStorage.getItem('sandbox_kunal_challans');
+
+    if (localChallansRaw) {
+      try {
+        const list = JSON.parse(localChallansRaw);
+        existingChallan = list.find((c: any) => c.challan_no === 'HF-BD-0015' || c.challanNo === 'HF-BD-0015');
+      } catch (_) {}
+    }
+
+    if (!existingChallan && sandboxChallansRaw) {
+      try {
+        const list = JSON.parse(sandboxChallansRaw);
+        existingChallan = list.find((c: any) => c.challan_no === 'HF-BD-0015' || c.challanNo === 'HF-BD-0015');
+      } catch (_) {}
+    }
+
+    // Find or create SAGIR MASTER
+    let sagirMaster = this.getMasters().find(m => m.name.toUpperCase() === 'SAGIR MASTER');
+    if (!sagirMaster) {
+      console.log("[Repair] Creating missing SAGIR MASTER entry...");
+      const newSagir: Master = {
+        id: 'sagir-master-repaired-id',
+        name: 'SAGIR MASTER',
+        code: 'SGR',
+        type: 'jacket',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
+      
+      const currentMasters = this.getMasters();
+      currentMasters.push(newSagir);
+      this.save('masters', currentMasters);
 
       if (this.isFirebaseInitialized) {
         try {
-          const batch = writeBatch(firestore);
-          for (const c of toRepair) {
-            batch.update(doc(firestore, 'challans', c.id), {
-              master_id: sgMaster.id,
-              masterId: sgMaster.id,
-              masterName: sgMaster.name,
-              masterCode: sgMaster.code,
-              masterType: sgMaster.type,
-              masterDisplayName: sgMaster.name,
-              masterSnapshot: c.masterSnapshot,
-              ...this.enrichPayload({})
-            });
-          }
-          await this.performCloudWrite(() => batch.commit());
-          console.log("[Repair] Firestore update committed successfully for target challans.");
+          // Write directly to both live and sandbox collections to guarantee its existence
+          await setDoc(firestoreDoc(firestore, 'masters', newSagir.id), this.enrichPayload(newSagir));
+          await setDoc(firestoreDoc(firestore, 'sandbox_kunal_masters', newSagir.id), this.enrichPayload(newSagir));
         } catch (err) {
-          console.error("[Repair] Cloud write failed, local updated.", err);
+          console.warn("[Repair] Could not save SAGIR MASTER to firestore, continuing.", err);
         }
       }
-      window.dispatchEvent(new Event('db_sync'));
+      sagirMaster = newSagir;
     }
 
-    localStorage.setItem('hf_challans_repaired_sg_v2', 'true');
+    const challanId = existingChallan?.id || 'hf-bd-0015-repaired-uuid-sagir';
+    
+    // Construct robust repaired challan object conforming to schema and requirement
+    const repairedChallan: any = {
+      id: challanId,
+      challan_no: 'HF-BD-0015',
+      challanNo: 'HF-BD-0015',
+      issued_date: '2026-06-23',
+      challanDate: '2026-06-23',
+      created_at: existingChallan?.created_at || new Date().toISOString(),
+      createdAt: existingChallan?.createdAt || new Date().toISOString(),
+      createdBy: 'Sundar',
+      status: 'issued',
+      notes: existingChallan?.notes || 'Repaired missing backdated challan',
+      backdated: true,
+      isBackdated: true,
+      backdatedBy: 'Sundar',
+      backdatedReason: existingChallan?.backdatedReason || 'System data migration repair',
+      originalCreatedMonth: '2026-07',
+      challanMonth: 6,
+      challanYear: 2026,
+      master_id: sagirMaster.id,
+      masterId: sagirMaster.id,
+      masterName: 'SAGIR MASTER',
+      masterCode: sagirMaster.code,
+      masterType: sagirMaster.type,
+      masterDisplayName: 'SAGIR MASTER',
+      masterSnapshot: {
+        id: sagirMaster.id,
+        name: 'SAGIR MASTER',
+        code: sagirMaster.code,
+        type: sagirMaster.type,
+        activeStatus: true
+      }
+    };
+
+    // Save to production Firestore directly (Bypassing sandbox collection name prefix routing)
+    if (this.isFirebaseInitialized) {
+      try {
+        const prodDocRef = firestoreDoc(firestore, 'challans', challanId);
+        await setDoc(prodDocRef, this.enrichPayload(repairedChallan));
+        console.log("[Repair] HF-BD-0015 successfully written/copied to production Firestore.");
+
+        // Write custom audit log as explicitly specified in Requirement 8
+        const auditLogId = 'audit_repair_hf_bd_0015_' + Date.now();
+        const auditLog: AuditLog = {
+          id: auditLogId,
+          user_email: 'system-repair@harryfashion.com',
+          action: 'REPAIRED_MISSING_CLOUD_CHALLAN',
+          details: `challanNo: HF-BD-0015, masterName: SAGIR MASTER, repairedBy: Sundar, repairedAt: ${new Date().toISOString()}`,
+          created_at: new Date().toISOString()
+        };
+        await setDoc(firestoreDoc(firestore, 'audit_logs', auditLogId), this.enrichPayload(auditLog));
+        this.addAuditLog('system-repair@harryfashion.com', 'REPAIRED_MISSING_CLOUD_CHALLAN', `challanNo: HF-BD-0015, masterName: SAGIR MASTER, repairedBy: Sundar, repairedAt: ${new Date().toISOString()}`);
+        console.log("[Repair] Repair audit log saved successfully to cloud.");
+      } catch (err) {
+        console.error("[Repair] Failed to write HF-BD-0015 or audit log to production Firestore:", err);
+      }
+    }
+
+    // Always ensure it exists in the local prod 'hf_challans' list
+    const prodChallans = this.load<any[]>('challans', []);
+    const existsInProdIdx = prodChallans.findIndex((c: any) => c.challan_no === 'HF-BD-0015');
+    if (existsInProdIdx > -1) {
+      prodChallans[existsInProdIdx] = repairedChallan;
+    } else {
+      prodChallans.push(repairedChallan);
+    }
+    localStorage.setItem('hf_challans', JSON.stringify(prodChallans));
+
+    // Also write it to the sandbox local storage key to make sure they are equal
+    const sandboxChallans = this.load<any[]>('sandbox_kunal_challans', []);
+    const existsInSandboxIdx = sandboxChallans.findIndex((c: any) => c.challan_no === 'HF-BD-0015');
+    if (existsInSandboxIdx > -1) {
+      sandboxChallans[existsInSandboxIdx] = repairedChallan;
+    } else {
+      sandboxChallans.push(repairedChallan);
+    }
+    localStorage.setItem('sandbox_kunal_challans', JSON.stringify(sandboxChallans));
+
+    // Trigger local sync refresh
+    window.dispatchEvent(new Event('db_sync'));
+
+    localStorage.setItem(KEY_REPAIRED, 'true');
+    console.log("[Repair] Sagir Master HF-BD-0015 repair process completed successfully.");
   }
 
   deleteChallan(challanId: string): void {
@@ -1883,7 +2036,10 @@ class DatabaseService {
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        throw new Error('Completed/Billed challans cannot be deleted');
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        if (!(isKunal && isBackdated)) {
+          throw new Error('Completed/Billed challans cannot be deleted');
+        }
       }
 
       const deletedItems = allItemsList.filter(item => item.challan_id === challanId);
@@ -1959,7 +2115,10 @@ class DatabaseService {
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        throw new Error('Completed/Billed challans cannot be deleted unless the bill is first reversed');
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        if (!(isKunal && isBackdated)) {
+          throw new Error('Completed/Billed challans cannot be deleted unless the bill is first reversed');
+        }
       }
       const masterObj = mastersList.find(m => m.id === challan.master_id);
       const masterName = masterObj ? masterObj.name : 'Unknown';
@@ -1997,11 +2156,27 @@ class DatabaseService {
     const currentUser = this.getCurrentUser();
     const mastersList = this.getMasters();
 
+    // Verify only Kunal is authorized to void challans
+    const email = currentUser?.email || '';
+    const name = currentUser?.displayName || currentUser?.name || '';
+    const username = currentUser?.username || '';
+    const isKunal = 
+      email.toLowerCase().includes('kunal') || 
+      email.toLowerCase() === 'k64561148@gmail.com' ||
+      name.toLowerCase().includes('kunal') || 
+      username.toLowerCase().includes('kunal');
+    if (!isKunal) {
+      throw new Error("Unauthorized: Only Kunal (the developer) is allowed to void challans.");
+    }
+
     const idx = challanList.findIndex(c => c.id === challanId);
     if (idx > -1) {
       const challan = challanList[idx];
       if (challan.status === 'billed') {
-        throw new Error('Completed/Billed challans cannot be voided');
+        const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < new Date().toISOString().split('T')[0]);
+        if (!(isKunal && isBackdated)) {
+          throw new Error('Completed/Billed challans cannot be voided');
+        }
       }
       if (challan.status === ('voided' as any)) {
         throw new Error('Challan is already voided');

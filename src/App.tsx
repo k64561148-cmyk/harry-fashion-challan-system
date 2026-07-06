@@ -690,16 +690,74 @@ export default function App() {
 
           </div>
 
-          {/* Bottom Activity Bar */}
-          <footer className="h-10 bg-white border-t border-slate-200 flex items-center px-8 justify-between text-[10px] text-slate-400 font-medium uppercase tracking-tight select-none shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-              <span className="text-slate-500 font-semibold">System Online: Live Sandbox Connected</span>
+          {/* Bottom Activity Bar with rich live diagnostics */}
+          <footer className="bg-white border-t border-slate-200 p-4 px-6 md:px-8 text-[10px] text-slate-500 font-sans tracking-tight shrink-0 select-text">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+              
+              {/* Left Column: Cloud Connection & Warnings */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1.5 font-medium">
+                  <span className={`w-2 h-2 rounded-full animate-pulse ${cloudHealth.syncFailed ? 'bg-red-500' : 'bg-green-500'}`}></span>
+                  <span className="text-slate-700 font-semibold uppercase tracking-wider text-[9px]">
+                    {cloudHealth.syncFailed ? 'Sync Status: DEGRADED' : 'Sync Status: HEALTHY'}
+                  </span>
+                </div>
+                {isSandboxActive && (
+                  <span className="bg-red-600 text-white font-bold px-2 py-0.5 rounded uppercase tracking-wider animate-pulse text-[8px]">
+                    Environment Mismatch: Sandbox Active
+                  </span>
+                )}
+              </div>
+
+              {/* Right Column / Center: Structured Info */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-x-6 gap-y-2 text-slate-400 font-mono text-[9px] uppercase">
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Firebase Project ID:</span>
+                  <span className="text-slate-600 truncate block max-w-[150px]" title="ai-studio-8cf63be5-8c2c-4ac4-9bc5-3f05fd20bdfb">
+                    ai-studio-8cf63be5-8c2c-4ac4-9bc5-3f05fd20bdfb
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Environment:</span>
+                  <span className={`font-black block ${isSandboxActive ? 'text-red-600' : 'text-emerald-600'}`}>
+                    {isSandboxActive ? 'SANDBOX (PLAYGROUND)' : 'PRODUCTION (LIVE)'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Challans Path:</span>
+                  <span className="text-slate-600 font-bold block">
+                    {isSandboxActive ? 'sandbox_kunal_challans' : 'challans'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Device ID:</span>
+                  <span className="text-slate-600 block truncate max-w-[120px]" title={cloudHealth.deviceId || 'Unknown'}>
+                    {cloudHealth.deviceId || 'Unknown'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Last Cloud Write:</span>
+                  <span className="text-slate-600 block">
+                    {cloudHealth.lastSuccessfulWrite ? new Date(cloudHealth.lastSuccessfulWrite).toLocaleTimeString('en-IN') : 'N/A'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block text-[8px] tracking-wider">Last Cloud Read:</span>
+                  <span className="text-slate-600 block">
+                    {cloudHealth.lastRead ? new Date(cloudHealth.lastRead).toLocaleTimeString('en-IN') : 'N/A'}
+                  </span>
+                </div>
+              </div>
+
             </div>
-            <div className="flex gap-4">
-              <span>Server Local Clock Synchronized</span>
-              <span>Regional Node: AP-SOUTH-1</span>
-            </div>
+
+            {/* Environment Mismatch warning if Sandbox Mode is ON */}
+            {isSandboxActive && (
+              <div className="mt-2.5 bg-red-50 border border-red-200 text-red-700 px-3.5 py-2 rounded-lg flex items-center gap-2 font-semibold text-[10px] shadow-sm">
+                <span className="text-red-500 text-xs animate-bounce">⚠️</span>
+                <span>Environment mismatch. This device is not connected to production data.</span>
+              </div>
+            )}
           </footer>
 
         </main>
