@@ -1669,33 +1669,50 @@ class DatabaseService {
       const masterRef = doc(firestore, 'masters', masterId);
       const challanId = generateUUID();
       const challanRef = doc(firestore, 'challans', challanId);
+      const auditId = generateUUID();
+      const auditRef = doc(firestore, 'audit_logs', auditId);
 
       let masterSnapshotData: any = null;
       let generatedChallanNo = '';
       const savedChallanItems: ChallanItem[] = [];
 
+      const uid = auth.currentUser?.uid || currentUser.uid || 'guest-01';
+      const profileRef = doc(firestore, 'profiles', uid);
+      const counterRef = doc(firestore, 'counters', 'challan_backdated');
+      const materialRefs = items.map((item) => doc(firestore, 'materials', item.material_id));
+
       // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION
       await runTransaction(firestore, async (transaction) => {
         // --- 1. ALL READS FIRST ---
-        // Read Master document from server
+        // Read Profile document
+        const profileSnap = await transaction.get(profileRef);
+
+        // Read Master document
         const masterSnap = await transaction.get(masterRef);
 
-        // Read Backdated Counter if applicable
-        const counterRef = doc(firestore, 'counters', 'challan_backdated');
-        let counterSnap: any = null;
-        if (isBackdated) {
-          counterSnap = await transaction.get(counterRef);
-        }
+        // Read Backdated Counter
+        const counterSnap = await transaction.get(counterRef);
 
         // Read all Material documents
-        const matSnapsMap = new Map<string, any>();
-        for (const item of items) {
-          const matRef = doc(firestore, 'materials', item.material_id);
+        const materialSnaps = [];
+        for (const matRef of materialRefs) {
           const matSnap = await transaction.get(matRef);
-          matSnapsMap.set(item.material_id, matSnap);
+          materialSnaps.push(matSnap);
         }
 
         // --- 2. VALIDATIONS AND COMPUTATIONS AFTER ALL READS ---
+        const profile = profileSnap.data();
+        const username = (profile?.username || '').trim().toLowerCase();
+
+        if (isBackdated) {
+          if (!profile || username !== "kunal3012") {
+            throw new Error("Backdated challan is allowed only for Kunal ID.");
+          }
+          if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
+            throw new Error("Reason is required for backdated challan.");
+          }
+        }
+
         if (!masterSnap.exists()) {
           throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
         }
@@ -1704,14 +1721,24 @@ class DatabaseService {
           throw new Error("Invalid Master selected. Please choose a valid active master.");
         }
 
-        let nextNum = 1;
-        if (isBackdated) {
-          if (counterSnap && counterSnap.exists()) {
-            const data = counterSnap.data();
-            if (data && typeof data.nextNumber === 'number') {
-              nextNum = data.nextNumber;
-            }
+        const matSnapsMap = new Map<string, any>();
+        materialSnaps.forEach((snap, idx) => {
+          const item = items[idx];
+          if (!snap.exists()) {
+            throw new Error("Selected material is not synced to cloud. Refresh and select again.");
           }
+          matSnapsMap.set(item.material_id, snap);
+        });
+
+        let nextNum = 1;
+        if (counterSnap.exists()) {
+          const data = counterSnap.data();
+          if (data && typeof data.nextNumber === 'number') {
+            nextNum = data.nextNumber;
+          }
+        }
+
+        if (isBackdated) {
           generatedChallanNo = `HF-BD-${String(nextNum).padStart(4, '0')}`;
         } else {
           generatedChallanNo = challan.challan_no || this.getNextChallanNo(false);
@@ -1722,9 +1749,6 @@ class DatabaseService {
 
         for (const item of items) {
           const matSnap = matSnapsMap.get(item.material_id);
-          if (!matSnap || !matSnap.exists()) {
-            throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
-          }
           const matData = matSnap.data() as Material;
           if (!matData || matData.is_active === false) {
             throw new Error(`Material is inactive and cannot be issued.`);
@@ -1791,6 +1815,28 @@ class DatabaseService {
           deviceId: this.getDeviceId()
         };
 
+        // Construct Audit Log payload
+        const masterName = masterSnapshotData.name || 'Unknown Master';
+        let auditPayload: AuditLog;
+        if (isBackdated) {
+          const auditDetails = `challanNo: ${generatedChallanNo}, challanDate: ${challanDate}, createdAt: ${finalChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${challan.backdatedReason?.trim()}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
+          auditPayload = {
+            id: auditId,
+            user_email: currentUser.email,
+            action: 'BACKDATED_CHALLAN_CREATED',
+            details: auditDetails,
+            created_at: new Date().toISOString()
+          };
+        } else {
+          auditPayload = {
+            id: auditId,
+            user_email: currentUser.email,
+            action: 'Challan Issued',
+            details: `Issued Challan ${generatedChallanNo} to Master ${masterName} containing ${items.length} items`,
+            created_at: new Date().toISOString()
+          };
+        }
+
         // --- 3. ALL WRITES AFTER ALL READS ---
         if (isBackdated) {
           // Use transaction.set with merge: true for the counter doc in case it does not exist yet
@@ -1815,6 +1861,9 @@ class DatabaseService {
             ...enrichUpdate
           });
         });
+
+        // Set Audit Log Doc
+        transaction.set(auditRef, this.enrichPayload(auditPayload));
       });
 
       // ---- POST-COMMIT VERIFICATION AND RE-READS ----
@@ -1832,14 +1881,20 @@ class DatabaseService {
         }
       }
 
-      // Write Audit log
-      const masterName = masterSnapshotData.name || 'Unknown Master';
-      if (isBackdated) {
-        const auditDetails = `challanNo: ${verifiedChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${verifiedChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${verifiedChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
-        this.addAuditLog(currentUser.email, 'BACKDATED_CHALLAN_CREATED', auditDetails);
-      } else {
-        this.addAuditLog(currentUser.email, 'Challan Issued', `Issued Challan ${verifiedChallan.challan_no} to Master ${masterName} containing ${items.length} items`);
-      }
+      // Maintain last 1000 logs in local cache as well
+      const localLogs = this.load<AuditLog[]>('audit_logs', []);
+      const masterNameVal = masterSnapshotData?.name || 'Unknown Master';
+      const auditPayloadLocal: AuditLog = {
+        id: auditId,
+        user_email: currentUser.email,
+        action: isBackdated ? 'BACKDATED_CHALLAN_CREATED' : 'Challan Issued',
+        details: isBackdated
+          ? `challanNo: ${verifiedChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${verifiedChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${verifiedChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`
+          : `Issued Challan ${verifiedChallan.challan_no} to Master ${masterNameVal} containing ${items.length} items`,
+        created_at: new Date().toISOString()
+      };
+      localLogs.unshift(auditPayloadLocal);
+      this.save('audit_logs', localLogs.slice(0, 1000));
 
       // Trigger local events to refresh active UI screens immediately
       window.dispatchEvent(new Event('db_sync'));
