@@ -111,7 +111,8 @@ service cloud.firestore {
         && data.code is string && data.code.size() >= 1 && data.code.size() <= 20
         && data.type is string && (data.type == 'jacket' || data.type == 'pant')
         && data.is_active is bool
-        && data.created_at is string;
+        && data.created_at is string
+        && (!data.keys().hasAny(['pan_accounts']) || data.pan_accounts is list);
     }
 
     function isValidMaterial(data) {
@@ -172,7 +173,16 @@ service cloud.firestore {
         && (data.material_deduction is int || data.material_deduction is float)
         && (data.net_payable is int || data.net_payable is float)
         && data.status is string && (data.status == 'draft' || data.status == 'finalised')
-        && data.created_at is string;
+        && data.created_at is string
+        && (!data.keys().hasAny(['selected_pan_no']) || data.selected_pan_no is string)
+        && (!data.keys().hasAny(['selected_pan_name']) || data.selected_pan_name is string)
+        && (!data.keys().hasAny(['selected_bank_name']) || data.selected_bank_name is string)
+        && (!data.keys().hasAny(['selected_account_no']) || data.selected_account_no is string)
+        && (!data.keys().hasAny(['selected_ifsc_code']) || data.selected_ifsc_code is string)
+        && (!data.keys().hasAny(['selected_branch_name']) || data.selected_branch_name is string)
+        && (!data.keys().hasAny(['selected_pan_account_id']) || data.selected_pan_account_id is string)
+        && (!data.keys().hasAny(['selected_payment_label']) || data.selected_payment_label is string)
+        && (!data.keys().hasAny(['paymentProfileSnapshot']) || data.paymentProfileSnapshot is map);
     }
 
     function isValidStockCorrection(data) {

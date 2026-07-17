@@ -126,12 +126,15 @@ export const SettingsView: React.FC = () => {
 
   // Multiple PAN and bank details management state
   const [panAccounts, setPanAccounts] = useState<MasterPanAccount[]>([]);
+  const [tempLabel, setTempLabel] = useState<string>('');
   const [tempPanName, setTempPanName] = useState<string>('');
   const [tempPanNo, setTempPanNo] = useState<string>('');
   const [tempBankName, setTempBankName] = useState<string>('');
   const [tempAccountNo, setTempAccountNo] = useState<string>('');
   const [tempIfscCode, setTempIfscCode] = useState<string>('');
   const [tempBranchName, setTempBranchName] = useState<string>('');
+  const [tempIsDefault, setTempIsDefault] = useState<boolean>(false);
+  const [tempIsActive, setTempIsActive] = useState<boolean>(true);
   const [editingPanId, setEditingPanId] = useState<string | null>(null);
 
   // Form states: Materials
@@ -701,6 +704,17 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  const logPanProfileAudit = (actionType: string, panId: string, panName: string, panNo: string) => {
+    const maskPan = (no: string) => {
+      const clean = (no || '').trim();
+      return clean.length > 4 ? '*'.repeat(clean.length - 4) + clean.slice(-4) : clean;
+    };
+    const mId = editingMasterId || 'draft_master_id';
+    const mName = masterName.trim() || 'Draft Stitching Master';
+    const auditDetails = `masterId: ${mId}, masterName: ${mName}, panAccountId: ${panId}, panName: ${panName}, panNo: ${maskPan(panNo)}, changedBy: ${currentUser?.email || 'system'}, changedAt: ${new Date().toISOString()}`;
+    db.addAuditLog(currentUser?.email || 'system', actionType, auditDetails);
+  };
+
   const handleAddOrUpdatePanDetail = () => {
     if (!tempPanName.trim() || !tempPanNo.trim() || !tempBankName.trim() || !tempAccountNo.trim() || !tempIfscCode.trim()) {
       showFeedback('PAN Holder Name, PAN No, Bank Name, Account No and IFSC Code are all required', true);
@@ -709,64 +723,119 @@ export const SettingsView: React.FC = () => {
 
     const panNoClean = tempPanNo.trim().toUpperCase();
     const ifscClean = tempIfscCode.trim().toUpperCase();
+    const accountNoClean = tempAccountNo.trim();
+    const labelClean = tempLabel.trim();
+    const branchClean = tempBranchName.trim();
 
+    // Prevent duplicate PAN + account_no under the same master
+    const isDuplicate = panAccounts.some(p => {
+      if (editingPanId && p.id === editingPanId) return false;
+      return p.pan_no.toUpperCase() === panNoClean && p.account_no === accountNoClean;
+    });
+
+    if (isDuplicate) {
+      showFeedback('Duplicate PAN and Account Number is not allowed under the same master.', true);
+      return;
+    }
+
+    let panId = editingPanId;
     if (editingPanId) {
       // Update
-      setPanAccounts(prev => prev.map(p => p.id === editingPanId ? {
-        ...p,
-        pan_name: tempPanName.trim(),
-        pan_no: panNoClean,
-        bank_name: tempBankName.trim(),
-        account_no: tempAccountNo.trim(),
-        ifsc_code: ifscClean,
-        branch_name: tempBranchName.trim() || undefined
-      } : p));
+      setPanAccounts(prev => {
+        let updated = prev.map(p => p.id === editingPanId ? {
+          ...p,
+          label: labelClean || undefined,
+          pan_name: tempPanName.trim(),
+          pan_no: panNoClean,
+          bank_name: tempBankName.trim(),
+          account_no: accountNoClean,
+          ifsc_code: ifscClean,
+          branch_name: branchClean || undefined,
+          is_default: tempIsDefault,
+          is_active: tempIsActive,
+          updatedAt: new Date().toISOString()
+        } : p);
+
+        if (tempIsDefault) {
+          updated = updated.map(p => p.id === editingPanId ? p : { ...p, is_default: false });
+        }
+        return updated;
+      });
       setEditingPanId(null);
       showFeedback('PAN and bank credentials updated in current profile drafting');
+      logPanProfileAudit('PAN/bank profile edited', editingPanId, tempPanName.trim(), panNoClean);
     } else {
       // Add
+      panId = 'pan_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
       const newPan: MasterPanAccount = {
-        id: 'pan_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+        id: panId,
+        label: labelClean || undefined,
         pan_name: tempPanName.trim(),
         pan_no: panNoClean,
         bank_name: tempBankName.trim(),
-        account_no: tempAccountNo.trim(),
+        account_no: accountNoClean,
         ifsc_code: ifscClean,
-        branch_name: tempBranchName.trim() || undefined
+        branch_name: branchClean || undefined,
+        is_default: tempIsDefault,
+        is_active: tempIsActive,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       };
-      setPanAccounts(prev => [...prev, newPan]);
+
+      setPanAccounts(prev => {
+        let updated = [...prev, newPan];
+        if (tempIsDefault) {
+          updated = updated.map(p => p.id === panId ? p : { ...p, is_default: false });
+        }
+        return updated;
+      });
       showFeedback('PAN and bank credentials appended to current profile');
+      logPanProfileAudit('PAN/bank profile added', panId, tempPanName.trim(), panNoClean);
     }
 
     // Clear temp states
+    setTempLabel('');
     setTempPanName('');
     setTempPanNo('');
     setTempBankName('');
     setTempAccountNo('');
     setTempIfscCode('');
     setTempBranchName('');
+    setTempIsDefault(false);
+    setTempIsActive(true);
   };
 
   const handleEditPanDetail = (pan: MasterPanAccount) => {
+    setTempLabel(pan.label || '');
     setTempPanName(pan.pan_name || '');
     setTempPanNo(pan.pan_no);
     setTempBankName(pan.bank_name);
     setTempAccountNo(pan.account_no);
     setTempIfscCode(pan.ifsc_code);
     setTempBranchName(pan.branch_name || '');
+    setTempIsDefault(!!pan.is_default);
+    setTempIsActive(pan.is_active !== false);
     setEditingPanId(pan.id);
   };
 
   const handleDeletePanDetail = (id: string) => {
+    const target = panAccounts.find(p => p.id === id);
     setPanAccounts(prev => prev.filter(p => p.id !== id));
     showFeedback('PAN and bank credentials removed from master definition');
+    if (target) {
+      logPanProfileAudit('PAN/bank profile deactivated/deleted', id, target.pan_name, target.pan_no);
+    }
     if (editingPanId === id) {
       setEditingPanId(null);
+      setTempLabel('');
+      setTempPanName('');
       setTempPanNo('');
       setTempBankName('');
       setTempAccountNo('');
       setTempIfscCode('');
       setTempBranchName('');
+      setTempIsDefault(false);
+      setTempIsActive(true);
     }
   };
 
@@ -993,9 +1062,20 @@ export const SettingsView: React.FC = () => {
                   {panAccounts.length > 0 && (
                     <div className="border border-slate-100 rounded-lg overflow-hidden divide-y divide-slate-100 max-h-[180px] overflow-y-auto bg-slate-50">
                       {panAccounts.map(p => (
-                        <div key={p.id} className="p-2 flex justify-between items-start text-[11px] hover:bg-slate-100/50 transition">
+                        <div key={p.id} className={`p-2 flex justify-between items-start text-[11px] hover:bg-slate-100/50 transition ${!p.is_active ? 'opacity-60 bg-red-50/20' : ''}`}>
                           <div className="space-y-0.5">
-                            <p className="font-bold text-[#1A2E4A] font-mono">{p.pan_no} {p.pan_name ? `(${p.pan_name})` : ''}</p>
+                            <div className="flex items-center gap-1.5 flex-wrap mb-0.5">
+                              {p.label && (
+                                <span className="bg-slate-200 text-slate-800 text-[9px] font-bold px-1.5 py-0.25 rounded font-mono uppercase">{p.label}</span>
+                              )}
+                              <p className="font-bold text-[#1A2E4A] font-mono">{p.pan_no} {p.pan_name ? `(${p.pan_name})` : ''}</p>
+                              {p.is_default && (
+                                <span className="bg-emerald-100 text-emerald-800 text-[9px] font-bold px-1.5 py-0.25 rounded">DEFAULT</span>
+                              )}
+                              {!p.is_active && (
+                                <span className="bg-rose-100 text-rose-800 text-[9px] font-bold px-1.5 py-0.25 rounded">INACTIVE</span>
+                              )}
+                            </div>
                             <p className="text-slate-600 font-medium">{p.bank_name} - <span className="font-mono text-slate-800">{p.account_no}</span></p>
                             <p className="text-[10px] text-slate-400 font-mono">IFSC: {p.ifsc_code} {p.branch_name ? `(${p.branch_name})` : ''}</p>
                           </div>
@@ -1028,15 +1108,27 @@ export const SettingsView: React.FC = () => {
                       {editingPanId ? 'Modify PAN-Bank Association' : 'Add PAN-Bank Association'}
                     </span>
                     
-                    <div>
-                      <label className="block text-[9px] font-semibold text-slate-600">ACCOUNT / PAN HOLDER NAME *</label>
-                      <input
-                        type="text"
-                        placeholder="John Doe"
-                        className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px] font-medium"
-                        value={tempPanName}
-                        onChange={(e) => setTempPanName(e.target.value)}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-semibold text-slate-600">LABEL / NICKNAME (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Brother PAN, Main Account"
+                          className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px] font-medium"
+                          value={tempLabel}
+                          onChange={(e) => setTempLabel(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-semibold text-slate-600">ACCOUNT / PAN HOLDER NAME *</label>
+                        <input
+                          type="text"
+                          placeholder="John Doe"
+                          className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px] font-medium"
+                          value={tempPanName}
+                          onChange={(e) => setTempPanName(e.target.value)}
+                        />
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
@@ -1096,6 +1188,28 @@ export const SettingsView: React.FC = () => {
                       />
                     </div>
 
+                    <div className="flex gap-4 pt-1">
+                      <label className="flex items-center text-[10px] font-semibold text-slate-700 gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={tempIsDefault}
+                          onChange={(e) => setTempIsDefault(e.target.checked)}
+                          className="rounded text-[#1A2E4A] focus:ring-[#1A2E4A] w-3.5 h-3.5"
+                        />
+                        Mark as Default
+                      </label>
+
+                      <label className="flex items-center text-[10px] font-semibold text-slate-700 gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={tempIsActive}
+                          onChange={(e) => setTempIsActive(e.target.checked)}
+                          className="rounded text-[#1A2E4A] focus:ring-[#1A2E4A] w-3.5 h-3.5"
+                        />
+                        Is Profile Active
+                      </label>
+                    </div>
+
                     <div className="flex gap-1.5 pt-1">
                       <button
                         type="button"
@@ -1109,11 +1223,15 @@ export const SettingsView: React.FC = () => {
                           type="button"
                           onClick={() => {
                             setEditingPanId(null);
+                            setTempLabel('');
+                            setTempPanName('');
                             setTempPanNo('');
                             setTempBankName('');
                             setTempAccountNo('');
                             setTempIfscCode('');
                             setTempBranchName('');
+                            setTempIsDefault(false);
+                            setTempIsActive(true);
                           }}
                           className="bg-slate-200 hover:bg-slate-300 text-slate-600 font-bold py-1 px-2 rounded text-[10px] transition cursor-pointer"
                         >

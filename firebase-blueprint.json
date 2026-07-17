@@ -10,7 +10,10 @@
         "code": { "type": "string" },
         "type": { "type": "string", "enum": ["jacket", "pant"] },
         "is_active": { "type": "boolean" },
-        "created_at": { "type": "string", "format": "date-time" }
+        "created_at": { "type": "string", "format": "date-time" },
+        "pan_accounts": {
+          "type": "array"
+        }
       },
       "required": ["id", "name", "code", "type", "is_active", "created_at"]
     },
@@ -91,7 +94,18 @@
         "material_deduction": { "type": "number" },
         "net_payable": { "type": "number" },
         "status": { "type": "string", "enum": ["draft", "finalised"] },
-        "created_at": { "type": "string", "format": "date-time" }
+        "created_at": { "type": "string", "format": "date-time" },
+        "selected_pan_no": { "type": "string" },
+        "selected_pan_name": { "type": "string" },
+        "selected_bank_name": { "type": "string" },
+        "selected_account_no": { "type": "string" },
+        "selected_ifsc_code": { "type": "string" },
+        "selected_branch_name": { "type": "string" },
+        "selected_pan_account_id": { "type": "string" },
+        "selected_payment_label": { "type": "string" },
+        "paymentProfileSnapshot": {
+          "type": "object"
+        }
       },
       "required": ["id", "invoice_no", "master_id", "period_month", "period_year", "work_amount", "material_deduction", "net_payable", "status", "created_at"]
     },

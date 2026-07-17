@@ -25,12 +25,17 @@ export interface Profile {
 
 export interface MasterPanAccount {
   id: string;
-  pan_name?: string;
+  label?: string; // e.g. "Brother PAN", "Main Account", "Wife Account"
+  pan_name: string; // PAN/account holder name
   pan_no: string;
   bank_name: string;
   account_no: string;
   ifsc_code: string;
   branch_name?: string;
+  is_default?: boolean;
+  is_active: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Master {
@@ -178,6 +183,18 @@ export interface Invoice {
   selected_account_no?: string;
   selected_ifsc_code?: string;
   selected_branch_name?: string;
+  selected_pan_account_id?: string;
+  selected_payment_label?: string;
+  paymentProfileSnapshot?: {
+    id: string;
+    label?: string;
+    pan_name: string;
+    pan_no: string;
+    bank_name: string;
+    account_no: string;
+    ifsc_code: string;
+    branch_name?: string;
+  };
   stitching_deduction_amount?: number;
   stitching_deduction_reason?: string;
   base_work_amount?: number;

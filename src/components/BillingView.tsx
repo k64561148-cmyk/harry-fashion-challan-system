@@ -173,7 +173,7 @@ export const BillingView: React.FC = () => {
     setIsChallanListFocused(false);
   };
 
-  // Auto-fill bank and PAN details when master or specific PAN selection changes.
+  // Auto-fill bank and PAN details when master changes.
   useEffect(() => {
     if (!selectedMasterId) {
       setSelectedPanId('');
@@ -188,15 +188,24 @@ export const BillingView: React.FC = () => {
 
     const master = masters.find(m => m.id === selectedMasterId);
     if (master && master.pan_accounts && master.pan_accounts.length > 0) {
-      const selectedAccount = master.pan_accounts.find(p => p.id === selectedPanId) || master.pan_accounts[0];
-      if (selectedAccount) {
-        setSelectedPanId(selectedAccount.id);
-        setPanName(selectedAccount.pan_name || '');
-        setPanNo(selectedAccount.pan_no);
-        setBankName(selectedAccount.bank_name);
-        setAccountNo(selectedAccount.account_no);
-        setIfscCode(selectedAccount.ifsc_code);
-        setBranchName(selectedAccount.branch_name || '');
+      const activeProfiles = master.pan_accounts.filter(p => p.is_active !== false);
+      const defaultProfile = activeProfiles.find(p => p.is_default);
+      if (defaultProfile) {
+        setSelectedPanId(defaultProfile.id);
+        setPanName(defaultProfile.pan_name || '');
+        setPanNo(defaultProfile.pan_no);
+        setBankName(defaultProfile.bank_name);
+        setAccountNo(defaultProfile.account_no);
+        setIfscCode(defaultProfile.ifsc_code);
+        setBranchName(defaultProfile.branch_name || '');
+      } else {
+        setSelectedPanId('');
+        setPanName('');
+        setPanNo('');
+        setBankName('');
+        setAccountNo('');
+        setIfscCode('');
+        setBranchName('');
       }
     } else {
       setSelectedPanId('');
@@ -207,7 +216,32 @@ export const BillingView: React.FC = () => {
       setIfscCode('');
       setBranchName('');
     }
-  }, [selectedMasterId, selectedPanId, masters]);
+  }, [selectedMasterId, masters]);
+
+  const handlePanProfileChange = (panId: string) => {
+    setSelectedPanId(panId);
+    if (!panId) {
+      setPanName('');
+      setPanNo('');
+      setBankName('');
+      setAccountNo('');
+      setIfscCode('');
+      setBranchName('');
+      return;
+    }
+    const master = masters.find(m => m.id === selectedMasterId);
+    if (master && master.pan_accounts) {
+      const selectedAccount = master.pan_accounts.find(p => p.id === panId);
+      if (selectedAccount) {
+        setPanName(selectedAccount.pan_name || '');
+        setPanNo(selectedAccount.pan_no);
+        setBankName(selectedAccount.bank_name);
+        setAccountNo(selectedAccount.account_no);
+        setIfscCode(selectedAccount.ifsc_code);
+        setBranchName(selectedAccount.branch_name || '');
+      }
+    }
+  };
 
   const monthsList = [
     { value: 1, name: 'January' },
@@ -538,6 +572,18 @@ export const BillingView: React.FC = () => {
         }
       }
 
+      const masterObj = masters.find(m => m.id === selectedMasterId);
+      const activeProfiles = masterObj?.pan_accounts?.filter(p => p.is_active !== false) || [];
+      if (activeProfiles.length > 0 && !selectedPanId) {
+        setErrorMsg('Stitching master has active payment profiles registered. You must explicitly select one from the dropdown menu to proceed.');
+        return;
+      }
+
+      if (!panName.trim() || !panNo.trim() || !bankName.trim() || !accountNo.trim() || !ifscCode.trim()) {
+        setErrorMsg('All disbursement details (Holder Name, PAN, Bank Name, Account No, and IFSC Code) are required fields.');
+        return;
+      }
+
       const activeChallanIds = Object.keys(selectedChallanIds).filter(id => selectedChallanIds[id]);
       if (activeChallanIds.length === 0) {
         setErrorMsg('At least one Challan must be checked to generate an Invoice.');
@@ -557,6 +603,8 @@ export const BillingView: React.FC = () => {
         return;
       }
 
+      const selectedProfile = activeProfiles.find(p => p.id === selectedPanId);
+
       const invoicePayload = {
         master_id: selectedMasterId,
         period_month: periodMonth,
@@ -575,10 +623,40 @@ export const BillingView: React.FC = () => {
         selected_account_no: accountNo || undefined,
         selected_ifsc_code: ifscCode || undefined,
         selected_branch_name: branchName || undefined,
+        selected_pan_account_id: selectedPanId || undefined,
+        selected_payment_label: selectedProfile?.label || undefined,
+        paymentProfileSnapshot: selectedProfile ? {
+          id: selectedProfile.id,
+          label: selectedProfile.label,
+          pan_name: selectedProfile.pan_name,
+          pan_no: selectedProfile.pan_no,
+          bank_name: selectedProfile.bank_name,
+          account_no: selectedProfile.account_no,
+          ifsc_code: selectedProfile.ifsc_code,
+          branch_name: selectedProfile.branch_name
+        } : {
+          id: 'manual',
+          pan_name: panName.trim(),
+          pan_no: panNo.trim().toUpperCase(),
+          bank_name: bankName.trim(),
+          account_no: accountNo.trim(),
+          ifsc_code: ifscCode.trim().toUpperCase(),
+          branch_name: branchName ? branchName.trim() : undefined
+        },
         stitching_deduction_amount: stitchingDeductionAmount,
         stitching_deduction_reason: stitchingDeductionReason,
         base_work_amount: baseWorkAmount
       };
+
+      if (status === 'finalised') {
+        const maskPan = (no: string) => {
+          const clean = (no || '').trim();
+          return clean.length > 4 ? '*'.repeat(clean.length - 4) + clean.slice(-4) : clean;
+        };
+        const panIdForAudit = selectedPanId || 'manual';
+        const auditDetails = `masterId: ${selectedMasterId}, masterName: ${masterObj?.name || ''}, panAccountId: ${panIdForAudit}, panName: ${panName.trim()}, panNo: ${maskPan(panNo)}, changedBy: ${currentUser?.email || 'system'}, changedAt: ${new Date().toISOString()}`;
+        db.addAuditLog(currentUser?.email || 'system', 'Invoice finalized with PAN/bank profile', auditDetails);
+      }
 
       // 1. Commit and get compiled invoice Record
       const invoiceResult = await db.saveInvoice(invoicePayload, activeChallanIds);
@@ -588,11 +666,11 @@ export const BillingView: React.FC = () => {
       window.dispatchEvent(new Event('db_sync'));
 
       // 2. Generate PDF download
-      const masterObj = masters.find(m => m.id === selectedMasterId)!;
+      const masterObjForPDF = masterObj || masters.find(m => m.id === selectedMasterId)!;
       const chList = db.getChallans().filter(c => activeChallanIds.includes(c.id));
       const allItems = db.getChallanItems();
       
-      await generateInvoicePDF(invoiceResult, chList, allItems, masterObj, materials, true);
+      await generateInvoicePDF(invoiceResult, chList, allItems, masterObjForPDF, materials, true);
 
       // Trigger success panel
       setSuccessInvoice(invoiceResult);
@@ -663,6 +741,11 @@ export const BillingView: React.FC = () => {
     if (!editingInvoice) return;
 
     try {
+      const master = masters.find(m => m.id === editingInvoice.master_id);
+      const matchedProfile = master?.pan_accounts?.find(
+        p => p.pan_no.toUpperCase() === editPanNo.toUpperCase() && p.account_no === editAccountNo
+      );
+
       db.editInvoice(editingInvoice.id, {
         pcs: editPcs,
         work_amount: editWorkAmount,
@@ -673,8 +756,28 @@ export const BillingView: React.FC = () => {
         selected_account_no: editAccountNo || undefined,
         selected_ifsc_code: editIfscCode || undefined,
         selected_branch_name: editBranchName || undefined,
+        selected_pan_account_id: matchedProfile?.id || undefined,
+        selected_payment_label: matchedProfile?.label || undefined,
+        paymentProfileSnapshot: {
+          id: matchedProfile?.id || 'manual',
+          label: matchedProfile?.label || undefined,
+          pan_name: editPanName.trim(),
+          pan_no: editPanNo.trim().toUpperCase(),
+          bank_name: editBankName.trim(),
+          account_no: editAccountNo.trim(),
+          ifsc_code: editIfscCode.trim().toUpperCase(),
+          branch_name: editBranchName ? editBranchName.trim() : undefined
+        },
         status: editStatus
       });
+
+      const maskPan = (no: string) => {
+        const clean = (no || '').trim();
+        return clean.length > 4 ? '*'.repeat(clean.length - 4) + clean.slice(-4) : clean;
+      };
+      const auditDetails = `masterId: ${editingInvoice.master_id}, masterName: ${master?.name || ''}, panAccountId: ${matchedProfile?.id || 'manual'}, panName: ${editPanName.trim()}, panNo: ${maskPan(editPanNo)}, changedBy: ${currentUser?.email || 'system'}, changedAt: ${new Date().toISOString()}`;
+      db.addAuditLog(currentUser?.email || 'system', 'Invoice details updated', auditDetails);
+
       setEditingInvoice(null);
       loadInitialData();
       window.dispatchEvent(new Event('db_sync'));
@@ -1415,30 +1518,32 @@ export const BillingView: React.FC = () => {
 
                     {(() => {
                       const masterObj = masters.find(m => m.id === selectedMasterId);
-                      const hasPanDetails = masterObj && masterObj.pan_accounts && masterObj.pan_accounts.length > 0;
+                      const activeProfiles = masterObj?.pan_accounts?.filter(p => p.is_active !== false) || [];
+                      const hasActivePanDetails = activeProfiles.length > 0;
 
                       return (
                         <div className="space-y-3">
-                          {hasPanDetails ? (
+                          {hasActivePanDetails ? (
                             <div>
                               <span className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
-                                SELECT PAN ACCOUNT (OPTIONAL)
+                                SELECT PAN ACCOUNT *
                               </span>
                               <select
                                 className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-2 text-xs font-bold text-[#1A2E4A]"
                                 value={selectedPanId}
-                                onChange={(e) => setSelectedPanId(e.target.value)}
+                                onChange={(e) => handlePanProfileChange(e.target.value)}
                               >
-                                {masterObj.pan_accounts!.map(p => (
+                                <option value="">-- Choose active PAN/Bank Profile --</option>
+                                {activeProfiles.map(p => (
                                   <option key={p.id} value={p.id}>
-                                    {p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')})
+                                    {p.label ? `${p.label.toUpperCase()} : ` : ''}{p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')})
                                   </option>
                                 ))}
                               </select>
                             </div>
                           ) : (
                             <div className="p-3 bg-amber-50 border border-amber-200 text-amber-850 rounded-lg text-[11px] leading-relaxed space-y-1">
-                              <p className="font-bold">No registered bank/PAN accounts found under craftsman file!</p>
+                              <p className="font-bold">No registered active bank/PAN accounts found under craftsman file!</p>
                               <p className="text-slate-650">
                                 You can configure permanent accounts in <strong className="font-semibold">Settings / Masters Control</strong>. For now, you can input interim credentials below:
                               </p>
@@ -1447,55 +1552,74 @@ export const BillingView: React.FC = () => {
 
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase">PAN Card No</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase">Account / PAN Holder Name *</label>
+                              <input
+                                type="text"
+                                placeholder="E.g. John Doe"
+                                className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded px-2.5 py-1.5 text-xs font-semibold text-slate-800 mt-0.5"
+                                value={panName}
+                                onChange={(e) => setPanName(e.target.value)}
+                                disabled={hasActivePanDetails}
+                              />
+                            </div>
+
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase">PAN Card No *</label>
                               <input
                                 type="text"
                                 placeholder="E.g. ABCDE1234F"
                                 className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded px-2.5 py-1.5 text-xs font-mono font-bold uppercase mt-0.5"
                                 value={panNo}
                                 onChange={(e) => setPanNo(e.target.value.toUpperCase())}
+                                disabled={hasActivePanDetails}
                               />
                             </div>
 
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase">Bank Name</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase">Bank Name *</label>
                               <input
                                 type="text"
                                 placeholder="E.g. HDFC Bank"
                                 className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded px-2.5 py-1.5 text-xs mt-0.5 font-semibold text-slate-800"
                                 value={bankName}
                                 onChange={(e) => setBankName(e.target.value)}
+                                disabled={hasActivePanDetails}
                               />
                             </div>
 
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase">Account Number</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase">Account Number *</label>
                               <input
                                 type="text"
                                 placeholder="E.g. 50100234567"
                                 className="w-full bg-slate-50 border border-slate-201 focus:border-[#2D3E5D] rounded px-2.5 py-1.5 text-xs font-mono font-bold mt-0.5"
                                 value={accountNo}
                                 onChange={(e) => setAccountNo(e.target.value)}
+                                disabled={hasActivePanDetails}
                               />
                             </div>
 
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase">IFSC Code</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase">IFSC Code *</label>
                               <input
                                 type="text"
                                 placeholder="E.g. HDFC0000123"
                                 className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded px-2.5 py-1.5 text-xs font-mono font-bold uppercase mt-0.5"
                                 value={ifscCode}
                                 onChange={(e) => setIfscCode(e.target.value.toUpperCase())}
+                                disabled={hasActivePanDetails}
                               />
                             </div>
-                          </div>
 
-                          {branchName && (
-                            <div className="text-[10px] text-slate-400 font-medium font-mono">
-                              Associated branch: <span className="font-semibold text-slate-700">{branchName}</span>
-                            </div>
-                          )}
+                            {branchName && (
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase">Branch Name</label>
+                                <div className="text-xs font-mono font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded px-2.5 py-1.5 mt-0.5">
+                                  {branchName}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       );
                     })()}

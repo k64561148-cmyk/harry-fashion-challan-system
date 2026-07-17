@@ -1223,7 +1223,10 @@ class DatabaseService {
     const sourcePANs = sourceMaster.pan_accounts || [];
     const targetPANs = targetMaster.pan_accounts || [];
     sourcePANs.forEach(span => {
-      const exists = targetPANs.some(tpan => tpan.pan_no.toLowerCase() === span.pan_no.toLowerCase());
+      const exists = targetPANs.some(tpan => 
+        tpan.pan_no.toUpperCase() === span.pan_no.toUpperCase() &&
+        tpan.account_no.trim() === span.account_no.trim()
+      );
       if (!exists) {
         targetPANs.push(span);
       }
