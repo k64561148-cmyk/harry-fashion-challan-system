@@ -659,27 +659,28 @@ export async function generateInvoicePDF(
     doc.text(`Period: ${billingPeriod}`, 14, 28);
     doc.text(`Invoice No: ${invoice.invoice_no}`, 14, 34);
 
+    // Find the matching PAN profile for this invoice to get the correct nickname and cheque in favour of
+    const matchedProfile = invoice.paymentProfileSnapshot || master.pan_accounts?.find(
+      p => p.id === invoice.selected_pan_account_id || 
+           (invoice.selected_account_no && p.account_no === invoice.selected_account_no)
+    ) || master.pan_accounts?.find(p => p.is_default && p.is_active !== false)
+      || master.pan_accounts?.find(p => p.is_active !== false)
+      || master.pan_accounts?.[0];
+
     // Right side info (aligned right at x=196)
-    const tailorInitial = master.code || master.name.split(' ')[0] || 'NA';
+    const tailorInitial = invoice.selected_payment_label || matchedProfile?.label || master.code || master.name.split(' ')[0] || 'NA';
     doc.text(`Tailor Initial: ${tailorInitial}`, 196, 28, { align: 'right' });
 
     const tailorPanCode = invoice.selected_pan_no || 
+                          invoice.paymentProfileSnapshot?.pan_no ||
+                          matchedProfile?.pan_no ||
                           (master.pan_accounts && master.pan_accounts.length > 0 ? master.pan_accounts[0].pan_no : null) || 
                           `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String(master.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
 
-    const selectedPanName = (invoice as any).selected_pan_name || 
-                            (master.pan_accounts?.find(p => p.pan_no === tailorPanCode)?.pan_name) || '';
+    doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
+    doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
 
-    if (selectedPanName) {
-      doc.text(`PAN Holder Name: ${selectedPanName}`, 196, 34, { align: 'right' });
-      doc.text(`Tailor Name: ${master.name}`, 196, 40, { align: 'right' });
-      doc.text(`Pan #: ${tailorPanCode}`, 196, 46, { align: 'right' });
-    } else {
-      doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
-      doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
-    }
-
-    let y = selectedPanName ? 52 : 48;
+    let y = 46;
 
     // --- CHAPTER 1: Stitching Job Earnings Table ---
     // Table Headers
@@ -791,56 +792,6 @@ export async function generateInvoicePDF(
     y += 12;
 
     // --- CHAPTER 3: Checked By & Final Calculations ---
-    const leftBlockY = y + 2;
-    let curLeftY = leftBlockY;
-
-    // Left side: Outward/Disbursement bank info
-    doc.setFont('Helvetica', 'normal');
-    doc.setFontSize(9.5);
-
-    doc.setFont('Helvetica', 'bold');
-    const chequeFavorName = (invoice as any).selected_cheque_in_favour_of || master.name || '';
-    const chqFavorText = `Chq in favor of: ${chequeFavorName.toUpperCase()}`;
-    doc.text(chqFavorText, 14, curLeftY);
-    
-    // Underline the custom name
-    const underlineStart = 14 + doc.getTextWidth('Chq in favor of: ');
-    const underlineLength = doc.getTextWidth(chequeFavorName.toUpperCase());
-    doc.setLineWidth(0.35);
-    doc.line(underlineStart, curLeftY + 0.8, underlineStart + underlineLength, curLeftY + 0.8);
-
-    // Dynamic bank specifications
-    const actualBankName = invoice.selected_bank_name || '';
-    const actualAcNo = invoice.selected_account_no || '';
-    const actualIfsc = invoice.selected_ifsc_code || '';
-    const actualBranch = invoice.selected_branch_name || '';
-    const actualPanHolder = (invoice as any).selected_pan_name || '';
-
-    if (actualAcNo) {
-      curLeftY += 6;
-      doc.setFont('Helvetica', 'bold');
-      doc.text('Disbursement Bank Account:', 14, curLeftY);
-      curLeftY += 4.5;
-      doc.setFont('Helvetica', 'normal');
-      doc.setFontSize(8.5);
-      if (actualPanHolder) {
-        doc.text(`A/C Holder Name: ${actualPanHolder}`, 14, curLeftY);
-        curLeftY += 4.5;
-      }
-      doc.text(`Bank: ${actualBankName}`, 14, curLeftY);
-      curLeftY += 4.5;
-      doc.text(`Account No: ${actualAcNo}`, 14, curLeftY);
-      curLeftY += 4.5;
-      doc.text(`IFSC Code: ${actualIfsc}`, 14, curLeftY);
-      if (actualBranch) {
-        curLeftY += 4.5;
-        doc.text(`Branch: ${actualBranch}`, 14, curLeftY);
-      }
-    }
-
-    doc.setFont('Helvetica', 'normal');
-    doc.setFontSize(9.5);
-    doc.text('Checked By:', 105, leftBlockY); // Matches alignment side of Checked By
 
     // Right side formulas block
     const rLabelX = 142;
@@ -900,6 +851,78 @@ export async function generateInvoicePDF(
 
     // Clear dash pattern
     doc.setLineDashPattern([], 0);
+
+    // --- Bottom Block (Bank Details followed by Chq / Signature) ---
+    let bankY = formulasY + 14;
+    // Calculate required space: bank details can take up to ~30 pt, and Chq/Checked By takes another ~15 pt.
+    // Total bottom block height is ~45 pt. So if bankY is greater than 235, let's move everything to a new page.
+    if (bankY > 235) {
+      doc.addPage();
+      bankY = 25;
+    }
+
+    // Dynamic bank specifications
+    const actualBankName = invoice.selected_bank_name || matchedProfile?.bank_name || '';
+    const actualAcNo = invoice.selected_account_no || matchedProfile?.account_no || '';
+    const actualIfsc = invoice.selected_ifsc_code || matchedProfile?.ifsc_code || '';
+    const actualBranch = invoice.selected_branch_name || matchedProfile?.branch_name || '';
+    const actualPanHolder = (invoice as any).selected_pan_name || matchedProfile?.pan_name || '';
+
+    let currentY = bankY;
+
+    if (actualAcNo) {
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(9.5);
+      doc.setTextColor(0, 0, 0);
+      doc.text('Disbursement Bank Account:', 14, currentY);
+      
+      currentY += 5;
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(8.5);
+      
+      if (actualPanHolder) {
+        doc.text(`A/C Holder Name: ${actualPanHolder.toUpperCase()}`, 14, currentY);
+        currentY += 4.5;
+      }
+      if (actualBankName) {
+        doc.text(`Bank: ${actualBankName.toUpperCase()}`, 14, currentY);
+        currentY += 4.5;
+      }
+      doc.text(`Account No: ${actualAcNo}`, 14, currentY);
+      currentY += 4.5;
+      doc.text(`IFSC Code: ${actualIfsc.toUpperCase()}`, 14, currentY);
+      if (actualBranch) {
+        currentY += 4.5;
+        doc.text(`Branch: ${actualBranch.toUpperCase()}`, 14, currentY);
+      }
+      // Add extra padding after the bank details block before Chq in favor of
+      currentY += 10;
+    } else {
+      currentY += 4;
+    }
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+
+    // Left side: Chq in favor of:
+    doc.text('Chq in favor of: ', 14, currentY);
+    
+    const chequeFavorName = invoice.selected_cheque_in_favour_of || matchedProfile?.cheque_in_favour_of || master.name || '';
+    const labelWidth = doc.getTextWidth('Chq in favor of: ');
+    
+    doc.setFont('Helvetica', 'bold');
+    doc.text(chequeFavorName.toUpperCase(), 14 + labelWidth, currentY);
+    
+    // Underline the chequeFavorName
+    const nameWidth = doc.getTextWidth(chequeFavorName.toUpperCase());
+    doc.setLineWidth(0.35);
+    doc.line(14 + labelWidth, currentY + 0.8, 14 + labelWidth + nameWidth, currentY + 0.8);
+
+    // Right side: Checked By:
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9.5);
+    doc.text('Checked By:', 105, currentY);
 
     const pdfBlob = doc.output('blob');
     
