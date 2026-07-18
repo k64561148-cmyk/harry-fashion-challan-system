@@ -799,12 +799,13 @@ export async function generateInvoicePDF(
     doc.setFontSize(9.5);
 
     doc.setFont('Helvetica', 'bold');
-    const chqFavorText = `Chq in favor of: ${master.name.toUpperCase()}`;
+    const chequeFavorName = (invoice as any).selected_cheque_in_favour_of || master.name || '';
+    const chqFavorText = `Chq in favor of: ${chequeFavorName.toUpperCase()}`;
     doc.text(chqFavorText, 14, curLeftY);
     
     // Underline the custom name
     const underlineStart = 14 + doc.getTextWidth('Chq in favor of: ');
-    const underlineLength = doc.getTextWidth(master.name.toUpperCase());
+    const underlineLength = doc.getTextWidth(chequeFavorName.toUpperCase());
     doc.setLineWidth(0.35);
     doc.line(underlineStart, curLeftY + 0.8, underlineStart + underlineLength, curLeftY + 0.8);
 

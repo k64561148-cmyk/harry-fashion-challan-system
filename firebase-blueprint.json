@@ -101,6 +101,7 @@
         "selected_account_no": { "type": "string" },
         "selected_ifsc_code": { "type": "string" },
         "selected_branch_name": { "type": "string" },
+        "selected_cheque_in_favour_of": { "type": "string" },
         "selected_pan_account_id": { "type": "string" },
         "selected_payment_label": { "type": "string" },
         "paymentProfileSnapshot": {

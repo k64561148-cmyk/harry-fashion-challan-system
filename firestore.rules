@@ -180,6 +180,7 @@ service cloud.firestore {
         && (!data.keys().hasAny(['selected_account_no']) || data.selected_account_no is string)
         && (!data.keys().hasAny(['selected_ifsc_code']) || data.selected_ifsc_code is string)
         && (!data.keys().hasAny(['selected_branch_name']) || data.selected_branch_name is string)
+        && (!data.keys().hasAny(['selected_cheque_in_favour_of']) || data.selected_cheque_in_favour_of is string)
         && (!data.keys().hasAny(['selected_pan_account_id']) || data.selected_pan_account_id is string)
         && (!data.keys().hasAny(['selected_payment_label']) || data.selected_payment_label is string)
         && (!data.keys().hasAny(['paymentProfileSnapshot']) || data.paymentProfileSnapshot is map);

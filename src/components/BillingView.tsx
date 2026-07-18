@@ -54,6 +54,7 @@ export const BillingView: React.FC = () => {
   const [editAccountNo, setEditAccountNo] = useState<string>('');
   const [editIfscCode, setEditIfscCode] = useState<string>('');
   const [editBranchName, setEditBranchName] = useState<string>('');
+  const [editChequeInFavourOf, setEditChequeInFavourOf] = useState<string>('');
   const [editStatus, setEditStatus] = useState<'draft' | 'finalised'>('draft');
 
   const [masters, setMasters] = useState<Master[]>([]);
@@ -95,6 +96,7 @@ export const BillingView: React.FC = () => {
   const [accountNo, setAccountNo] = useState<string>('');
   const [ifscCode, setIfscCode] = useState<string>('');
   const [branchName, setBranchName] = useState<string>('');
+  const [chequeInFavourOf, setChequeInFavourOf] = useState<string>('');
 
   // Invoice success feedback
   const [loading, setLoading] = useState<boolean>(false);
@@ -183,6 +185,7 @@ export const BillingView: React.FC = () => {
       setAccountNo('');
       setIfscCode('');
       setBranchName('');
+      setChequeInFavourOf('');
       return;
     }
 
@@ -198,6 +201,7 @@ export const BillingView: React.FC = () => {
         setAccountNo(defaultProfile.account_no);
         setIfscCode(defaultProfile.ifsc_code);
         setBranchName(defaultProfile.branch_name || '');
+        setChequeInFavourOf(defaultProfile.cheque_in_favour_of || '');
       } else {
         setSelectedPanId('');
         setPanName('');
@@ -206,6 +210,7 @@ export const BillingView: React.FC = () => {
         setAccountNo('');
         setIfscCode('');
         setBranchName('');
+        setChequeInFavourOf('');
       }
     } else {
       setSelectedPanId('');
@@ -215,6 +220,7 @@ export const BillingView: React.FC = () => {
       setAccountNo('');
       setIfscCode('');
       setBranchName('');
+      setChequeInFavourOf('');
     }
   }, [selectedMasterId, masters]);
 
@@ -227,6 +233,7 @@ export const BillingView: React.FC = () => {
       setAccountNo('');
       setIfscCode('');
       setBranchName('');
+      setChequeInFavourOf('');
       return;
     }
     const master = masters.find(m => m.id === selectedMasterId);
@@ -239,6 +246,7 @@ export const BillingView: React.FC = () => {
         setAccountNo(selectedAccount.account_no);
         setIfscCode(selectedAccount.ifsc_code);
         setBranchName(selectedAccount.branch_name || '');
+        setChequeInFavourOf(selectedAccount.cheque_in_favour_of || '');
       }
     }
   };
@@ -623,6 +631,7 @@ export const BillingView: React.FC = () => {
         selected_account_no: accountNo || undefined,
         selected_ifsc_code: ifscCode || undefined,
         selected_branch_name: branchName || undefined,
+        selected_cheque_in_favour_of: chequeInFavourOf || undefined,
         selected_pan_account_id: selectedPanId || undefined,
         selected_payment_label: selectedProfile?.label || undefined,
         paymentProfileSnapshot: selectedProfile ? {
@@ -633,7 +642,8 @@ export const BillingView: React.FC = () => {
           bank_name: selectedProfile.bank_name,
           account_no: selectedProfile.account_no,
           ifsc_code: selectedProfile.ifsc_code,
-          branch_name: selectedProfile.branch_name
+          branch_name: selectedProfile.branch_name,
+          cheque_in_favour_of: selectedProfile.cheque_in_favour_of
         } : {
           id: 'manual',
           pan_name: panName.trim(),
@@ -641,7 +651,8 @@ export const BillingView: React.FC = () => {
           bank_name: bankName.trim(),
           account_no: accountNo.trim(),
           ifsc_code: ifscCode.trim().toUpperCase(),
-          branch_name: branchName ? branchName.trim() : undefined
+          branch_name: branchName ? branchName.trim() : undefined,
+          cheque_in_favour_of: chequeInFavourOf ? chequeInFavourOf.trim() : undefined
         },
         stitching_deduction_amount: stitchingDeductionAmount,
         stitching_deduction_reason: stitchingDeductionReason,
@@ -732,6 +743,7 @@ export const BillingView: React.FC = () => {
     setEditAccountNo(inv.selected_account_no || '');
     setEditIfscCode(inv.selected_ifsc_code || '');
     setEditBranchName(inv.selected_branch_name || '');
+    setEditChequeInFavourOf((inv as any).selected_cheque_in_favour_of || '');
     setEditStatus(inv.status);
   };
 
@@ -756,6 +768,7 @@ export const BillingView: React.FC = () => {
         selected_account_no: editAccountNo || undefined,
         selected_ifsc_code: editIfscCode || undefined,
         selected_branch_name: editBranchName || undefined,
+        selected_cheque_in_favour_of: editChequeInFavourOf || undefined,
         selected_pan_account_id: matchedProfile?.id || undefined,
         selected_payment_label: matchedProfile?.label || undefined,
         paymentProfileSnapshot: {
@@ -766,7 +779,8 @@ export const BillingView: React.FC = () => {
           bank_name: editBankName.trim(),
           account_no: editAccountNo.trim(),
           ifsc_code: editIfscCode.trim().toUpperCase(),
-          branch_name: editBranchName ? editBranchName.trim() : undefined
+          branch_name: editBranchName ? editBranchName.trim() : undefined,
+          cheque_in_favour_of: editChequeInFavourOf ? editChequeInFavourOf.trim() : undefined
         },
         status: editStatus
       });
@@ -1619,6 +1633,15 @@ export const BillingView: React.FC = () => {
                                 </div>
                               </div>
                             )}
+
+                            {chequeInFavourOf && (
+                              <div className="col-span-full">
+                                <label className="block text-[10px] font-bold text-amber-800 uppercase">Cheque in Favour Of</label>
+                                <div className="text-xs font-mono font-bold text-amber-900 bg-amber-50/50 border border-amber-200/50 rounded px-2.5 py-1.5 mt-0.5">
+                                  {chequeInFavourOf.toUpperCase()}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1936,6 +1959,16 @@ export const BillingView: React.FC = () => {
                       value={editBranchName}
                       onChange={(e) => setEditBranchName(e.target.value)}
                       className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none text-slate-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-amber-800 uppercase mb-1">Cheque in Favour Of</label>
+                    <input
+                      type="text"
+                      placeholder="THE ZURI GARMENT"
+                      value={editChequeInFavourOf}
+                      onChange={(e) => setEditChequeInFavourOf(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-[#1A2E4A] outline-none text-amber-900 font-bold"
                     />
                   </div>
                 </div>

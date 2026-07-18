@@ -32,6 +32,7 @@ export interface MasterPanAccount {
   account_no: string;
   ifsc_code: string;
   branch_name?: string;
+  cheque_in_favour_of?: string;
   is_default?: boolean;
   is_active: boolean;
   createdAt: string;
@@ -183,6 +184,7 @@ export interface Invoice {
   selected_account_no?: string;
   selected_ifsc_code?: string;
   selected_branch_name?: string;
+  selected_cheque_in_favour_of?: string;
   selected_pan_account_id?: string;
   selected_payment_label?: string;
   paymentProfileSnapshot?: {
@@ -194,6 +196,7 @@ export interface Invoice {
     account_no: string;
     ifsc_code: string;
     branch_name?: string;
+    cheque_in_favour_of?: string;
   };
   stitching_deduction_amount?: number;
   stitching_deduction_reason?: string;

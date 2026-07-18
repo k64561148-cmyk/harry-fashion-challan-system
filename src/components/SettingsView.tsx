@@ -133,6 +133,7 @@ export const SettingsView: React.FC = () => {
   const [tempAccountNo, setTempAccountNo] = useState<string>('');
   const [tempIfscCode, setTempIfscCode] = useState<string>('');
   const [tempBranchName, setTempBranchName] = useState<string>('');
+  const [tempChequeInFavourOf, setTempChequeInFavourOf] = useState<string>('');
   const [tempIsDefault, setTempIsDefault] = useState<boolean>(false);
   const [tempIsActive, setTempIsActive] = useState<boolean>(true);
   const [editingPanId, setEditingPanId] = useState<string | null>(null);
@@ -751,6 +752,7 @@ export const SettingsView: React.FC = () => {
           account_no: accountNoClean,
           ifsc_code: ifscClean,
           branch_name: branchClean || undefined,
+          cheque_in_favour_of: tempChequeInFavourOf.trim() || undefined,
           is_default: tempIsDefault,
           is_active: tempIsActive,
           updatedAt: new Date().toISOString()
@@ -776,6 +778,7 @@ export const SettingsView: React.FC = () => {
         account_no: accountNoClean,
         ifsc_code: ifscClean,
         branch_name: branchClean || undefined,
+        cheque_in_favour_of: tempChequeInFavourOf.trim() || undefined,
         is_default: tempIsDefault,
         is_active: tempIsActive,
         createdAt: new Date().toISOString(),
@@ -801,6 +804,7 @@ export const SettingsView: React.FC = () => {
     setTempAccountNo('');
     setTempIfscCode('');
     setTempBranchName('');
+    setTempChequeInFavourOf('');
     setTempIsDefault(false);
     setTempIsActive(true);
   };
@@ -813,6 +817,7 @@ export const SettingsView: React.FC = () => {
     setTempAccountNo(pan.account_no);
     setTempIfscCode(pan.ifsc_code);
     setTempBranchName(pan.branch_name || '');
+    setTempChequeInFavourOf(pan.cheque_in_favour_of || '');
     setTempIsDefault(!!pan.is_default);
     setTempIsActive(pan.is_active !== false);
     setEditingPanId(pan.id);
@@ -834,6 +839,7 @@ export const SettingsView: React.FC = () => {
       setTempAccountNo('');
       setTempIfscCode('');
       setTempBranchName('');
+      setTempChequeInFavourOf('');
       setTempIsDefault(false);
       setTempIsActive(true);
     }
@@ -1078,6 +1084,9 @@ export const SettingsView: React.FC = () => {
                             </div>
                             <p className="text-slate-600 font-medium">{p.bank_name} - <span className="font-mono text-slate-800">{p.account_no}</span></p>
                             <p className="text-[10px] text-slate-400 font-mono">IFSC: {p.ifsc_code} {p.branch_name ? `(${p.branch_name})` : ''}</p>
+                            {p.cheque_in_favour_of && (
+                              <p className="text-[10px] text-slate-700 font-semibold">Chq in favor of: <span className="font-bold text-[#1A2E4A]">{p.cheque_in_favour_of.toUpperCase()}</span></p>
+                            )}
                           </div>
                           <div className="flex gap-1">
                             <button
@@ -1177,15 +1186,27 @@ export const SettingsView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div>
-                      <label className="block text-[9px] font-semibold text-slate-600">BRANCH (OPTIONAL)</label>
-                      <input
-                        type="text"
-                        placeholder="Andheri East"
-                        className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px]"
-                        value={tempBranchName}
-                        onChange={(e) => setTempBranchName(e.target.value)}
-                      />
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-semibold text-slate-600">BRANCH (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          placeholder="Andheri East"
+                          className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px]"
+                          value={tempBranchName}
+                          onChange={(e) => setTempBranchName(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-semibold text-slate-600">CHEQUE IN FAVOUR OF (OPTIONAL)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. THE ZURI GARMENT"
+                          className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] rounded px-1.5 py-1 text-[11px] font-medium"
+                          value={tempChequeInFavourOf}
+                          onChange={(e) => setTempChequeInFavourOf(e.target.value)}
+                        />
+                      </div>
                     </div>
 
                     <div className="flex gap-4 pt-1">
