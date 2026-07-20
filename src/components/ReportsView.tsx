@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
-import { Master, Material, Challan, ChallanItem, InwardEntry, LedgerTransaction } from '../types';
+import { Master, Material, Challan, ChallanItem, InwardEntry, LedgerTransaction, MasterAdvance, MasterAdvanceLedger } from '../types';
 import { 
   formatINR, 
   formatDate,
@@ -31,11 +31,12 @@ import {
   Trash2,
   CheckCircle,
   AlertCircle,
-  ShieldCheck
+  ShieldCheck,
+  Coins
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const [activeReport, setActiveReport] = useState<'master' | 'material' | 'stock' | 'summary' | 'reconciliation'>('master');
+  const [activeReport, setActiveReport] = useState<'master' | 'material' | 'stock' | 'summary' | 'reconciliation' | 'advance'>('master');
   
   // Datastore entities
   const [masters, setMasters] = useState<Master[]>([]);
@@ -615,6 +616,14 @@ export const ReportsView: React.FC = () => {
           }`}
         >
           <ShieldCheck className="w-4 h-4 text-emerald-500" /> Ledger Reconciliation
+        </button>
+        <button
+          onClick={() => setActiveReport('advance')}
+          className={`flex-1 min-w-[150px] font-sans text-xs py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 cursor-pointer transition ${
+            activeReport === 'advance' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+          }`}
+        >
+          <Coins className="w-4 h-4 text-amber-500" /> Master Advance Ledger
         </button>
       </div>
 
@@ -1306,6 +1315,184 @@ export const ReportsView: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {activeReport === 'advance' && (
+        <div className="space-y-4 text-left">
+          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+            <h4 className="text-[10px] font-bold text-[#1A2E4A] tracking-widest uppercase">MASTER ADVANCE LEDGER FILTER</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">SELECT MASTER</label>
+                <select
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg p-2.5 text-xs font-bold text-[#1A2E4A]"
+                  value={selectedMasterId}
+                  onChange={(e) => setSelectedMasterId(e.target.value)}
+                >
+                  <option value="">-- Choose active master --</option>
+                  {masters.map(m => (
+                    <option key={m.id} value={m.id}>{m.name} ({m.code.toUpperCase()})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {selectedMasterId ? (() => {
+            const mObj = masters.find(m => m.id === selectedMasterId);
+            const rawLedger = db.getMasterAdvanceLedger().filter(e => e.masterId === selectedMasterId);
+            
+            // Sort ascending chronological
+            const sortedLedger = [...rawLedger].sort((a, b) => {
+              const timeA = new Date(a.date).getTime();
+              const timeB = new Date(b.date).getTime();
+              if (timeA !== timeB) return timeA - timeB;
+              return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+            });
+
+            const advances = db.getMasterAdvances();
+            const activeAdvanceIds = new Set(
+              advances.filter(a => a.masterId === selectedMasterId && a.status === 'active').map(a => a.id)
+            );
+
+            let balance = 0;
+            const ledgerRows = sortedLedger.map(entry => {
+              let isEffectivelyVoided = false;
+              let effect = 0;
+
+              if (entry.type === 'ADVANCE_GIVEN') {
+                if (entry.advanceId && !activeAdvanceIds.has(entry.advanceId)) {
+                  isEffectivelyVoided = true;
+                  effect = 0;
+                } else {
+                  effect = entry.amount;
+                  balance += effect;
+                }
+              } else if (entry.type === 'ADVANCE_SET_OFF') {
+                effect = -entry.amount;
+                balance += effect;
+              } else if (entry.type === 'ADVANCE_REVERSAL') {
+                effect = -entry.amount;
+                balance += effect;
+              }
+
+              return {
+                ...entry,
+                effect,
+                runningBalance: balance,
+                isVoided: isEffectivelyVoided
+              };
+            });
+
+            const totalGiven = ledgerRows.filter(r => !r.isVoided && r.type === 'ADVANCE_GIVEN').reduce((sum, r) => sum + r.amount, 0);
+            const totalSetoff = ledgerRows.filter(r => r.type === 'ADVANCE_SET_OFF').reduce((sum, r) => sum + r.amount, 0);
+            const totalReversal = ledgerRows.filter(r => r.type === 'ADVANCE_REVERSAL').reduce((sum, r) => sum + r.amount, 0);
+            const finalCalculatedBalance = db.getMasterAdvanceBalance(selectedMasterId);
+
+            return (
+              <div className="space-y-4">
+                {/* Statistics Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">TOTAL ADVANCES GRANTED</span>
+                    <span className="text-xl font-bold font-mono text-[#1A2E4A] mt-1">{formatINR(totalGiven)}</span>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">TOTAL SETOFF INVOICES</span>
+                    <span className="text-xl font-bold font-mono text-rose-600 mt-1">- {formatINR(totalSetoff)}</span>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">TOTAL VOIDS / REVERSALS</span>
+                    <span className="text-xl font-bold font-mono text-amber-600 mt-1">- {formatINR(totalReversal)}</span>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+                    <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider">OUTSTANDING BALANCE (₹)</span>
+                    <span className="text-xl font-extrabold font-mono text-emerald-700 mt-1">{formatINR(finalCalculatedBalance)}</span>
+                  </div>
+                </div>
+
+                {/* Ledger History List */}
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                  <div className="p-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">Advance Ledger History: {mObj?.name}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">Total {ledgerRows.length} entries</span>
+                  </div>
+                  {ledgerRows.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 text-xs">No advance ledger transactions found.</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                            <th className="py-2.5 px-3">DATE</th>
+                            <th className="py-2.5 px-3">TRANSACTION ID</th>
+                            <th className="py-2.5 px-3">TYPE</th>
+                            <th className="py-2.5 px-3">REFERENCE</th>
+                            <th className="py-2.5 px-3">NOTES</th>
+                            <th className="py-2.5 px-3 text-right">DEBIT / CREDIT (₹)</th>
+                            <th className="py-2.5 px-3 text-right">RUNNING BALANCE (₹)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-medium">
+                          {ledgerRows.map((row, idx) => {
+                            let typeBadge = '';
+                            if (row.type === 'ADVANCE_GIVEN') {
+                              typeBadge = row.isVoided 
+                                ? 'bg-slate-100 text-slate-400 border border-slate-200 line-through'
+                                : 'bg-green-50 text-green-700 border border-green-200';
+                            } else if (row.type === 'ADVANCE_SET_OFF') {
+                              typeBadge = 'bg-rose-50 text-rose-700 border border-rose-200';
+                            } else if (row.type === 'ADVANCE_REVERSAL') {
+                              typeBadge = 'bg-amber-50 text-amber-700 border border-amber-200';
+                            }
+
+                            return (
+                              <tr key={row.id} className={`hover:bg-slate-50/50 ${row.isVoided ? 'text-slate-400 font-sans' : 'text-slate-700 font-medium'}`}>
+                                <td className="py-3 px-3 font-semibold font-mono text-[11px]">{formatDate(row.date)}</td>
+                                <td className="py-3 px-3 font-mono text-[10px] select-all">{row.id.substring(0, 8)}...</td>
+                                <td className="py-3 px-3">
+                                  <span className={`inline-block text-[9px] font-extrabold px-2 py-0.5 rounded uppercase ${typeBadge}`}>
+                                    {row.type.replace(/_/g, ' ')}
+                                  </span>
+                                </td>
+                                <td className="py-3 px-3">
+                                  {row.invoiceNo ? (
+                                    <span className="font-bold text-indigo-700 font-mono">BILL #{row.invoiceNo}</span>
+                                  ) : (
+                                    <span className="text-slate-400 font-sans italic">None</span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3 font-sans font-normal text-slate-500 max-w-xs truncate" title={row.notes}>
+                                  {row.notes}
+                                </td>
+                                <td className="py-3 px-3 text-right font-bold font-mono">
+                                  {row.isVoided ? (
+                                    <span className="line-through text-slate-400">₹{row.amount}</span>
+                                  ) : row.type === 'ADVANCE_GIVEN' ? (
+                                    <span className="text-green-600">+ {formatINR(row.amount)}</span>
+                                  ) : (
+                                    <span className="text-rose-600">- {formatINR(row.amount)}</span>
+                                  )}
+                                </td>
+                                <td className="py-3 px-3 text-right font-extrabold font-mono text-slate-900">
+                                  {formatINR(row.runningBalance)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="bg-slate-50 rounded-xl p-8 border border-slate-200 text-center text-slate-400 text-xs">
+              Select a craftsman / master to inspect their complete Running Advance Ledger History.
+            </div>
+          )}
         </div>
       )}
 

@@ -856,6 +856,22 @@ export async function generateInvoicePDF(
     doc.text('Rounded off:', rLabelX, formulasY);
     doc.text(String(mRounded), rValueX, formulasY, { align: 'right' });
 
+    const mSetoff = invoice.advanceSetoffAmount || 0;
+    if (mSetoff > 0) {
+      formulasY += 5.5;
+      doc.setFont('Helvetica', 'bold');
+      doc.text('-Adv. Setoff:', rLabelX, formulasY);
+      doc.text(String(Math.round(mSetoff)), rValueX, formulasY, { align: 'right' });
+      
+      formulasY += 4;
+      doc.line(135, formulasY, 196, formulasY);
+      
+      formulasY += 5.5;
+      doc.setFont('Helvetica', 'bold');
+      doc.text('Net Cash Payable:', rLabelX, formulasY);
+      doc.text(String(Math.round(mRounded - mSetoff)), rValueX, formulasY, { align: 'right' });
+    }
+
     // Clear dash pattern
     doc.setLineDashPattern([], 0);
 
@@ -912,11 +928,11 @@ export async function generateInvoicePDF(
     doc.setFontSize(9.5);
     doc.setTextColor(0, 0, 0);
 
-    // Left side: Chq in favor of:
-    doc.text('Chq in favor of: ', 14, currentY);
+    // Left side: Cheque in Favour Of:
+    doc.text('Cheque in Favour Of: ', 14, currentY);
     
     const chequeFavorName = invoice.selected_cheque_in_favour_of || matchedProfile?.cheque_in_favour_of || master.name || '';
-    const labelWidth = doc.getTextWidth('Chq in favor of: ');
+    const labelWidth = doc.getTextWidth('Cheque in Favour Of: ');
     
     doc.setFont('Helvetica', 'bold');
     doc.text(chequeFavorName.toUpperCase(), 14 + labelWidth, currentY);

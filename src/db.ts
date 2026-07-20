@@ -19,7 +19,9 @@ import {
   InvoiceStatus,
   LedgerTransaction,
   TransactionType,
-  StockCorrection
+  StockCorrection,
+  MasterAdvance,
+  MasterAdvanceLedger
 } from './types';
 
 import { 
@@ -870,7 +872,9 @@ class DatabaseService {
       'invoices',
       'invoice_challans',
       'rate_history',
-      'stock_corrections'
+      'stock_corrections',
+      'master_advances',
+      'master_advance_ledger'
     ];
 
     // Only attempt to synchronize audit logs and ledger transactions if the authenticated user holds required admin privilege
@@ -2943,6 +2947,305 @@ class DatabaseService {
     return newEntry;
   }
 
+  // --- Master Advances ---
+  getMasterAdvances(): MasterAdvance[] {
+    return this.load<MasterAdvance[]>('master_advances', []);
+  }
+
+  getMasterAdvanceLedger(): MasterAdvanceLedger[] {
+    return this.load<MasterAdvanceLedger[]>('master_advance_ledger', []);
+  }
+
+  getMasterAdvanceBalance(masterId: string): number {
+    const advances = this.getMasterAdvances();
+    const activeAdvanceIds = new Set(
+      advances.filter(a => a.masterId === masterId && a.status === 'active').map(a => a.id)
+    );
+    const ledger = this.getMasterAdvanceLedger().filter(item => item.masterId === masterId);
+    
+    let balance = 0;
+    ledger.forEach(entry => {
+      if (entry.type === 'ADVANCE_GIVEN') {
+        if (!entry.advanceId || activeAdvanceIds.has(entry.advanceId)) {
+          balance += entry.amount;
+        }
+      } else if (entry.type === 'ADVANCE_SET_OFF') {
+        balance -= entry.amount;
+      } else if (entry.type === 'ADVANCE_REVERSAL') {
+        balance -= entry.amount;
+      }
+    });
+    return Math.max(0, balance);
+  }
+
+  async saveMasterAdvance(advanceData: Omit<MasterAdvance, 'id' | 'status' | 'createdBy' | 'createdAt' | 'updatedAt'>): Promise<MasterAdvance> {
+    const advances = this.getMasterAdvances();
+    const ledger = this.getMasterAdvanceLedger();
+    const currentUser = this.getCurrentUser();
+
+    const newAdvance: MasterAdvance = {
+      ...advanceData,
+      id: generateUUID(),
+      status: 'active',
+      createdBy: currentUser.email,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const newLedgerEntry: MasterAdvanceLedger = {
+      id: generateUUID(),
+      masterId: newAdvance.masterId,
+      type: 'ADVANCE_GIVEN',
+      amount: newAdvance.amount,
+      date: newAdvance.advanceDate,
+      advanceId: newAdvance.id,
+      notes: newAdvance.notes || `Advance given via ${newAdvance.paymentMode}`,
+      createdBy: currentUser.email,
+      createdAt: new Date().toISOString()
+    };
+
+    const auditRecord: AuditLog = {
+      id: generateUUID(),
+      user_email: currentUser.email,
+      action: 'Advance Saved',
+      details: `Advance of ₹${newAdvance.amount} saved for Master ${newAdvance.masterNameSnapshot}. Mode: ${newAdvance.paymentMode}`,
+      created_at: new Date().toISOString()
+    };
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const batch = writeBatch(firestore);
+        batch.set(doc(firestore, this.getCollectionName('master_advances'), newAdvance.id), this.enrichPayload(newAdvance));
+        batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), newLedgerEntry.id), this.enrichPayload(newLedgerEntry));
+        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        await this.performCloudWrite(() => batch.commit());
+      } catch (error: any) {
+        throw new Error(`Failed to save advance: ${error.message || error}`);
+      }
+    }
+
+    advances.push(newAdvance);
+    ledger.push(newLedgerEntry);
+
+    this.save('master_advances', advances);
+    this.save('master_advance_ledger', ledger);
+
+    // Save audit log local cache
+    const logs = this.load<AuditLog[]>('audit_logs', []);
+    logs.unshift(auditRecord);
+    this.save('audit_logs', logs.slice(0, 1000));
+
+    window.dispatchEvent(new Event('db_sync'));
+    return newAdvance;
+  }
+
+  async voidMasterAdvance(advanceId: string): Promise<void> {
+    const advances = this.getMasterAdvances();
+    const ledger = this.getMasterAdvanceLedger();
+    const currentUser = this.getCurrentUser();
+
+    const idx = advances.findIndex(a => a.id === advanceId);
+    if (idx === -1) {
+      throw new Error(`Advance with ID ${advanceId} not found.`);
+    }
+
+    const advance = advances[idx];
+    if (advance.status === 'voided') {
+      throw new Error(`Advance is already voided.`);
+    }
+
+    advance.status = 'voided';
+    advance.updatedAt = new Date().toISOString();
+
+    const newLedgerEntry: MasterAdvanceLedger = {
+      id: generateUUID(),
+      masterId: advance.masterId,
+      type: 'ADVANCE_REVERSAL',
+      amount: advance.amount,
+      date: new Date().toISOString().split('T')[0],
+      advanceId: advance.id,
+      notes: `Voided advance: ${advance.notes || ''}`,
+      createdBy: currentUser.email,
+      createdAt: new Date().toISOString()
+    };
+
+    const auditRecord: AuditLog = {
+      id: generateUUID(),
+      user_email: currentUser.email,
+      action: 'Advance Voided',
+      details: `Voided advance of ₹${advance.amount} for Master ${advance.masterNameSnapshot}`,
+      created_at: new Date().toISOString()
+    };
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const batch = writeBatch(firestore);
+        batch.set(doc(firestore, this.getCollectionName('master_advances'), advance.id), this.enrichPayload(advance));
+        batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), newLedgerEntry.id), this.enrichPayload(newLedgerEntry));
+        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        await this.performCloudWrite(() => batch.commit());
+      } catch (error: any) {
+        throw new Error(`Failed to void advance: ${error.message || error}`);
+      }
+    }
+
+    advances[idx] = advance;
+    ledger.push(newLedgerEntry);
+
+    this.save('master_advances', advances);
+    this.save('master_advance_ledger', ledger);
+
+    // Save audit log local cache
+    const logs = this.load<AuditLog[]>('audit_logs', []);
+    logs.unshift(auditRecord);
+    this.save('audit_logs', logs.slice(0, 1000));
+
+    window.dispatchEvent(new Event('db_sync'));
+  }
+
+  async editMasterAdvance(advanceId: string, fields: Partial<MasterAdvance>): Promise<MasterAdvance> {
+    const advances = this.getMasterAdvances();
+    const ledger = this.getMasterAdvanceLedger();
+    const currentUser = this.getCurrentUser();
+
+    const idx = advances.findIndex(a => a.id === advanceId);
+    if (idx === -1) {
+      throw new Error(`Advance with ID ${advanceId} not found.`);
+    }
+
+    const original = advances[idx];
+    const updatedAdvance: MasterAdvance = {
+      ...original,
+      ...fields,
+      updatedAt: new Date().toISOString()
+    };
+
+    const auditRecord: AuditLog = {
+      id: generateUUID(),
+      user_email: currentUser.email,
+      action: 'Advance Updated',
+      details: `Updated advance details for Master ${updatedAdvance.masterNameSnapshot}. Previous amount: ₹${original.amount}, New amount: ₹${updatedAdvance.amount}`,
+      created_at: new Date().toISOString()
+    };
+
+    const ledgerIdx = ledger.findIndex(entry => entry.advanceId === advanceId && entry.type === 'ADVANCE_GIVEN');
+    if (ledgerIdx > -1) {
+      ledger[ledgerIdx].amount = updatedAdvance.amount;
+      ledger[ledgerIdx].date = updatedAdvance.advanceDate;
+      ledger[ledgerIdx].notes = updatedAdvance.notes || `Advance given via ${updatedAdvance.paymentMode}`;
+    }
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const batch = writeBatch(firestore);
+        batch.set(doc(firestore, this.getCollectionName('master_advances'), updatedAdvance.id), this.enrichPayload(updatedAdvance));
+        if (ledgerIdx > -1) {
+          batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), ledger[ledgerIdx].id), this.enrichPayload(ledger[ledgerIdx]));
+        }
+        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        await this.performCloudWrite(() => batch.commit());
+      } catch (error: any) {
+        throw new Error(`Failed to update advance: ${error.message || error}`);
+      }
+    }
+
+    advances[idx] = updatedAdvance;
+    this.save('master_advances', advances);
+    if (ledgerIdx > -1) {
+      this.save('master_advance_ledger', ledger);
+    }
+
+    // Save audit log local cache
+    const logs = this.load<AuditLog[]>('audit_logs', []);
+    logs.unshift(auditRecord);
+    this.save('audit_logs', logs.slice(0, 1000));
+
+    window.dispatchEvent(new Event('db_sync'));
+    return updatedAdvance;
+  }
+
+  async migrateDiscountToAdvanceSetoff(invoiceId: string, amountToConvert: number): Promise<Invoice> {
+    const invoices = this.getInvoices();
+    const ledger = this.getMasterAdvanceLedger();
+    const currentUser = this.getCurrentUser();
+
+    const idx = invoices.findIndex(inv => inv.id === invoiceId);
+    if (idx === -1) {
+      throw new Error(`Invoice with ID ${invoiceId} not found.`);
+    }
+
+    const invoice = invoices[idx];
+    const currentDiscount = invoice.discount || 0;
+    if (amountToConvert > currentDiscount) {
+      throw new Error(`Cannot convert ₹${amountToConvert} because current discount is only ₹${currentDiscount}`);
+    }
+
+    const newDiscount = currentDiscount - amountToConvert;
+    const currentAdvanceSetoff = invoice.advanceSetoffAmount || 0;
+    const newAdvanceSetoff = currentAdvanceSetoff + amountToConvert;
+
+    const subTotal = invoice.work_amount - invoice.material_deduction - newDiscount - (invoice.stitching_deduction_amount || 0);
+    const newTds = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
+    const baseGrandTotal = subTotal - newTds;
+    
+    const updatedInvoice: Invoice = {
+      ...invoice,
+      discount: newDiscount,
+      advanceSetoffAmount: newAdvanceSetoff,
+      tds_amount: newTds,
+      grand_total: baseGrandTotal,
+      net_payable: Math.round(baseGrandTotal - newAdvanceSetoff),
+      advanceBalanceBefore: invoice.advanceBalanceBefore !== undefined ? invoice.advanceBalanceBefore : this.getMasterAdvanceBalance(invoice.master_id),
+    };
+    updatedInvoice.advanceBalanceAfter = (updatedInvoice.advanceBalanceBefore || 0) - amountToConvert;
+
+    const newLedgerEntry: MasterAdvanceLedger = {
+      id: generateUUID(),
+      masterId: invoice.master_id,
+      type: 'ADVANCE_SET_OFF',
+      amount: amountToConvert,
+      date: new Date().toISOString().split('T')[0],
+      invoiceId: invoice.id,
+      invoiceNo: invoice.invoice_no,
+      notes: `Converted ₹${amountToConvert} discount to advance setoff`,
+      createdBy: currentUser.email,
+      createdAt: new Date().toISOString()
+    };
+
+    const auditRecord: AuditLog = {
+      id: generateUUID(),
+      user_email: currentUser.email,
+      action: 'Discount Migrated to Advance Setoff',
+      details: `Converted ₹${amountToConvert} discount to advance setoff on Invoice ${invoice.invoice_no} for Master ID ${invoice.master_id}`,
+      created_at: new Date().toISOString()
+    };
+
+    if (this.isFirebaseInitialized) {
+      try {
+        const batch = writeBatch(firestore);
+        batch.set(doc(firestore, this.getCollectionName('invoices'), updatedInvoice.id), this.enrichPayload(updatedInvoice));
+        batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), newLedgerEntry.id), this.enrichPayload(newLedgerEntry));
+        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        await this.performCloudWrite(() => batch.commit());
+      } catch (error: any) {
+        throw new Error(`Failed to migrate discount in Firestore: ${error.message || error}`);
+      }
+    }
+
+    invoices[idx] = updatedInvoice;
+    ledger.push(newLedgerEntry);
+
+    this.save('invoices', invoices);
+    this.save('master_advance_ledger', ledger);
+
+    const logs = this.load<AuditLog[]>('audit_logs', []);
+    logs.unshift(auditRecord);
+    this.save('audit_logs', logs.slice(0, 1000));
+
+    window.dispatchEvent(new Event('db_sync'));
+    return updatedInvoice;
+  }
+
   // --- Invoices ---
   getInvoices(): Invoice[] {
     return this.load<Invoice[]>('invoices', []);
@@ -3024,7 +3327,10 @@ class DatabaseService {
       selected_branch_name: invoice.selected_branch_name,
       stitching_deduction_amount: invoice.stitching_deduction_amount !== undefined ? invoice.stitching_deduction_amount : 0,
       stitching_deduction_reason: invoice.stitching_deduction_reason || '',
-      base_work_amount: invoice.base_work_amount !== undefined ? invoice.base_work_amount : (invoice.work_amount || 0)
+      base_work_amount: invoice.base_work_amount !== undefined ? invoice.base_work_amount : (invoice.work_amount || 0),
+      advanceSetoffAmount: invoice.advanceSetoffAmount !== undefined ? invoice.advanceSetoffAmount : 0,
+      advanceBalanceBefore: invoice.advanceBalanceBefore !== undefined ? invoice.advanceBalanceBefore : 0,
+      advanceBalanceAfter: invoice.advanceBalanceAfter !== undefined ? invoice.advanceBalanceAfter : 0
     };
 
     const linkedInvoiceChallans: InvoiceChallan[] = [];
@@ -3071,27 +3377,51 @@ class DatabaseService {
       created_at: new Date().toISOString()
     };
 
+    // Prepare advance setoff ledger entry if finalized and setoff is used
+    const masterAdvanceLedgerList = this.getMasterAdvanceLedger();
+    let advanceLedgerEntry: MasterAdvanceLedger | null = null;
+
+    if (newInvoice.status === 'finalised' && (newInvoice.advanceSetoffAmount || 0) > 0) {
+      advanceLedgerEntry = {
+        id: generateUUID(),
+        masterId: newInvoice.master_id,
+        type: 'ADVANCE_SET_OFF',
+        amount: newInvoice.advanceSetoffAmount || 0,
+        date: newInvoice.created_at.split('T')[0],
+        invoiceId: newInvoice.id,
+        invoiceNo: newInvoice.invoice_no,
+        notes: `Advance adjusted against Invoice ${newInvoice.invoice_no}`,
+        createdBy: currentUser.email,
+        createdAt: new Date().toISOString()
+      };
+    }
+
     // Deep write to Firestore using atomic batch. Save ledger only after successes.
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
         
         // Write Invoice
-        batch.set(doc(firestore, 'invoices', newInvoice.id), this.enrichPayload(newInvoice));
+        batch.set(doc(firestore, this.getCollectionName('invoices'), newInvoice.id), this.enrichPayload(newInvoice));
 
         // Write Linked entries
         linkedInvoiceChallans.forEach(bridge => {
           const idHash = `${bridge.invoice_id}_${bridge.challan_id}`;
-          batch.set(doc(firestore, 'invoice_challans', idHash), this.enrichPayload(bridge));
+          batch.set(doc(firestore, this.getCollectionName('invoice_challans'), idHash), this.enrichPayload(bridge));
         });
 
         // Update Challans
         updatedChallans.forEach(ch => {
-          batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
+          batch.set(doc(firestore, this.getCollectionName('challans'), ch.id), this.enrichPayload(ch));
         });
 
+        // Write advance ledger entry if applicable
+        if (advanceLedgerEntry) {
+          batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), advanceLedgerEntry.id), this.enrichPayload(advanceLedgerEntry));
+        }
+
         // Write audit log
-        batch.set(doc(firestore, 'audit_logs', auditRecord.id), this.enrichPayload(auditRecord));
+        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
 
         // Wait for Firestore to successfully complete
         await this.performCloudWrite(() => batch.commit());
@@ -3105,6 +3435,11 @@ class DatabaseService {
     linkedInvoiceChallans.forEach(bridge => {
       invoiceChallanList.push(bridge);
     });
+
+    if (advanceLedgerEntry) {
+      masterAdvanceLedgerList.push(advanceLedgerEntry);
+      this.save('master_advance_ledger', masterAdvanceLedgerList);
+    }
 
     this.save('invoices', invoiceList);
     this.save('invoice_challans', invoiceChallanList);
@@ -3251,6 +3586,11 @@ class DatabaseService {
       // Remove links
       const newLinks = invoiceChallanList.filter(ic => ic.invoice_id !== invoiceId);
       
+      // Find and remove any linked ADVANCE_SET_OFF ledger entries
+      const advanceLedger = this.load<MasterAdvanceLedger[]>('master_advance_ledger', []);
+      const linkedAdvanceLedgers = advanceLedger.filter(entry => entry.invoiceId === invoiceId);
+      const remainingAdvanceLedgers = advanceLedger.filter(entry => entry.invoiceId !== invoiceId);
+
       const reasonMsg = reason ? ` Audit Reason: ${reason}.` : '';
       this.addAuditLog(currentUser.email, 'Invoice Deleted / Reversed', `Voided/Reversed Invoice ${invoice.invoice_no} (Value: ₹${invoice.net_payable}).${reasonMsg} Restored included challans to pending status.`);
 
@@ -3259,23 +3599,29 @@ class DatabaseService {
       this.save('invoices', invoiceList);
       this.save('invoice_challans', newLinks);
       this.save('challans', challanList);
+      this.save('master_advance_ledger', remainingAdvanceLedgers);
 
       // Cloud deletion pipeline
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
           // Delete invoice reference
-          batch.delete(doc(firestore, 'invoices', invoiceId));
+          batch.delete(doc(firestore, this.getCollectionName('invoices'), invoiceId));
 
           // Delete bridge connections
           linkedChallans.forEach(bridge => {
             const idHash = `${bridge.invoice_id}_${bridge.challan_id}`;
-            batch.delete(doc(firestore, 'invoice_challans', idHash));
+            batch.delete(doc(firestore, this.getCollectionName('invoice_challans'), idHash));
+          });
+
+          // Delete associated advance setoffs from cloud ledger
+          linkedAdvanceLedgers.forEach(entry => {
+            batch.delete(doc(firestore, this.getCollectionName('master_advance_ledger'), entry.id));
           });
 
           // Revert challan states
           updatedChallans.forEach(ch => {
-            batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
+            batch.set(doc(firestore, this.getCollectionName('challans'), ch.id), this.enrichPayload(ch));
           });
 
           this.performCloudWrite(() => batch.commit())

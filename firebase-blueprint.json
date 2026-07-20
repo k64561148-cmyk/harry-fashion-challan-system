@@ -212,6 +212,45 @@
         "timestamp": { "type": "string" }
       },
       "required": ["id", "material_id", "before_stock", "after_stock", "reason", "admin_user", "timestamp"]
+    },
+    "MasterAdvance": {
+      "title": "MasterAdvance",
+      "description": "Advances given to tailoring masters",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "masterId": { "type": "string" },
+        "masterNameSnapshot": { "type": "string" },
+        "advanceDate": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentMode": { "type": "string", "enum": ["cash", "bank", "upi", "cheque", "other"] },
+        "referenceNo": { "type": "string" },
+        "notes": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "voided"] },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "masterId", "masterNameSnapshot", "advanceDate", "amount", "paymentMode", "status", "createdBy", "createdAt", "updatedAt"]
+    },
+    "MasterAdvanceLedger": {
+      "title": "MasterAdvanceLedger",
+      "description": "Ledger of advances given and set off",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "masterId": { "type": "string" },
+        "type": { "type": "string", "enum": ["ADVANCE_GIVEN", "ADVANCE_SET_OFF", "ADVANCE_REVERSAL"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "invoiceId": { "type": "string" },
+        "invoiceNo": { "type": "string" },
+        "advanceId": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "masterId", "type", "amount", "date", "notes", "createdBy", "createdAt"]
     }
   },
   "firestore": {
@@ -266,6 +305,14 @@
     "/stock_corrections/{correctionId}": {
       "schema": "StockCorrection",
       "description": "Stock correction logs"
+    },
+    "/master_advances/{advanceId}": {
+      "schema": "MasterAdvance",
+      "description": "Advances given to tailoring masters"
+    },
+    "/master_advance_ledger/{ledgerId}": {
+      "schema": "MasterAdvanceLedger",
+      "description": "Ledger of advances given and set off"
     }
   }
 }

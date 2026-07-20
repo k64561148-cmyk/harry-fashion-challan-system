@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
-import { Master, Material, Challan, ChallanItem, Invoice } from '../types';
+import { Master, Material, Challan, ChallanItem, Invoice, MasterAdvance, MasterAdvanceLedger } from '../types';
 import { generateInvoicePDF, formatINR, formatDate } from '../utils/exportUtils';
 import { 
   Receipt, 
@@ -22,7 +22,13 @@ import {
   Download,
   Edit3,
   Search,
-  X
+  X,
+  Coins,
+  History,
+  PiggyBank,
+  Sparkles,
+  Plus,
+  Trash
 } from 'lucide-react';
 
 interface GroupedItem {
@@ -36,12 +42,41 @@ interface GroupedItem {
 
 export const BillingView: React.FC = () => {
   const currentUser = db.getCurrentUser();
-  const [activeBillingTab, setActiveBillingTab] = useState<'create' | 'manage'>('create');
+  const [activeBillingTab, setActiveBillingTab] = useState<'create' | 'manage' | 'advances' | 'migrate'>('create');
   const [allInvoices, setAllInvoices] = useState<Invoice[]>([]);
   
   // Settle & Manage filters
   const [filterMasterId, setFilterMasterId] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+
+  // Master Advances Tab States
+  const [advancesList, setAdvancesList] = useState<MasterAdvance[]>([]);
+  const [selectedAdvanceMasterId, setSelectedAdvanceMasterId] = useState<string>('');
+  const [advanceAmountRaw, setAdvanceAmountRaw] = useState<string>('');
+  const [advanceDate, setAdvanceDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [advancePaymentMode, setAdvancePaymentMode] = useState<'cash' | 'bank' | 'upi' | 'cheque' | 'other'>('cash');
+  const [advanceRefNo, setAdvanceRefNo] = useState<string>('');
+  const [advanceNotes, setAdvanceNotes] = useState<string>('');
+  const [advanceMasterSearchQuery, setAdvanceMasterSearchQuery] = useState<string>('');
+  const [showAdvanceMasterDropdown, setShowAdvanceMasterDropdown] = useState<boolean>(false);
+  const [highlightedAdvanceMasterIndex, setHighlightedAdvanceMasterIndex] = useState<number>(0);
+  const [voidConfirmId, setVoidConfirmId] = useState<string | null>(null);
+  const [voidReason, setVoidReason] = useState<string>('');
+  const [advancesFilterMasterId, setAdvancesFilterMasterId] = useState<string>('all');
+  const [advancesFilterStatus, setAdvancesFilterStatus] = useState<string>('all');
+
+  // Migrate tab states
+  const [migrateMasterId, setMigrateMasterId] = useState<string>('');
+  const [migrateInvoices, setMigrateInvoices] = useState<Invoice[]>([]);
+  const [selectedMigrateInvoiceIds, setSelectedMigrateInvoiceIds] = useState<{ [id: string]: boolean }>({});
+  const [migrateMasterSearchQuery, setMigrateMasterSearchQuery] = useState<string>('');
+  const [showMigrateMasterDropdown, setShowMigrateMasterDropdown] = useState<boolean>(false);
+  const [highlightedMigrateMasterIndex, setHighlightedMigrateMasterIndex] = useState<number>(0);
+  const [migrationStatus, setMigrationStatus] = useState<{ text: string; isError: boolean } | null>(null);
+
+  // Advance Setoff State
+  const [advanceSetoffRaw, setAdvanceSetoffRaw] = useState<string>('');
+  const [advanceSetoff, setAdvanceSetoff] = useState<number>(0);
 
   // Edit invoice inline controls
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null);
@@ -270,6 +305,7 @@ export const BillingView: React.FC = () => {
     setMasters(db.getMasters().filter(m => m.is_active));
     setMaterials(db.getMaterials());
     setAllInvoices(db.getInvoices());
+    setAdvancesList(db.getMasterAdvances());
     setChallansVersion(v => v + 1);
   };
 
@@ -801,6 +837,80 @@ export const BillingView: React.FC = () => {
     }
   };
 
+  const handleSaveAdvance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAdvanceMasterId) {
+      alert('Please select a master.');
+      return;
+    }
+    const amt = parseFloat(advanceAmountRaw) || 0;
+    if (amt <= 0) {
+      alert('Please enter a valid positive advance amount.');
+      return;
+    }
+    const masterObj = masters.find(m => m.id === selectedAdvanceMasterId);
+    if (!masterObj) return;
+
+    try {
+      await db.saveMasterAdvance({
+        masterId: selectedAdvanceMasterId,
+        masterNameSnapshot: masterObj.name,
+        advanceDate: advanceDate,
+        amount: amt,
+        paymentMode: advancePaymentMode,
+        referenceNo: advanceRefNo,
+        notes: advanceNotes,
+      });
+
+      // Clear states
+      setAdvanceAmountRaw('');
+      setAdvanceRefNo('');
+      setAdvanceNotes('');
+      // Reload
+      loadInitialData();
+      alert('✅ Master Advance recorded successfully!');
+    } catch (err: any) {
+      alert(`❌ Error saving master advance: ${err.message || err}`);
+    }
+  };
+
+  const handleVoidAdvance = async (advanceId: string) => {
+    if (!voidReason.trim()) {
+      alert('Please provide a reason for voiding.');
+      return;
+    }
+    try {
+      await db.voidMasterAdvance(advanceId);
+      setVoidConfirmId(null);
+      setVoidReason('');
+      loadInitialData();
+      alert('✅ Master Advance voided successfully!');
+    } catch (err: any) {
+      alert(`❌ Error voiding master advance: ${err.message || err}`);
+    }
+  };
+
+  const handleMigrateDiscount = async (invoiceId: string, discountAmount: number) => {
+    if (currentUser?.role !== 'admin') {
+      setMigrationStatus({ text: 'Unauthorized: Only admin can run the migration tool.', isError: true });
+      return;
+    }
+    try {
+      await db.migrateDiscountToAdvanceSetoff(invoiceId, discountAmount);
+      setMigrationStatus({ text: `✅ Successfully migrated ₹${discountAmount} discount to advance setoff!`, isError: false });
+      loadInitialData();
+    } catch (err: any) {
+      setMigrationStatus({ text: `❌ Migration failed: ${err.message || err}`, isError: true });
+    }
+  };
+
+  useEffect(() => {
+    if (activeBillingTab === 'migrate') {
+      const filtered = allInvoices.filter(inv => inv.status === 'finalised' && (inv.discount || 0) > 0);
+      setMigrateInvoices(filtered);
+    }
+  }, [activeBillingTab, allInvoices]);
+
   // Void and Settle Cleanup for Administrative invoice Purging
   const handleDeleteInvoiceClick = (invoiceId: string, invoiceNo: string) => {
     setDeleteReason('');
@@ -897,29 +1007,51 @@ export const BillingView: React.FC = () => {
       )}
       
       {/* Dynamic View Navigation */}
-      <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200">
+      <div className="flex flex-wrap bg-slate-100 p-1 rounded-xl border border-slate-200 gap-1 sm:gap-0">
         <button
           onClick={() => {
             setActiveBillingTab('create');
             setSuccessInvoice(null);
           }}
-          className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer uppercase ${
+          className={`flex-1 min-w-[120px] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer uppercase ${
             activeBillingTab === 'create' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
           }`}
         >
-          <Receipt className="w-4.5 h-4.5" /> Assemble Settle Bill
+          <Receipt className="w-4 h-4" /> Assemble Bill
         </button>
         <button
           onClick={() => {
             setActiveBillingTab('manage');
             setEditingInvoice(null);
           }}
-          className={`flex-1 py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition cursor-pointer uppercase ${
+          className={`flex-1 min-w-[120px] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer uppercase ${
             activeBillingTab === 'manage' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
           }`}
         >
-          <FileCheck className="w-4.5 h-4.5" /> Manage & Settle Registers
+          <FileCheck className="w-4 h-4" /> Registers
         </button>
+        <button
+          onClick={() => {
+            setActiveBillingTab('advances');
+          }}
+          className={`flex-1 min-w-[120px] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer uppercase ${
+            activeBillingTab === 'advances' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+          }`}
+        >
+          <PiggyBank className="w-4 h-4" /> Master Advances
+        </button>
+        {currentUser?.role === 'admin' && (
+          <button
+            onClick={() => {
+              setActiveBillingTab('migrate');
+            }}
+            className={`flex-1 min-w-[120px] py-2 px-3 text-xs font-bold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer uppercase ${
+              activeBillingTab === 'migrate' ? 'bg-[#1A2E4A] text-white shadow-sm' : 'text-slate-600 hover:bg-white/60'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" /> Migrate
+          </button>
+        )}
       </div>
 
       {pdfActionStatus && (
@@ -1149,7 +1281,17 @@ export const BillingView: React.FC = () => {
                 </div>
                 <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1 font-bold">
                   <span className="text-[#1A2E4A]">Grand Total (Rounded):</span>
-                  <span className="text-green-700 font-sans">{formatINR(successInvoice.net_payable)}</span>
+                  <span className="text-slate-800 font-mono">{formatINR(successInvoice.grand_total ? Math.round(successInvoice.grand_total) : successInvoice.net_payable)}</span>
+                </div>
+                {successInvoice.advanceSetoffAmount ? (
+                  <div className="flex justify-between font-bold text-rose-700">
+                    <span>Advance Setoff Applied:</span>
+                    <span className="font-mono">- {formatINR(successInvoice.advanceSetoffAmount)}</span>
+                  </div>
+                ) : null}
+                <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1 font-extrabold text-green-700">
+                  <span>{successInvoice.advanceSetoffAmount ? 'Final Cash Payable:' : 'Grand Total (Net to Pay):'}</span>
+                  <span className="font-mono">{formatINR(successInvoice.net_payable)}</span>
                 </div>
               </div>
 
@@ -1427,7 +1569,7 @@ export const BillingView: React.FC = () => {
                   <span className="text-[9px] font-bold tracking-widest text-[#1A2E4A] uppercase">SECTION II</span>
                   <h4 className="text-xs font-bold text-slate-800 tracking-tight uppercase">STITCHING JOB EARNINGS SUMMARY</h4>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-705 mb-1">
                         TOTAL PCS MADE <span className="text-red-500">*</span>
@@ -1484,6 +1626,39 @@ export const BillingView: React.FC = () => {
                           const cleaned = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : val;
                           setDiscountRaw(cleaned);
                           setDiscount(parseFloat(cleaned) || 0);
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="block text-[11px] font-semibold text-slate-705">
+                          ADVANCE SETOFF (₹)
+                        </label>
+                        {selectedMasterId && (
+                          <span className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200 px-1 py-0.5 rounded font-bold font-mono">
+                            Avail: ₹{db.getMasterAdvanceBalance(selectedMasterId)}
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Setoff, e.g. 0"
+                        className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-mono font-bold text-slate-800"
+                        value={advanceSetoffRaw}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/[^0-9.]/g, '');
+                          const parts = val.split('.');
+                          const cleaned = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : val;
+                          setAdvanceSetoffRaw(cleaned);
+                          const parsed = parseFloat(cleaned) || 0;
+                          const maxAllowed = selectedMasterId ? db.getMasterAdvanceBalance(selectedMasterId) : 0;
+                          if (parsed > maxAllowed) {
+                            setAdvanceSetoff(maxAllowed);
+                          } else {
+                            setAdvanceSetoff(parsed);
+                          }
                         }}
                       />
                     </div>
@@ -1694,12 +1869,23 @@ export const BillingView: React.FC = () => {
                         </div>
                         <hr className="border-slate-200/60 my-1" />
                         <div className="flex justify-between font-bold text-[#1A2E4A]">
-                          <span>Grand Total (Net to Pay):</span>
+                          <span>Grand Total (Net):</span>
                           <span className="font-mono">{formatINR(preciseGrandTotal)}</span>
                         </div>
-                        <div className="flex justify-between font-bold text-green-700">
-                          <span>Rounded off to nearest ₹:</span>
+                        <div className="flex justify-between font-bold text-slate-700">
+                          <span>Rounded Grand Total:</span>
                           <span className="font-mono">{formatINR(roundedOffGrandTotal)}</span>
+                        </div>
+                        {advanceSetoff > 0 && (
+                          <div className="flex justify-between font-bold text-rose-700">
+                            <span>Advance Setoff Applied (-):</span>
+                            <span className="font-mono font-bold">- {formatINR(advanceSetoff)}</span>
+                          </div>
+                        )}
+                        <hr className="border-slate-200/60 my-1" />
+                        <div className="flex justify-between font-extrabold text-green-700 text-sm">
+                          <span>Final Cash Payable:</span>
+                          <span className="font-mono">{formatINR(Math.max(0, roundedOffGrandTotal - advanceSetoff))}</span>
                         </div>
                       </div>
                     </div>
@@ -1810,7 +1996,7 @@ export const BillingView: React.FC = () => {
         </>
       )}
       </>
-      ) : (
+      ) : activeBillingTab === 'manage' ? (
         /* Settle registry lists & Edit Invoice inline form */
         <div className="space-y-6 text-left">
           {editingInvoice ? (
@@ -2147,6 +2333,364 @@ export const BillingView: React.FC = () => {
               })()}
             </div>
           )}
+        </div>
+      ) : activeBillingTab === 'advances' ? (
+        /* MASTER ADVANCE AND LEDGER SCREEN */
+        <div className="space-y-6 text-left animate-fade-in">
+          {/* Form to record a new Master Advance */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-6">
+            <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
+              <div className="p-2 bg-amber-50 text-[#1A2E4A] rounded-lg">
+                <PiggyBank className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">RECORD NEW MASTER ADVANCE</h3>
+                <p className="text-[10px] text-slate-400 font-sans">Issue custom advanced capital payments to craftsman file accounts</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveAdvance} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="relative">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">SELECT MASTER *</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    className="w-full bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs text-slate-805 font-bold"
+                    placeholder="Type to search master..."
+                    value={
+                      showAdvanceMasterDropdown 
+                        ? advanceMasterSearchQuery 
+                        : (masters.find(m => m.id === selectedAdvanceMasterId)?.name || '')
+                    }
+                    onChange={(e) => {
+                      setAdvanceMasterSearchQuery(e.target.value);
+                      setShowAdvanceMasterDropdown(true);
+                      setSelectedAdvanceMasterId('');
+                    }}
+                    onFocus={() => {
+                      setAdvanceMasterSearchQuery('');
+                      setShowAdvanceMasterDropdown(true);
+                    }}
+                  />
+                  {showAdvanceMasterDropdown && (
+                    <div className="absolute z-30 w-full bg-white border border-slate-250 rounded-xl shadow-xl mt-1 max-h-48 overflow-y-auto">
+                      {masters
+                        .filter(m => m.name.toLowerCase().includes(advanceMasterSearchQuery.toLowerCase()))
+                        .map(m => (
+                          <div
+                            key={m.id}
+                            onClick={() => {
+                              setSelectedAdvanceMasterId(m.id);
+                              setShowAdvanceMasterDropdown(false);
+                            }}
+                            className="px-3 py-2 text-xs font-semibold hover:bg-slate-50 cursor-pointer text-slate-800"
+                          >
+                            {m.name} ({m.type.toUpperCase()})
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">ADVANCE DATE *</label>
+                <input
+                  type="date"
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded-lg py-2 px-3 text-xs font-bold text-slate-800"
+                  value={advanceDate}
+                  onChange={(e) => setAdvanceDate(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">ADVANCE AMOUNT (₹) *</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="Amount, e.g. 50000"
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded-lg py-2 px-3 text-xs font-mono font-bold text-slate-800"
+                  value={advanceAmountRaw}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/[^0-9.]/g, '');
+                    setAdvanceAmountRaw(val);
+                  }}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">PAYMENT MODE</label>
+                <select
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded-lg py-2 px-3 text-xs font-semibold text-slate-800"
+                  value={advancePaymentMode}
+                  onChange={(e: any) => setAdvancePaymentMode(e.target.value)}
+                >
+                  <option value="cash">CASH</option>
+                  <option value="bank">BANK TRANSFER</option>
+                  <option value="upi">UPI / G-PAY / PHONEPE</option>
+                  <option value="cheque">CHEQUE</option>
+                  <option value="other">OTHER</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">REFERENCE NO (OPTIONAL)</label>
+                <input
+                  type="text"
+                  placeholder="Transaction ID, Cheque No"
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded-lg py-2 px-3 text-xs font-semibold text-slate-800"
+                  value={advanceRefNo}
+                  onChange={(e) => setAdvanceRefNo(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">NOTES / REASON</label>
+                <input
+                  type="text"
+                  placeholder="E.g. Festival advance, medical aid, etc."
+                  className="w-full bg-slate-50 border border-slate-200 focus:border-[#2D3E5D] rounded-lg py-2 px-3 text-xs font-semibold text-slate-800"
+                  value={advanceNotes}
+                  onChange={(e) => setAdvanceNotes(e.target.value)}
+                />
+              </div>
+
+              <div className="md:col-span-3 flex justify-end">
+                <button
+                  type="submit"
+                  className="bg-[#1A2E4A] hover:bg-[#14233a] text-white text-xs font-bold py-2.5 px-6 rounded-lg cursor-pointer transition shadow-xs flex items-center gap-1.5 uppercase tracking-wider font-sans"
+                >
+                  <Plus className="w-4 h-4" /> Record Advance
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Table display of master advances */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-slate-100 text-[#1A2E4A] rounded-lg">
+                  <History className="w-4 h-4" />
+                </div>
+                <h4 className="text-xs font-bold text-slate-805 uppercase">ADVANCE JOURNAL LOG</h4>
+              </div>
+
+              {/* Filters */}
+              <div className="flex gap-2 w-full sm:w-auto">
+                <select
+                  className="bg-slate-50 border border-slate-200 rounded-lg p-1.5 px-2.5 text-[11px] font-semibold text-slate-700 outline-none w-full sm:w-44"
+                  value={advancesFilterMasterId}
+                  onChange={(e) => setAdvancesFilterMasterId(e.target.value)}
+                >
+                  <option value="all">ALL MASTERS</option>
+                  {masters.map(m => (
+                    <option key={m.id} value={m.id}>{m.name.toUpperCase()}</option>
+                  ))}
+                </select>
+
+                <select
+                  className="bg-slate-50 border border-slate-200 rounded-lg p-1.5 px-2.5 text-[11px] font-semibold text-slate-700 outline-none w-full sm:w-36"
+                  value={advancesFilterStatus}
+                  onChange={(e) => setAdvancesFilterStatus(e.target.value)}
+                >
+                  <option value="all">ALL STATUS</option>
+                  <option value="active">ACTIVE ONLY</option>
+                  <option value="voided">VOIDED ONLY</option>
+                </select>
+              </div>
+            </div>
+
+            {/* List */}
+            {(() => {
+              const filteredAdvances = advancesList.filter(adv => {
+                const matchMaster = advancesFilterMasterId === 'all' || adv.masterId === advancesFilterMasterId;
+                const matchStatus = advancesFilterStatus === 'all' || adv.status === advancesFilterStatus;
+                return matchMaster && matchStatus;
+              });
+
+              if (filteredAdvances.length === 0) {
+                return (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed rounded-xl text-xs font-semibold text-slate-500">
+                    No matching Master Advances found in recorded system history.
+                  </div>
+                );
+              }
+
+              return (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 text-[10px] tracking-wide uppercase">
+                        <th className="py-2.5 px-3">Master Name</th>
+                        <th className="py-2.5 px-3">Date</th>
+                        <th className="py-2.5 px-3 text-right">Amount</th>
+                        <th className="py-2.5 px-3">Mode</th>
+                        <th className="py-2.5 px-3">Ref No</th>
+                        <th className="py-2.5 px-3">Notes</th>
+                        <th className="py-2.5 px-3 text-center">Status</th>
+                        <th className="py-2.5 px-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredAdvances.map(adv => (
+                        <tr key={adv.id} className="hover:bg-slate-50/40 transition">
+                          <td className="py-2.5 px-3 font-bold text-slate-800">{adv.masterNameSnapshot}</td>
+                          <td className="py-2.5 px-3 font-medium text-slate-600 font-mono">{formatDate(adv.advanceDate)}</td>
+                          <td className="py-2.5 px-3 text-right font-bold text-slate-800 font-mono">{formatINR(adv.amount)}</td>
+                          <td className="py-2.5 px-3 uppercase font-semibold text-slate-600 font-mono text-[10px]">{adv.paymentMode}</td>
+                          <td className="py-2.5 px-3 font-medium text-slate-600 font-mono">{adv.referenceNo || '-'}</td>
+                          <td className="py-2.5 px-3 text-slate-500 font-medium">{adv.notes || '-'}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                              adv.status === 'active' 
+                                ? 'bg-green-50 text-green-700 border border-green-150' 
+                                : 'bg-rose-50 text-rose-700 border border-rose-150'
+                            }`}>
+                              {adv.status.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            {adv.status === 'active' && currentUser?.role === 'admin' ? (
+                              voidConfirmId === adv.id ? (
+                                <div className="flex items-center gap-1.5 justify-end">
+                                  <input
+                                    type="text"
+                                    placeholder="Reason..."
+                                    className="border border-rose-200 rounded p-1 text-[10px] font-semibold w-28 bg-rose-50/50 outline-none"
+                                    value={voidReason}
+                                    onChange={(e) => setVoidReason(e.target.value)}
+                                  />
+                                  <button
+                                    onClick={() => handleVoidAdvance(adv.id)}
+                                    className="bg-rose-650 hover:bg-rose-700 text-white rounded px-2 py-0.5 text-[10px] font-bold cursor-pointer transition"
+                                  >
+                                    Void
+                                  </button>
+                                  <button
+                                    onClick={() => setVoidConfirmId(null)}
+                                    className="bg-slate-200 hover:bg-slate-300 text-slate-700 rounded px-1.5 py-0.5 text-[10px] font-bold cursor-pointer transition"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setVoidConfirmId(adv.id);
+                                    setVoidReason('');
+                                  }}
+                                  className="text-[10px] font-bold border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 px-2 py-1 rounded cursor-pointer transition"
+                                >
+                                  Void Advance
+                                </button>
+                              )
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic font-medium font-mono select-none">locked</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      ) : (
+        /* OWNER ONLY MIGRATION SCREEN */
+        <div className="space-y-6 text-left animate-fade-in">
+          {/* Help description box */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+            <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
+              <div className="p-2 bg-indigo-50 text-[#1A2E4A] rounded-lg">
+                <Sparkles className="w-5 h-5 animate-pulse text-indigo-650" />
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">OWNER'S DISCOUNT MIGRATION UTILITY</h3>
+                <p className="text-[10px] text-slate-400 font-sans">Convert historic discount allocations to master advance setoffs to align accounting balances</p>
+              </div>
+            </div>
+
+            <div className="p-4 bg-indigo-50/50 border border-indigo-150 text-slate-650 rounded-xl text-xs leading-relaxed space-y-1 font-medium">
+              <p className="font-bold text-[#1A2E4A] text-[13px] mb-1">How does this conversion work?</p>
+              <p>Some master advance deductions were previously entered under the <strong className="font-semibold text-slate-800">Discount Given</strong> field. This tool converts the discount amount on any finalized invoice to an <strong className="font-semibold text-slate-800 font-mono">Advance Setoff</strong>.</p>
+              <p className="text-amber-800 font-bold">Important: This operation writes atomic ledger entries in real-time, reducing outstanding master advance accounts automatically.</p>
+            </div>
+
+            {migrationStatus && (
+              <div className={`p-4 border rounded-xl flex gap-2.5 items-start text-xs font-bold ${
+                migrationStatus.isError ? 'bg-rose-50 border-rose-200 text-rose-800' : 'bg-green-50 border-green-200 text-green-800'
+              }`}>
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex-1">{migrationStatus.text}</div>
+                <button onClick={() => setMigrationStatus(null)} className="ml-auto font-extrabold text-slate-400 hover:text-slate-650 cursor-pointer">✕</button>
+              </div>
+            )}
+          </div>
+
+          {/* List of eligible invoices */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-slate-100 text-[#1A2E4A] rounded-lg">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <h4 className="text-xs font-bold text-slate-805 uppercase">ELIGIBLE FINALISED INVOICES</h4>
+              </div>
+            </div>
+
+            {(() => {
+              if (migrateInvoices.length === 0) {
+                return (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed rounded-xl text-xs font-semibold text-slate-500">
+                    No finalized invoices found with outstanding discount fields.
+                  </div>
+                );
+              }
+
+              return (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 text-[10px] tracking-wide uppercase">
+                        <th className="py-2.5 px-3">Invoice No</th>
+                        <th className="py-2.5 px-3">Master Name</th>
+                        <th className="py-2.5 px-3">Billing Period</th>
+                        <th className="py-2.5 px-3 text-right">Discount Amount</th>
+                        <th className="py-2.5 px-3 text-right">Current Setoff</th>
+                        <th className="py-2.5 px-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {migrateInvoices.map(inv => {
+                        const mObj = masters.find(m => m.id === inv.master_id);
+                        const periodMonthName = monthsList.find(m => m.value === inv.period_month)?.name || `Month ${inv.period_month}`;
+                        return (
+                          <tr key={inv.id} className="hover:bg-slate-50/45 transition">
+                            <td className="py-2.5 px-3 font-mono font-bold text-[#1A2E4A]">{inv.invoice_no}</td>
+                            <td className="py-2.5 px-3 font-bold text-slate-800">{mObj?.name || 'Unknown Master'}</td>
+                            <td className="py-2.5 px-3 font-medium text-slate-600 font-mono">{periodMonthName} {inv.period_year}</td>
+                            <td className="py-2.5 px-3 text-right font-extrabold text-rose-600 font-mono">{formatINR(inv.discount || 0)}</td>
+                            <td className="py-2.5 px-3 text-right font-medium text-slate-600 font-mono">{formatINR(inv.advanceSetoffAmount || 0)}</td>
+                            <td className="py-2.5 px-3 text-right">
+                              <button
+                                onClick={() => handleMigrateDiscount(inv.id, inv.discount || 0)}
+                                className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg cursor-pointer transition shadow-sm flex items-center gap-1 ml-auto uppercase tracking-wider"
+                              >
+                                <Sparkles className="w-3.5 h-3.5" /> Convert to Setoff
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
 

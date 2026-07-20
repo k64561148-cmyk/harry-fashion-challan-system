@@ -201,6 +201,38 @@ export interface Invoice {
   stitching_deduction_amount?: number;
   stitching_deduction_reason?: string;
   base_work_amount?: number;
+  advanceSetoffAmount?: number;
+  advanceBalanceBefore?: number;
+  advanceBalanceAfter?: number;
+}
+
+export interface MasterAdvance {
+  id: string;
+  masterId: string;
+  masterNameSnapshot: string;
+  advanceDate: string; // YYYY-MM-DD
+  amount: number;
+  paymentMode: 'cash' | 'bank' | 'upi' | 'cheque' | 'other';
+  referenceNo: string;
+  notes: string;
+  status: 'active' | 'voided';
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MasterAdvanceLedger {
+  id: string;
+  masterId: string;
+  type: 'ADVANCE_GIVEN' | 'ADVANCE_SET_OFF' | 'ADVANCE_REVERSAL';
+  amount: number;
+  date: string; // YYYY-MM-DD
+  invoiceId?: string;
+  invoiceNo?: string;
+  advanceId?: string;
+  notes: string;
+  createdBy: string;
+  createdAt: string;
 }
 
 export interface InvoiceChallan {

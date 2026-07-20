@@ -27,27 +27,27 @@ service cloud.firestore {
 
     function isEmailAdmin() {
       return request.auth.token.email != null && (
-        request.auth.token.email.lower() == 'k64561148@gmail.com' ||
-        request.auth.token.email.lower() == 'kunal@harryfashion.com' ||
-        request.auth.token.email.lower() == 'kunal3012@harryfashion.com' ||
-        request.auth.token.email.lower().matches('.*admin.*') ||
-        request.auth.token.email.lower().matches('.*owner.*') ||
-        request.auth.token.email.lower().matches('.*kunal.*')
+        request.auth.token.email.matches('(?i)k64561148@gmail\\.com') ||
+        request.auth.token.email.matches('(?i)kunal@harryfashion\\.com') ||
+        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com') ||
+        request.auth.token.email.matches('(?i).*admin.*') ||
+        request.auth.token.email.matches('(?i).*owner.*') ||
+        request.auth.token.email.matches('(?i).*kunal.*')
       );
     }
 
     function isEmailBilling() {
       return request.auth.token.email != null && (
-        request.auth.token.email.lower().matches('.*billing.*') ||
-        request.auth.token.email.lower() == 'kunal3012@harryfashion.com'
+        request.auth.token.email.matches('(?i).*billing.*') ||
+        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
       );
     }
 
     function isEmailIssueDept() {
       return request.auth.token.email != null && (
-        request.auth.token.email.lower().matches('.*issue.*') ||
-        request.auth.token.email.lower().matches('.*dept.*') ||
-        request.auth.token.email.lower() == 'kunal3012@harryfashion.com'
+        request.auth.token.email.matches('(?i).*issue.*') ||
+        request.auth.token.email.matches('(?i).*dept.*') ||
+        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
       );
     }
 
@@ -62,10 +62,10 @@ service cloud.firestore {
       return request.auth != null
         && request.auth.token.email != null
         && (
-          request.auth.token.email.lower() == "kunal3012@harryfashion.com"
-          || request.auth.token.email.lower() == "k64561148@gmail.com"
-          || request.auth.token.email.lower() == "kunal@harryfashion.com"
-          || request.auth.token.email.lower().matches('.*kunal.*')
+          request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
+          || request.auth.token.email.matches('(?i)k64561148@gmail\\.com')
+          || request.auth.token.email.matches('(?i)kunal@harryfashion\\.com')
+          || request.auth.token.email.matches('(?i).*kunal.*')
         );
     }
 
@@ -302,6 +302,16 @@ service cloud.firestore {
       allow read: if isBilling();
       allow create, update: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
       allow delete: if isBilling() && isValidId(txId);
+    }
+
+    match /master_advances/{advanceId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isBilling() && isValidId(advanceId);
+    }
+
+    match /master_advance_ledger/{ledgerId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isBilling() && isValidId(ledgerId);
     }
 
     // Isolated Sandbox Testing Environments (for kunal / developers to safely test the app)
