@@ -3140,7 +3140,7 @@ class DatabaseService {
     };
 
     // Recompute accounting values
-    const subTotal = updatedInvoice.work_amount - updatedInvoice.material_deduction - updatedInvoice.discount;
+    const subTotal = updatedInvoice.work_amount - updatedInvoice.material_deduction - updatedInvoice.discount - (updatedInvoice.stitching_deduction_amount || 0);
     updatedInvoice.tds_amount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
     updatedInvoice.grand_total = subTotal - updatedInvoice.tds_amount;
     updatedInvoice.net_payable = Math.round(updatedInvoice.grand_total);

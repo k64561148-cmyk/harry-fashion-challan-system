@@ -798,7 +798,8 @@ export async function generateInvoicePDF(
     const rValueX = 196;
 
     const mDiscount = invoice.discount || 0;
-    const mSub = invoice.work_amount - invoice.material_deduction - mDiscount;
+    const mDeduction = invoice.stitching_deduction_amount || 0;
+    const mSub = invoice.work_amount - invoice.material_deduction - mDiscount - mDeduction;
     const mTds = invoice.tds_amount || 0;
     const mGrand = invoice.grand_total || (mSub - mTds);
     const mRounded = Math.round(mGrand);
@@ -819,6 +820,12 @@ export async function generateInvoicePDF(
     doc.text('-Discount:', rLabelX, formulasY);
     doc.text(String(Math.round(mDiscount)), rValueX, formulasY, { align: 'right' });
     formulasY += 5.5;
+
+    if (mDeduction > 0) {
+      doc.text(`-Deduction (${invoice.stitching_deduction_reason || 'Job Deduc.'}):`, rLabelX, formulasY);
+      doc.text(String(Math.round(mDeduction)), rValueX, formulasY, { align: 'right' });
+      formulasY += 5.5;
+    }
 
     doc.setFont('Helvetica', 'bold');
     doc.text('Sub Total:', rLabelX, formulasY);
