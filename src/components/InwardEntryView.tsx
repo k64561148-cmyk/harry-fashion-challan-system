@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../db';
+import { db, parseErrorMessage } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
 import { Material, InwardEntry } from '../types';
 import { formatDate } from '../utils/exportUtils';
@@ -193,7 +193,7 @@ export const InwardEntryView: React.FC = () => {
       // Reload lists
       loadMaterialsAndHistory();
     } catch (err: any) {
-      setErrorMsg(err.message || 'Database transaction error');
+      setErrorMsg(parseErrorMessage(err));
     } finally {
       setLoading(false);
     }

@@ -133,6 +133,41 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function parseErrorMessage(err: any): string {
+  if (!err) return 'An unknown error occurred.';
+  let msg = typeof err === 'string' ? err : (err?.message || String(err));
+
+  if (typeof msg === 'string') {
+    const trimmed = msg.trim();
+    if (trimmed.startsWith('{') || trimmed.includes('{"error"')) {
+      try {
+        const jsonStart = trimmed.indexOf('{');
+        const jsonEnd = trimmed.lastIndexOf('}');
+        if (jsonStart !== -1 && jsonEnd !== -1) {
+          const parsed = JSON.parse(trimmed.substring(jsonStart, jsonEnd + 1));
+          if (parsed && parsed.error) {
+            msg = parsed.error;
+          }
+        }
+      } catch (_) {
+        // Ignore json parse error
+      }
+    }
+  }
+
+  if (msg.includes('temporarily unavailable') || msg.includes('UNAVAILABLE') || msg.includes('retry with exponential backoff')) {
+    return 'The database service was temporarily unavailable due to a network glitch. Please check your internet connection and try clicking the button again.';
+  }
+  if (msg.includes('Missing or insufficient permissions') || msg.includes('PERMISSION_DENIED')) {
+    return 'Access Denied: You do not have permission for this database operation. Please ensure you are logged in with the correct account.';
+  }
+  if (msg.includes('Quota exceeded')) {
+    return 'Database usage quota exceeded. Please try again later or contact system administrator.';
+  }
+
+  return msg;
+}
+
 // Default Seed Data Definitions
 const DEFAULT_JACKETS = [
   { name: 'SG', code: 'SG' },
@@ -1693,193 +1728,222 @@ class DatabaseService {
       const counterRef = doc(firestore, this.getCollectionName('counters'), 'challan_backdated');
       const materialRefs = items.map((item) => doc(firestore, this.getCollectionName('materials'), item.material_id));
 
-      // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION
-      await runTransaction(firestore, async (transaction) => {
-        // --- 1. ALL READS FIRST ---
-        // Read Profile document
-        const profileSnap = await transaction.get(profileRef);
+      // RUN EVERYTHING INSIDE A SECURE FIRESTORE TRANSACTION WITH EXPONENTIAL RETRY
+      let lastTxError: any = null;
+      let txSuccess = false;
 
-        // Read Master document
-        const masterSnap = await transaction.get(masterRef);
+      for (let txAttempt = 1; txAttempt <= 3; txAttempt++) {
+        try {
+          await runTransaction(firestore, async (transaction) => {
+            // --- 1. ALL READS FIRST ---
+            // Read Profile document
+            const profileSnap = await transaction.get(profileRef);
 
-        // Read Backdated Counter
-        const counterSnap = await transaction.get(counterRef);
+            // Read Master document
+            const masterSnap = await transaction.get(masterRef);
 
-        // Read all Material documents
-        const materialSnaps = [];
-        for (const matRef of materialRefs) {
-          const matSnap = await transaction.get(matRef);
-          materialSnaps.push(matSnap);
-        }
+            // Read Backdated Counter
+            const counterSnap = await transaction.get(counterRef);
 
-        // --- 2. VALIDATIONS AND COMPUTATIONS AFTER ALL READS ---
-        const profile = profileSnap.data();
-        const username = (profile?.username || '').trim().toLowerCase();
-
-        if (isBackdated) {
-          if (!profile || username !== "kunal3012") {
-            throw new Error("Backdated challan is allowed only for Kunal ID.");
-          }
-          if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
-            throw new Error("Reason is required for backdated challan.");
-          }
-        }
-
-        if (!masterSnap.exists()) {
-          throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
-        }
-        masterSnapshotData = masterSnap.data();
-        if (!masterSnapshotData || masterSnapshotData.is_active === false) {
-          throw new Error("Invalid Master selected. Please choose a valid active master.");
-        }
-
-        const matSnapsMap = new Map<string, any>();
-        materialSnaps.forEach((snap, idx) => {
-          const item = items[idx];
-          if (!snap.exists()) {
-            throw new Error("Selected material is not synced to cloud. Refresh and select again.");
-          }
-          matSnapsMap.set(item.material_id, snap);
-        });
-
-        let nextNum = 1;
-        if (counterSnap.exists()) {
-          const data = counterSnap.data();
-          if (data && typeof data.nextNumber === 'number') {
-            nextNum = data.nextNumber;
-          }
-        }
-
-        if (isBackdated) {
-          generatedChallanNo = `HF-BD-${String(nextNum).padStart(4, '0')}`;
-        } else {
-          generatedChallanNo = challan.challan_no || this.getNextChallanNo(false);
-          if (generatedChallanNo.startsWith('HF-BD-')) {
-            generatedChallanNo = this.getNextChallanNo(false);
-          }
-        }
-
-        for (const item of items) {
-          const matSnap = matSnapsMap.get(item.material_id);
-          const matData = matSnap.data() as Material;
-          if (!matData || matData.is_active === false) {
-            throw new Error(`Material is inactive and cannot be issued.`);
-          }
-
-          const amount = item.qty * item.rate;
-          const challanItem: ChallanItem = {
-            id: generateUUID(),
-            challan_id: challanId,
-            material_id: item.material_id,
-            qty: item.qty,
-            rate: item.rate,
-            amount: amount,
-            created_at: new Date().toISOString(),
-            materialName: matData.name || '',
-            materialUnit: matData.unit || '',
-            materialSnapshot: {
-              id: matData.id || item.material_id,
-              name: matData.name || '',
-              unit: matData.unit || '',
-              default_rate: matData.default_rate || 0,
-              current_stock: matData.current_stock || 0,
-              is_active: matData.is_active !== undefined ? matData.is_active : true,
-              created_at: matData.created_at || new Date().toISOString()
+            // Read all Material documents
+            const materialSnaps = [];
+            for (const matRef of materialRefs) {
+              const matSnap = await transaction.get(matRef);
+              materialSnaps.push(matSnap);
             }
-          };
-          savedChallanItems.push(challanItem);
-        }
 
-        // Construct Final Challan Payload
-        const finalChallan: Challan = {
-          id: challanId,
-          challan_no: generatedChallanNo,
-          master_id: masterId,
-          issued_date: challanDate,
-          issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
-          status: 'issued',
-          notes: challan.notes || '',
-          created_at: new Date().toISOString(),
+            // --- 2. VALIDATIONS AND COMPUTATIONS AFTER ALL READS ---
+            const profile = profileSnap.data();
+            const username = (profile?.username || '').trim().toLowerCase();
 
-          challanDate: challanDate,
-          createdAt: new Date().toISOString(),
-          createdBy: currentUser.username || currentUser.email || 'unknown',
-          backdated: isBackdated,
-          backdatedBy: isBackdated ? (currentUser.username || currentUser.name || 'Office Desk') : undefined,
-          backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
-          originalCreatedMonth: originalCreatedMonth,
-          challanMonth: challanMonth,
-          challanYear: challanYear,
+            if (isBackdated) {
+              if (!profile || username !== "kunal3012") {
+                throw new Error("Backdated challan is allowed only for Kunal ID.");
+              }
+              if (!challan.backdatedReason || !challan.backdatedReason.trim()) {
+                throw new Error("Reason is required for backdated challan.");
+              }
+            }
 
-          // Master snapshot details
-          masterId: masterId,
-          masterName: masterSnapshotData.name || '',
-          masterCode: masterSnapshotData.code || '',
-          masterType: masterSnapshotData.type || masterSnapshotData.category || '',
-          masterDisplayName: masterSnapshotData.displayName || masterSnapshotData.name || '',
-          masterSnapshot: {
-            id: masterSnapshotData.id || masterId,
-            name: masterSnapshotData.name || '',
-            code: masterSnapshotData.code || '',
-            type: masterSnapshotData.type || masterSnapshotData.category || '',
-            activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : true
-          },
-          deviceId: this.getDeviceId()
-        };
+            if (!masterSnap.exists()) {
+              throw new Error("Selected master/material is not synced to cloud. Please refresh and select again.");
+            }
+            masterSnapshotData = masterSnap.data();
+            if (!masterSnapshotData || masterSnapshotData.is_active === false) {
+              throw new Error("Invalid Master selected. Please choose a valid active master.");
+            }
 
-        // Construct Audit Log payload
-        const masterName = masterSnapshotData.name || 'Unknown Master';
-        let auditPayload: AuditLog;
-        if (isBackdated) {
-          const auditDetails = `challanNo: ${generatedChallanNo}, challanDate: ${challanDate}, createdAt: ${finalChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${challan.backdatedReason?.trim()}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
-          auditPayload = {
-            id: auditId,
-            user_email: currentUser.email,
-            action: 'BACKDATED_CHALLAN_CREATED',
-            details: auditDetails,
-            created_at: new Date().toISOString()
-          };
-        } else {
-          auditPayload = {
-            id: auditId,
-            user_email: currentUser.email,
-            action: 'Challan Issued',
-            details: `Issued Challan ${generatedChallanNo} to Master ${masterName} containing ${items.length} items`,
-            created_at: new Date().toISOString()
-          };
-        }
+            const matSnapsMap = new Map<string, any>();
+            materialSnaps.forEach((snap, idx) => {
+              const item = items[idx];
+              if (!snap.exists()) {
+                throw new Error("Selected material is not synced to cloud. Refresh and select again.");
+              }
+              matSnapsMap.set(item.material_id, snap);
+            });
 
-        // --- 3. ALL WRITES AFTER ALL READS ---
-        if (isBackdated) {
-          // Use transaction.set with merge: true for the counter doc in case it does not exist yet
-          transaction.set(counterRef, { nextNumber: nextNum + 1 }, { merge: true });
-        }
+            let nextNum = 1;
+            if (counterSnap.exists()) {
+              const data = counterSnap.data();
+              if (data && typeof data.nextNumber === 'number') {
+                nextNum = data.nextNumber;
+              }
+            }
 
-        // Set Challan Doc
-        transaction.set(challanRef, this.enrichPayload(finalChallan));
+            if (isBackdated) {
+              generatedChallanNo = `HF-BD-${String(nextNum).padStart(4, '0')}`;
+            } else {
+              generatedChallanNo = challan.challan_no || this.getNextChallanNo(false);
+              if (generatedChallanNo.startsWith('HF-BD-')) {
+                generatedChallanNo = this.getNextChallanNo(false);
+              }
+            }
 
-        // Set Challan Items
-        savedChallanItems.forEach((item) => {
-          const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
-          transaction.set(itemRef, this.enrichPayload(item));
-        });
+            savedChallanItems.length = 0; // Clear array on retry
+            for (const item of items) {
+              const matSnap = matSnapsMap.get(item.material_id);
+              const matData = matSnap.data() as Material;
+              if (!matData || matData.is_active === false) {
+                throw new Error(`Material is inactive and cannot be issued.`);
+              }
 
-        // Update Materials Stock
-        items.forEach((item) => {
-          const matRef = doc(firestore, this.getCollectionName('materials'), item.material_id);
-          const enrichUpdate = this.enrichPayload({});
-          transaction.update(matRef, {
-            current_stock: increment(-item.qty),
-            ...enrichUpdate
+              const amount = item.qty * item.rate;
+              const challanItem: ChallanItem = {
+                id: generateUUID(),
+                challan_id: challanId,
+                material_id: item.material_id,
+                qty: item.qty,
+                rate: item.rate,
+                amount: amount,
+                created_at: new Date().toISOString(),
+                materialName: matData.name || '',
+                materialUnit: matData.unit || '',
+                materialSnapshot: {
+                  id: matData.id || item.material_id,
+                  name: matData.name || '',
+                  unit: matData.unit || '',
+                  default_rate: matData.default_rate || 0,
+                  current_stock: matData.current_stock || 0,
+                  is_active: matData.is_active !== undefined ? matData.is_active : true,
+                  created_at: matData.created_at || new Date().toISOString()
+                }
+              };
+              savedChallanItems.push(challanItem);
+            }
+
+            // Construct Final Challan Payload
+            const finalChallan: Challan = {
+              id: challanId,
+              challan_no: generatedChallanNo,
+              master_id: masterId,
+              issued_date: challanDate,
+              issued_by: challan.issued_by || currentUser.displayName || currentUser.name || 'Office Desk',
+              status: 'issued',
+              notes: challan.notes || '',
+              created_at: new Date().toISOString(),
+
+              challanDate: challanDate,
+              createdAt: new Date().toISOString(),
+              createdBy: currentUser.username || currentUser.email || 'unknown',
+              backdated: isBackdated,
+              backdatedBy: isBackdated ? (currentUser.username || currentUser.name || 'Office Desk') : undefined,
+              backdatedReason: isBackdated ? challan.backdatedReason.trim() : undefined,
+              originalCreatedMonth: originalCreatedMonth,
+              challanMonth: challanMonth,
+              challanYear: challanYear,
+
+              // Master snapshot details
+              masterId: masterId,
+              masterName: masterSnapshotData.name || '',
+              masterCode: masterSnapshotData.code || '',
+              masterType: masterSnapshotData.type || masterSnapshotData.category || '',
+              masterDisplayName: masterSnapshotData.displayName || masterSnapshotData.name || '',
+              masterSnapshot: {
+                id: masterSnapshotData.id || masterId,
+                name: masterSnapshotData.name || '',
+                code: masterSnapshotData.code || '',
+                type: masterSnapshotData.type || masterSnapshotData.category || '',
+                activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : true
+              },
+              deviceId: this.getDeviceId()
+            };
+
+            // Construct Audit Log payload
+            const masterName = masterSnapshotData.name || 'Unknown Master';
+            let auditPayload: AuditLog;
+            if (isBackdated) {
+              const auditDetails = `challanNo: ${generatedChallanNo}, challanDate: ${challanDate}, createdAt: ${finalChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${challan.backdatedReason?.trim()}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`;
+              auditPayload = {
+                id: auditId,
+                user_email: currentUser.email,
+                action: 'BACKDATED_CHALLAN_CREATED',
+                details: auditDetails,
+                created_at: new Date().toISOString()
+              };
+            } else {
+              auditPayload = {
+                id: auditId,
+                user_email: currentUser.email,
+                action: 'Challan Issued',
+                details: `Issued Challan ${generatedChallanNo} to Master ${masterName} containing ${items.length} items`,
+                created_at: new Date().toISOString()
+              };
+            }
+
+            // --- 3. ALL WRITES AFTER ALL READS ---
+            if (isBackdated) {
+              transaction.set(counterRef, { nextNumber: nextNum + 1 }, { merge: true });
+            }
+
+            // Set Challan Doc
+            transaction.set(challanRef, this.enrichPayload(finalChallan));
+
+            // Set Challan Items
+            savedChallanItems.forEach((item) => {
+              const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
+              transaction.set(itemRef, this.enrichPayload(item));
+            });
+
+            // Update Materials Stock
+            items.forEach((item) => {
+              const matRef = doc(firestore, this.getCollectionName('materials'), item.material_id);
+              const enrichUpdate = this.enrichPayload({});
+              transaction.update(matRef, {
+                current_stock: increment(-item.qty),
+                ...enrichUpdate
+              });
+            });
+
+            // Set Audit Log Doc
+            transaction.set(auditRef, this.enrichPayload(auditPayload));
           });
-        });
+          txSuccess = true;
+          break;
+        } catch (txErr: any) {
+          lastTxError = txErr;
+          const msg = String(txErr?.message || txErr);
+          const isUnavailable = msg.includes('temporarily unavailable') || msg.includes('UNAVAILABLE') || msg.includes('retry with exponential backoff');
+          if (isUnavailable && txAttempt < 3) {
+            console.warn(`Firestore transaction attempt ${txAttempt} failed due to temporary service unavailability. Retrying in ${txAttempt * 500}ms...`);
+            await new Promise(res => setTimeout(res, txAttempt * 500));
+          } else {
+            throw txErr;
+          }
+        }
+      }
 
-        // Set Audit Log Doc
-        transaction.set(auditRef, this.enrichPayload(auditPayload));
-      });
+      if (!txSuccess && lastTxError) {
+        throw lastTxError;
+      }
 
       // ---- POST-COMMIT VERIFICATION AND RE-READS ----
-      const reReadChallanSnap = await getDocFromServer(challanRef);
+      let reReadChallanSnap;
+      try {
+        reReadChallanSnap = await getDocFromServer(challanRef);
+      } catch (_) {
+        reReadChallanSnap = await getDoc(challanRef);
+      }
+
       if (!reReadChallanSnap.exists()) {
         throw new Error("Re-read verification failed: Challan document not found on Firestore server.");
       }
@@ -1887,7 +1951,12 @@ class DatabaseService {
 
       for (const item of savedChallanItems) {
         const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
-        const reReadItemSnap = await getDocFromServer(itemRef);
+        let reReadItemSnap;
+        try {
+          reReadItemSnap = await getDocFromServer(itemRef);
+        } catch (_) {
+          reReadItemSnap = await getDoc(itemRef);
+        }
         if (!reReadItemSnap.exists()) {
           throw new Error("Re-read verification failed: Challan line item not found on Firestore server.");
         }
@@ -1915,9 +1984,11 @@ class DatabaseService {
 
     } catch (err: any) {
       console.error('Firestore transaction or re-read verification failed:', err);
-      const detailedMessage = err.message || String(err);
-      handleFirestoreError(err, OperationType.WRITE, `challans_transaction`);
-      throw new Error(`Challan was not synced to cloud: ${detailedMessage}. Please check internet connection, sync local PC clock, or try re-logging in.`);
+      try {
+        handleFirestoreError(err, OperationType.WRITE, `challans_transaction`);
+      } catch (_) {}
+      const cleanMsg = parseErrorMessage(err);
+      throw new Error(cleanMsg);
     } finally {
       forceLive = false;
     }

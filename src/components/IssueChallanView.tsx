@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../db';
+import { db, parseErrorMessage } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
 import { Master, Material, Challan, Profile } from '../types';
 import { generateChallanPDF, formatINR } from '../utils/exportUtils';
@@ -463,7 +463,7 @@ export const IssueChallanView: React.FC = () => {
       // Save success result triggers success frame
       setSuccessChallan(result);
     } catch (err: any) {
-      setErrorMessage(err.message || 'An error occurred while writing the database');
+      setErrorMessage(parseErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -1164,7 +1164,7 @@ export const IssueChallanView: React.FC = () => {
               <span className="font-bold flex items-center gap-1.5 uppercase tracking-wider text-rose-900">
                 <AlertTriangle className="w-4 h-4 text-rose-600 animate-bounce" /> Warning / Validation Error
               </span>
-              <p className="text-rose-700 leading-relaxed">{errorMessage}</p>
+              <p className="text-rose-700 leading-relaxed font-medium">{parseErrorMessage(errorMessage)}</p>
             </div>
           )}
 
