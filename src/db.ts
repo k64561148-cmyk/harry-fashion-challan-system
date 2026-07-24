@@ -3549,7 +3549,36 @@ class DatabaseService {
     const subTotal = updatedInvoice.work_amount - updatedInvoice.material_deduction - updatedInvoice.discount - (updatedInvoice.stitching_deduction_amount || 0);
     updatedInvoice.tds_amount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
     updatedInvoice.grand_total = subTotal - updatedInvoice.tds_amount;
-    updatedInvoice.net_payable = Math.round(updatedInvoice.grand_total);
+    const currentSetoff = updatedInvoice.advanceSetoffAmount || 0;
+    updatedInvoice.net_payable = Math.max(0, Math.round(updatedInvoice.grand_total) - currentSetoff);
+
+    // Sync advance ledger entry if setoff was present
+    if (currentSetoff > 0) {
+      const advanceLedgers = this.getMasterAdvanceLedger();
+      const existingIdx = advanceLedgers.findIndex(e => e.invoiceId === invoiceId && e.type === 'ADVANCE_SET_OFF');
+      if (updatedInvoice.status === 'finalised') {
+        if (existingIdx > -1) {
+          advanceLedgers[existingIdx].amount = currentSetoff;
+        } else {
+          advanceLedgers.push({
+            id: generateUUID(),
+            masterId: updatedInvoice.master_id,
+            type: 'ADVANCE_SET_OFF',
+            amount: currentSetoff,
+            date: updatedInvoice.created_at.split('T')[0],
+            invoiceId: updatedInvoice.id,
+            invoiceNo: updatedInvoice.invoice_no,
+            notes: `Advance adjusted against Invoice ${updatedInvoice.invoice_no}`,
+            createdBy: currentUser.email,
+            createdAt: new Date().toISOString()
+          });
+        }
+        this.save('master_advance_ledger', advanceLedgers);
+      } else if (existingIdx > -1) {
+        advanceLedgers.splice(existingIdx, 1);
+        this.save('master_advance_ledger', advanceLedgers);
+      }
+    }
 
     invoiceList[idx] = updatedInvoice;
     this.save('invoices', invoiceList);
@@ -3709,8 +3738,33 @@ class DatabaseService {
     const currentUser = this.getCurrentUser();
     const idx = list.findIndex(inv => inv.id === invoiceId);
     if (idx > -1) {
-      list[idx].status = status;
+      const inv = list[idx];
+      inv.status = status;
       this.save('invoices', list);
+
+      if ((inv.advanceSetoffAmount || 0) > 0) {
+        const advanceLedgers = this.getMasterAdvanceLedger();
+        const existingIdx = advanceLedgers.findIndex(e => e.invoiceId === invoiceId && e.type === 'ADVANCE_SET_OFF');
+        if (status === 'finalised' && existingIdx === -1) {
+          advanceLedgers.push({
+            id: generateUUID(),
+            masterId: inv.master_id,
+            type: 'ADVANCE_SET_OFF',
+            amount: inv.advanceSetoffAmount || 0,
+            date: inv.created_at.split('T')[0],
+            invoiceId: inv.id,
+            invoiceNo: inv.invoice_no,
+            notes: `Advance adjusted against Invoice ${inv.invoice_no}`,
+            createdBy: currentUser.email,
+            createdAt: new Date().toISOString()
+          });
+          this.save('master_advance_ledger', advanceLedgers);
+        } else if (status !== 'finalised' && existingIdx > -1) {
+          advanceLedgers.splice(existingIdx, 1);
+          this.save('master_advance_ledger', advanceLedgers);
+        }
+      }
+
       this.addAuditLog(currentUser.email, 'Invoice State Modified', `Invoice ${list[idx].invoice_no} status changed to ${status}`);
 
       if (this.isFirebaseInitialized) {

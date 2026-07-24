@@ -27,27 +27,27 @@ service cloud.firestore {
 
     function isEmailAdmin() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i)k64561148@gmail\\.com') ||
-        request.auth.token.email.matches('(?i)kunal@harryfashion\\.com') ||
-        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com') ||
-        request.auth.token.email.matches('(?i).*admin.*') ||
-        request.auth.token.email.matches('(?i).*owner.*') ||
-        request.auth.token.email.matches('(?i).*kunal.*')
+        request.auth.token.email.toLower() == 'k64561148@gmail.com' ||
+        request.auth.token.email.toLower() == 'kunal@harryfashion.com' ||
+        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com' ||
+        request.auth.token.email.toLower().matches('.*admin.*') ||
+        request.auth.token.email.toLower().matches('.*owner.*') ||
+        request.auth.token.email.toLower().matches('.*kunal.*')
       );
     }
 
     function isEmailBilling() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i).*billing.*') ||
-        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
+        request.auth.token.email.toLower().matches('.*billing.*') ||
+        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
       );
     }
 
     function isEmailIssueDept() {
       return request.auth.token.email != null && (
-        request.auth.token.email.matches('(?i).*issue.*') ||
-        request.auth.token.email.matches('(?i).*dept.*') ||
-        request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
+        request.auth.token.email.toLower().matches('.*issue.*') ||
+        request.auth.token.email.toLower().matches('.*dept.*') ||
+        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
       );
     }
 
@@ -62,10 +62,10 @@ service cloud.firestore {
       return request.auth != null
         && request.auth.token.email != null
         && (
-          request.auth.token.email.matches('(?i)kunal3012@harryfashion\\.com')
-          || request.auth.token.email.matches('(?i)k64561148@gmail\\.com')
-          || request.auth.token.email.matches('(?i)kunal@harryfashion\\.com')
-          || request.auth.token.email.matches('(?i).*kunal.*')
+          request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
+          || request.auth.token.email.toLower() == 'k64561148@gmail.com'
+          || request.auth.token.email.toLower() == 'kunal@harryfashion.com'
+          || request.auth.token.email.toLower().matches('.*kunal.*')
         );
     }
 
@@ -255,7 +255,7 @@ service cloud.firestore {
 
     match /challans_transaction/{docId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isKunal() || isKunalByUsername();
+      allow create, update, delete: if isSignedIn() && (isIssueDept() || isBilling() || isAdmin() || isKunal() || isKunalByUsername());
     }
 
     match /inward_entries/{entryId} {
@@ -315,8 +315,8 @@ service cloud.firestore {
     }
 
     // Isolated Sandbox Testing Environments (for kunal / developers to safely test the app)
-    match /{collName}/{docId} {
-      allow read, write: if isSignedIn() && collName.startsWith("sandbox_");
+    match /{collName}/{docId=**} {
+      allow read, write: if isSignedIn() && collName.matches('sandbox_.*');
     }
   }
 }

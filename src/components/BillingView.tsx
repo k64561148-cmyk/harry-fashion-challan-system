@@ -212,6 +212,8 @@ export const BillingView: React.FC = () => {
 
   // Auto-fill bank and PAN details when master changes.
   useEffect(() => {
+    setAdvanceSetoff(0);
+    setAdvanceSetoffRaw('');
     if (!selectedMasterId) {
       setSelectedPanId('');
       setPanName('');
@@ -649,13 +651,16 @@ export const BillingView: React.FC = () => {
 
       const selectedProfile = activeProfiles.find(p => p.id === selectedPanId);
 
+      const finalNetPayable = Math.max(0, roundedOffGrandTotal - advanceSetoff);
+
       const invoicePayload = {
         master_id: selectedMasterId,
         period_month: periodMonth,
         period_year: periodYear,
         work_amount: workAmount,
         material_deduction: materialDeduction,
-        net_payable: roundedOffGrandTotal,
+        net_payable: finalNetPayable,
+        advanceSetoffAmount: advanceSetoff,
         status: status,
         pcs: pcs,
         discount: discount,
@@ -721,6 +726,8 @@ export const BillingView: React.FC = () => {
 
       // Trigger success panel
       setSuccessInvoice(invoiceResult);
+      setAdvanceSetoff(0);
+      setAdvanceSetoffRaw('');
     } catch (err: any) {
       setErrorMsg(err.message || 'Error occurred writing billing registers');
     } finally {
@@ -1265,8 +1272,13 @@ export const BillingView: React.FC = () => {
                 ) : null}
                 {successInvoice.stitching_deduction_amount ? (
                   <div className="flex justify-between text-amber-700">
-                    <span className="text-amber-800">Stitching Deductions ({successInvoice.stitching_deduction_reason || 'Job Deduc.'}):</span>
+                    <span className="text-amber-800">Stitching Deductions:</span>
                     <span className="font-semibold text-rose-600 font-mono">- {formatINR(successInvoice.stitching_deduction_amount)}</span>
+                  </div>
+                ) : null}
+                {successInvoice.stitching_deduction_reason ? (
+                  <div className="bg-amber-50/80 p-2 rounded-lg border border-amber-200 text-xs text-amber-900 font-medium">
+                    <span className="font-bold text-amber-950">Note / Stitching Reason:</span> {successInvoice.stitching_deduction_reason}
                   </div>
                 ) : null}
                 <div className="flex justify-between border-t border-slate-200/50 pt-1">
@@ -1667,11 +1679,11 @@ export const BillingView: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-100 pt-4 mt-1">
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                        STITCHING WORK DEDUCTION REASON
+                        STITCHING REASON / DEDUCTION NOTE
                       </label>
                       <input
                         type="text"
-                        placeholder="Reason, e.g. Stitching correction defect, rework damage"
+                        placeholder="Reason / Note, e.g. Stitching correction defect, rework damage, collar adjustment"
                         className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg py-2 px-3 text-xs font-medium text-slate-800 placeholder-slate-400 font-semibold"
                         value={stitchingDeductionReason}
                         onChange={(e) => setStitchingDeductionReason(e.target.value)}
@@ -1699,12 +1711,14 @@ export const BillingView: React.FC = () => {
                     </div>
                   </div>
 
-                  {stitchingDeductionAmount > 0 && (
-                    <div className="bg-amber-50 rounded-lg p-2.5 text-[11px] text-amber-850 border border-amber-200 flex justify-between items-center font-semibold">
-                      <span>Stitching Deduction Scheduled:</span>
-                      <span className="font-mono text-xs text-amber-900 font-bold">
-                        {formatINR(stitchingDeductionAmount)} (Reason: {stitchingDeductionReason || 'Stitching'}) will be deducted from Sub-Total
-                      </span>
+                  {(stitchingDeductionAmount > 0 || stitchingDeductionReason) && (
+                    <div className="bg-amber-50/80 rounded-lg p-2.5 text-[11px] text-amber-900 border border-amber-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 font-medium">
+                      <span><strong className="font-bold">Note / Stitching Reason:</strong> {stitchingDeductionReason || 'Stitching deduction applied'}</span>
+                      {stitchingDeductionAmount > 0 && (
+                        <span className="font-mono text-xs text-rose-700 font-bold shrink-0">
+                          - {formatINR(stitchingDeductionAmount)} (will be deducted)
+                        </span>
+                      )}
                     </div>
                   )}
 
@@ -1853,8 +1867,13 @@ export const BillingView: React.FC = () => {
                         </div>
                         {stitchingDeductionAmount > 0 && (
                           <div className="flex justify-between text-amber-705 font-semibold">
-                            <span className="text-amber-800">Stitching Deductions ({stitchingDeductionReason || 'Job Deduc.'}) (-):</span>
+                            <span className="text-amber-800">Stitching Deductions (-):</span>
                             <span className="font-bold font-mono text-rose-600">- {formatINR(stitchingDeductionAmount)}</span>
+                          </div>
+                        )}
+                        {stitchingDeductionReason && (
+                          <div className="text-[11px] text-amber-900 bg-amber-50/90 p-2 rounded border border-amber-200/80 font-medium">
+                            <span className="font-bold">Note / Stitching Reason:</span> {stitchingDeductionReason}
                           </div>
                         )}
                       </div>
@@ -2779,8 +2798,13 @@ export const BillingView: React.FC = () => {
               )}
               {stitchingDeductionAmount > 0 && (
                 <div className="flex justify-between font-medium text-amber-800">
-                  <span>Stitching Deductions ({stitchingDeductionReason || 'Job Deduc.'}):</span>
+                  <span>Stitching Deductions:</span>
                   <span className="font-semibold text-rose-600 font-mono">- {formatINR(stitchingDeductionAmount)}</span>
+                </div>
+              )}
+              {stitchingDeductionReason && (
+                <div className="p-2 bg-amber-50/90 border border-amber-200 rounded text-amber-950 font-medium text-[11px]">
+                  <span className="font-bold">Note / Stitching Reason:</span> {stitchingDeductionReason}
                 </div>
               )}
               <div className="flex justify-between font-medium">

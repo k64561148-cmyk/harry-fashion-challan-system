@@ -6,6 +6,7 @@
 import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
 import { Challan, ChallanItem, Material, Master, Invoice, InwardEntry, AuditLog } from '../types';
+import { db } from '../db';
 import { smartSavePDF, getFolderChallanDateText, getFolderInvoiceDateText } from './smartDownloader';
 
 let activeOverlay: HTMLDivElement | null = null;
@@ -822,7 +823,7 @@ export async function generateInvoicePDF(
     formulasY += 5.5;
 
     if (mDeduction > 0) {
-      doc.text(`-Deduction (${invoice.stitching_deduction_reason || 'Job Deduc.'}):`, rLabelX, formulasY);
+      doc.text('-Stitching Deduc.:', rLabelX, formulasY);
       doc.text(String(Math.round(mDeduction)), rValueX, formulasY, { align: 'right' });
       formulasY += 5.5;
     }
@@ -869,14 +870,38 @@ export async function generateInvoicePDF(
       formulasY += 5.5;
       doc.setFont('Helvetica', 'bold');
       doc.text('Net Cash Payable:', rLabelX, formulasY);
-      doc.text(String(Math.round(mRounded - mSetoff)), rValueX, formulasY, { align: 'right' });
+      doc.text(String(Math.max(0, Math.round(mRounded - mSetoff))), rValueX, formulasY, { align: 'right' });
+
+      // Calculate and display remaining advance balance for the master on the printed bill
+      const currentAdvBal = db.getMasterAdvanceBalance(master.id);
+      formulasY += 5.5;
+      doc.setFont('Helvetica', 'bold');
+      doc.text('Remaining Adv. Bal:', rLabelX - 6, formulasY);
+      doc.text(String(Math.round(currentAdvBal)), rValueX, formulasY, { align: 'right' });
     }
 
     // Clear dash pattern
     doc.setLineDashPattern([], 0);
 
+    // Left-side Note / Stitching Deduction Reason section
+    let leftSideEndY = y;
+    const stitchingNoteText = invoice.stitching_deduction_reason || (mDeduction > 0 ? 'Stitching job work deduction applied' : '');
+    if (stitchingNoteText) {
+      const noteStartY = y + 2;
+      doc.setFont('Helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(0, 0, 0);
+      doc.text('Note / Stitching Reason:', 14, noteStartY);
+      
+      doc.setFont('Helvetica', 'normal');
+      doc.setFontSize(8);
+      const splitNote = doc.splitTextToSize(stitchingNoteText, 115);
+      doc.text(splitNote, 14, noteStartY + 4.5);
+      leftSideEndY = noteStartY + 4.5 + (splitNote.length * 3.8);
+    }
+
     // --- Bottom Block (Bank Details followed by Chq / Signature) ---
-    let bankY = formulasY + 14;
+    let bankY = Math.max(formulasY, leftSideEndY) + 10;
     // Calculate required space: bank details can take up to ~30 pt, and Chq/Checked By takes another ~15 pt.
     // Total bottom block height is ~45 pt. So if bankY is greater than 235, let's move everything to a new page.
     if (bankY > 235) {
