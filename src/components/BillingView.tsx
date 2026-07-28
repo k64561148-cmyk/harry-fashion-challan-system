@@ -527,9 +527,10 @@ export const BillingView: React.FC = () => {
     setNetPayable(workAmount - materialDeduction);
   }, [workAmount, materialDeduction]);
 
-  // Derived calculation variables according to professional accounting - stitchingDeductionAmount is deducted here
+  // Derived calculation variables according to professional accounting - TDS is calculated on Net Sub Total after Advance Setoff
   const subTotal = workAmount - materialDeduction - discount - stitchingDeductionAmount;
-  const tdsAmount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
+  const netTaxableForTds = Math.max(0, subTotal - advanceSetoff);
+  const tdsAmount = netTaxableForTds > 0 ? parseFloat((netTaxableForTds * 0.01).toFixed(2)) : 0;
   const preciseGrandTotal = subTotal - tdsAmount;
   const roundedOffGrandTotal = Math.round(preciseGrandTotal);
 
@@ -1882,25 +1883,31 @@ export const BillingView: React.FC = () => {
                           <span className="text-slate-500 font-semibold">Sub Total:</span>
                           <span className="font-semibold text-slate-850 font-mono">{formatINR(subTotal)}</span>
                         </div>
+                        {advanceSetoff > 0 && (
+                          <>
+                            <div className="flex justify-between font-semibold text-rose-700">
+                              <span>Advance Setoff Applied (-):</span>
+                              <span className="font-mono font-bold">- {formatINR(advanceSetoff)}</span>
+                            </div>
+                            <div className="flex justify-between text-slate-600 bg-slate-100/70 px-1.5 py-0.5 rounded text-[11px]">
+                              <span>Net Taxable Base:</span>
+                              <span className="font-semibold font-mono">{formatINR(netTaxableForTds)}</span>
+                            </div>
+                          </>
+                        )}
                         <div className="flex justify-between text-slate-500">
-                          <span>TDS Deduction (1%):</span>
+                          <span>TDS Deduction (1%{advanceSetoff > 0 ? ' on Net' : ''}):</span>
                           <span className="font-semibold text-orange-700 font-mono">{formatINR(tdsAmount)}</span>
                         </div>
                         <hr className="border-slate-200/60 my-1" />
                         <div className="flex justify-between font-bold text-[#1A2E4A]">
-                          <span>Grand Total (Net):</span>
+                          <span>Grand Total:</span>
                           <span className="font-mono">{formatINR(preciseGrandTotal)}</span>
                         </div>
                         <div className="flex justify-between font-bold text-slate-700">
                           <span>Rounded Grand Total:</span>
                           <span className="font-mono">{formatINR(roundedOffGrandTotal)}</span>
                         </div>
-                        {advanceSetoff > 0 && (
-                          <div className="flex justify-between font-bold text-rose-700">
-                            <span>Advance Setoff Applied (-):</span>
-                            <span className="font-mono font-bold">- {formatINR(advanceSetoff)}</span>
-                          </div>
-                        )}
                         <hr className="border-slate-200/60 my-1" />
                         <div className="flex justify-between font-extrabold text-green-700 text-sm">
                           <span>Final Cash Payable:</span>

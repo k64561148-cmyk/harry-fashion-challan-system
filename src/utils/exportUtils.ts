@@ -801,9 +801,11 @@ export async function generateInvoicePDF(
     const mDiscount = invoice.discount || 0;
     const mDeduction = invoice.stitching_deduction_amount || 0;
     const mSub = invoice.work_amount - invoice.material_deduction - mDiscount - mDeduction;
-    const mTds = invoice.tds_amount || 0;
+    const mSetoff = invoice.advanceSetoffAmount || 0;
+    const mNetTaxable = Math.max(0, mSub - mSetoff);
+    const mTds = invoice.tds_amount !== undefined ? invoice.tds_amount : (mNetTaxable > 0 ? parseFloat((mNetTaxable * 0.01).toFixed(2)) : 0);
     const mGrand = invoice.grand_total || (mSub - mTds);
-    const mRounded = Math.round(mGrand);
+    const mNetPayable = invoice.net_payable !== undefined ? invoice.net_payable : Math.max(0, Math.round(mGrand - mSetoff));
 
     doc.setFont('Helvetica', 'normal');
     doc.setTextColor(0, 0, 0);
@@ -833,10 +835,27 @@ export async function generateInvoicePDF(
     doc.text(String(Math.round(mSub)), rValueX, formulasY, { align: 'right' });
     formulasY += 5.5;
 
-    doc.setFont('Helvetica', 'normal');
-    doc.text('-TDS: (1%)', rLabelX, formulasY);
-    doc.text(mTds.toFixed(2), rValueX, formulasY, { align: 'right' });
-    formulasY += 4;
+    if (mSetoff > 0) {
+      doc.setFont('Helvetica', 'bold');
+      doc.text('-Adv. Setoff:', rLabelX, formulasY);
+      doc.text(String(Math.round(mSetoff)), rValueX, formulasY, { align: 'right' });
+      formulasY += 5.5;
+
+      doc.setFont('Helvetica', 'bold');
+      doc.text('Net Taxable Base:', rLabelX - 6, formulasY);
+      doc.text(String(Math.round(mNetTaxable)), rValueX, formulasY, { align: 'right' });
+      formulasY += 5.5;
+
+      doc.setFont('Helvetica', 'normal');
+      doc.text('-TDS: (1% on Net)', rLabelX - 5, formulasY);
+      doc.text(mTds.toFixed(2), rValueX, formulasY, { align: 'right' });
+      formulasY += 4;
+    } else {
+      doc.setFont('Helvetica', 'normal');
+      doc.text('-TDS: (1%)', rLabelX, formulasY);
+      doc.text(mTds.toFixed(2), rValueX, formulasY, { align: 'right' });
+      formulasY += 4;
+    }
 
     // Solid/dashed separator
     doc.setDrawColor(0, 0, 0);
@@ -854,25 +873,10 @@ export async function generateInvoicePDF(
     formulasY += 5.5;
 
     doc.setFont('Helvetica', 'bold');
-    doc.text('Rounded off:', rLabelX, formulasY);
-    doc.text(String(mRounded), rValueX, formulasY, { align: 'right' });
+    doc.text('Net Cash Payable:', rLabelX - 5, formulasY);
+    doc.text(String(mNetPayable), rValueX, formulasY, { align: 'right' });
 
-    const mSetoff = invoice.advanceSetoffAmount || 0;
     if (mSetoff > 0) {
-      formulasY += 5.5;
-      doc.setFont('Helvetica', 'bold');
-      doc.text('-Adv. Setoff:', rLabelX, formulasY);
-      doc.text(String(Math.round(mSetoff)), rValueX, formulasY, { align: 'right' });
-      
-      formulasY += 4;
-      doc.line(135, formulasY, 196, formulasY);
-      
-      formulasY += 5.5;
-      doc.setFont('Helvetica', 'bold');
-      doc.text('Net Cash Payable:', rLabelX, formulasY);
-      doc.text(String(Math.max(0, Math.round(mRounded - mSetoff))), rValueX, formulasY, { align: 'right' });
-
-      // Calculate and display remaining advance balance for the master on the printed bill
       const currentAdvBal = db.getMasterAdvanceBalance(master.id);
       formulasY += 5.5;
       doc.setFont('Helvetica', 'bold');

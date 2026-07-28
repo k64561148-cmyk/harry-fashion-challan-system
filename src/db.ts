@@ -3256,7 +3256,8 @@ class DatabaseService {
     const newAdvanceSetoff = currentAdvanceSetoff + amountToConvert;
 
     const subTotal = invoice.work_amount - invoice.material_deduction - newDiscount - (invoice.stitching_deduction_amount || 0);
-    const newTds = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
+    const netTaxableForTds = Math.max(0, subTotal - newAdvanceSetoff);
+    const newTds = netTaxableForTds > 0 ? parseFloat((netTaxableForTds * 0.01).toFixed(2)) : 0;
     const baseGrandTotal = subTotal - newTds;
     
     const updatedInvoice: Invoice = {
@@ -3265,7 +3266,7 @@ class DatabaseService {
       advanceSetoffAmount: newAdvanceSetoff,
       tds_amount: newTds,
       grand_total: baseGrandTotal,
-      net_payable: Math.round(baseGrandTotal - newAdvanceSetoff),
+      net_payable: Math.max(0, Math.round(baseGrandTotal - newAdvanceSetoff)),
       advanceBalanceBefore: invoice.advanceBalanceBefore !== undefined ? invoice.advanceBalanceBefore : this.getMasterAdvanceBalance(invoice.master_id),
     };
     updatedInvoice.advanceBalanceAfter = (updatedInvoice.advanceBalanceBefore || 0) - amountToConvert;
@@ -3547,10 +3548,11 @@ class DatabaseService {
 
     // Recompute accounting values
     const subTotal = updatedInvoice.work_amount - updatedInvoice.material_deduction - updatedInvoice.discount - (updatedInvoice.stitching_deduction_amount || 0);
-    updatedInvoice.tds_amount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
-    updatedInvoice.grand_total = subTotal - updatedInvoice.tds_amount;
     const currentSetoff = updatedInvoice.advanceSetoffAmount || 0;
-    updatedInvoice.net_payable = Math.max(0, Math.round(updatedInvoice.grand_total) - currentSetoff);
+    const netTaxableForTds = Math.max(0, subTotal - currentSetoff);
+    updatedInvoice.tds_amount = netTaxableForTds > 0 ? parseFloat((netTaxableForTds * 0.01).toFixed(2)) : 0;
+    updatedInvoice.grand_total = subTotal - updatedInvoice.tds_amount;
+    updatedInvoice.net_payable = Math.max(0, Math.round(updatedInvoice.grand_total - currentSetoff));
 
     // Sync advance ledger entry if setoff was present
     if (currentSetoff > 0) {
