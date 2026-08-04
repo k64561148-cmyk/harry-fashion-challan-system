@@ -1300,6 +1300,105 @@ class DatabaseService {
     }
   }
 
+  getBankAccountUsage(masterId: string, accountNo: string, panAccountId?: string, customLimit?: number) {
+    const invoices = this.getInvoices().filter(inv => 
+      inv.master_id === masterId &&
+      (inv.status === 'finalised' || inv.status === 'draft') &&
+      (
+        (panAccountId && inv.selected_pan_account_id === panAccountId) ||
+        (accountNo && inv.selected_account_no && inv.selected_account_no.trim().replaceAll(' ', '') === accountNo.trim().replaceAll(' ', ''))
+      )
+    );
+
+    const totalBilled = invoices.reduce((sum, inv) => sum + (inv.net_payable !== undefined ? inv.net_payable : (inv.grand_total || 0)), 0);
+    const limitAmount = customLimit || 2000000; // Default 20 Lakhs (2,000,000)
+    const remainingLimit = Math.max(0, limitAmount - totalBilled);
+    const percentUsed = limitAmount > 0 ? (totalBilled / limitAmount) * 100 : 0;
+    const isExceeded = totalBilled >= limitAmount;
+    const isNearLimit = totalBilled >= (limitAmount * 0.8) && totalBilled < limitAmount;
+
+    return {
+      totalBilled,
+      limitAmount,
+      remainingLimit,
+      percentUsed,
+      isExceeded,
+      isNearLimit,
+      invoices
+    };
+  }
+
+  getAllMasterBankLimitsSummary() {
+    const masters = this.getMasters();
+    const allInvoices = this.getInvoices().filter(inv => inv.status === 'finalised' || inv.status === 'draft');
+
+    return masters.map(m => {
+      const accounts = (m.pan_accounts || []).map(acc => {
+        const matchingInvoices = allInvoices.filter(inv => 
+          inv.master_id === m.id &&
+          (
+            (inv.selected_pan_account_id === acc.id) ||
+            (acc.account_no && inv.selected_account_no && inv.selected_account_no.trim().replaceAll(' ', '') === acc.account_no.trim().replaceAll(' ', ''))
+          )
+        );
+
+        const totalBilled = matchingInvoices.reduce((sum, inv) => sum + (inv.net_payable !== undefined ? inv.net_payable : (inv.grand_total || 0)), 0);
+        const limitAmount = acc.limit_amount || 2000000; // 20 Lakhs
+        const remainingLimit = Math.max(0, limitAmount - totalBilled);
+        const percentUsed = limitAmount > 0 ? (totalBilled / limitAmount) * 100 : 0;
+        const isExceeded = totalBilled >= limitAmount;
+        const isNearLimit = totalBilled >= (limitAmount * 0.8) && !isExceeded;
+
+        return {
+          account: acc,
+          totalBilled,
+          limitAmount,
+          remainingLimit,
+          percentUsed,
+          isExceeded,
+          isNearLimit,
+          invoices: matchingInvoices
+        };
+      });
+
+      const totalBilledMaster = accounts.reduce((sum, a) => sum + a.totalBilled, 0);
+      const hasExceededAccount = accounts.some(a => a.isExceeded);
+      const hasNearLimitAccount = accounts.some(a => a.isNearLimit);
+
+      return {
+        masterId: m.id,
+        masterName: m.name,
+        masterCode: m.code,
+        masterType: m.type,
+        accounts,
+        totalBilledMaster,
+        hasExceededAccount,
+        hasNearLimitAccount
+      };
+    });
+  }
+
+  updateMasterBankAccountLimit(masterId: string, accountId: string, newLimit: number) {
+    const masters = this.getMasters();
+    const idx = masters.findIndex(m => m.id === masterId);
+    if (idx > -1 && masters[idx].pan_accounts) {
+      const accIdx = masters[idx].pan_accounts!.findIndex(a => a.id === accountId);
+      if (accIdx > -1) {
+        masters[idx].pan_accounts![accIdx].limit_amount = newLimit;
+        masters[idx].pan_accounts![accIdx].updatedAt = new Date().toISOString();
+        this.save('masters', masters);
+        
+        if (this.isFirebaseInitialized) {
+          setDoc(doc(firestore, 'masters', masterId), this.enrichPayload(masters[idx]))
+            .catch(err => console.error("Cloud write master limit update failed:", err));
+        }
+        window.dispatchEvent(new Event('db_sync'));
+        return true;
+      }
+    }
+    return false;
+  }
+
   detectDuplicateMasters(): { key: string, name: string, code: string, type: string, records: Master[] }[] {
     // We load raw masters from localStorage to see actual duplicates
     const masters = this.load<Master[]>('masters', []);

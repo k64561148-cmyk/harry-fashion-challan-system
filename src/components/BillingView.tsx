@@ -1746,11 +1746,19 @@ export const BillingView: React.FC = () => {
                                 onChange={(e) => handlePanProfileChange(e.target.value)}
                               >
                                 <option value="">-- Choose active PAN/Bank Profile --</option>
-                                {activeProfiles.map(p => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.label ? `${p.label.toUpperCase()} : ` : ''}{p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')})
-                                  </option>
-                                ))}
+                                {activeProfiles.map(p => {
+                                  const usage = db.getBankAccountUsage(selectedMasterId, p.account_no, p.id, p.limit_amount);
+                                  const tag = usage.isExceeded
+                                    ? ` [🚫 LIMIT EXCEEDED - ${formatINR(usage.totalBilled)} / ${formatINR(usage.limitAmount)}]`
+                                    : usage.isNearLimit
+                                    ? ` [⚠️ NEAR LIMIT - ${formatINR(usage.totalBilled)} / ${formatINR(usage.limitAmount)}]`
+                                    : ` [Billed: ${formatINR(usage.totalBilled)}]`;
+                                  return (
+                                    <option key={p.id} value={p.id}>
+                                      {p.label ? `${p.label.toUpperCase()} : ` : ''}{p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')}){tag}
+                                    </option>
+                                  );
+                                })}
                               </select>
                             </div>
                           ) : (
@@ -1841,6 +1849,55 @@ export const BillingView: React.FC = () => {
                               </div>
                             )}
                           </div>
+
+                          {/* Real-time Bank Limit Alert Card */}
+                          {(() => {
+                            if (!accountNo || !selectedMasterId) return null;
+                            const usage = db.getBankAccountUsage(selectedMasterId, accountNo, selectedPanId);
+                            const currentInvoiceAmount = roundedOffGrandTotal;
+                            const projected = usage.totalBilled + currentInvoiceAmount;
+                            const isProjectedExceeded = projected > usage.limitAmount;
+
+                            if (usage.isExceeded) {
+                              return (
+                                <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl text-xs text-rose-950 font-medium space-y-1 mt-3 shadow-sm">
+                                  <div className="flex items-center gap-1.5 font-bold text-rose-700 text-sm">
+                                    <span>🚫</span> BANK ACCOUNT LIMIT EXCEEDED!
+                                  </div>
+                                  <p className="leading-relaxed">
+                                    Payments of <strong className="font-mono text-rose-900">{formatINR(usage.totalBilled)}</strong> have already been processed to Account <strong className="font-mono text-rose-900">{accountNo}</strong>, reaching the limit of <strong className="font-mono text-rose-900">{formatINR(usage.limitAmount)}</strong>.
+                                  </p>
+                                  <p className="text-rose-900 font-bold text-[11px] pt-1">
+                                    ⚠️ You cannot use this bank account for further payouts. Please choose another active bank profile or register a new one for {masterObj?.name}.
+                                  </p>
+                                </div>
+                              );
+                            }
+
+                            if (isProjectedExceeded) {
+                              return (
+                                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 font-medium space-y-1 mt-3 shadow-sm">
+                                  <div className="flex items-center gap-1.5 font-bold text-amber-800 text-sm">
+                                    <span>⚠️</span> INVOICE WILL EXCEED BANK ACCOUNT LIMIT!
+                                  </div>
+                                  <p className="leading-relaxed">
+                                    Already Billed: <strong className="font-mono">{formatINR(usage.totalBilled)}</strong> • Current Bill: <strong className="font-mono">{formatINR(currentInvoiceAmount)}</strong> • Projected Total: <strong className="font-mono text-rose-700 font-bold">{formatINR(projected)}</strong> (Limit: {formatINR(usage.limitAmount)}).
+                                  </p>
+                                </div>
+                              );
+                            }
+
+                            if (usage.isNearLimit) {
+                              return (
+                                <div className="p-2.5 bg-amber-50/90 border border-amber-200 rounded-lg text-[11px] text-amber-900 flex justify-between items-center mt-3 font-medium">
+                                  <span>⚠️ Account near limit: <strong>{formatINR(usage.totalBilled)}</strong> billed out of <strong>{formatINR(usage.limitAmount)}</strong></span>
+                                  <span className="font-mono font-bold text-amber-950">{usage.percentUsed.toFixed(0)}% Used</span>
+                                </div>
+                              );
+                            }
+
+                            return null;
+                          })()}
                         </div>
                       );
                     })()}

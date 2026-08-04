@@ -13,6 +13,7 @@ import BillingView from './components/BillingView';
 import ReportsView from './components/ReportsView';
 import SettingsView from './components/SettingsView';
 import ChecklistView from './components/ChecklistView';
+import { BankLimitsView } from './components/BankLimitsView';
 import LoginGate from './components/LoginGate';
 import { 
   LayoutDashboard, 
@@ -28,7 +29,8 @@ import {
   User,
   ShieldCheck,
   CalendarCheck,
-  Cloud
+  Cloud,
+  CreditCard
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
@@ -356,6 +358,28 @@ export default function App() {
               </div>
             )}
 
+            {/* Bank Account Limits Monitor tab */}
+            {hasAccess('billing') ? (
+              <button
+                onClick={() => handleTabTrigger('bank_limits')}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  activeTab === 'bank_limits' ? 'bg-[#2D3E5D] text-white' : 'hover:bg-[#2D3E5D] text-slate-400 hover:text-white'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <CreditCard className="w-4 h-4 text-blue-400" /> Bank Limits Monitor
+                </span>
+                <span className="text-[9px] bg-[#14233a] text-blue-400 px-1.5 py-0.2 rounded-full font-bold">20L LIMIT</span>
+              </button>
+            ) : (
+              <div className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold text-slate-500 opacity-40 cursor-not-allowed">
+                <span className="flex items-center gap-3">
+                  <CreditCard className="w-4 h-4" /> Bank Limits Monitor
+                </span>
+                <Lock className="w-3.5 h-3.5" />
+              </div>
+            )}
+
             {/* Go-Live Diagnostics tab */}
             {hasAccess('billing') ? (
               <button
@@ -553,6 +577,7 @@ export default function App() {
                 {activeTab === 'inward_entry' && 'Stock Inward Register Form'}
                 {activeTab === 'billing' && 'Billing & Stitched Settlements Table'}
                 {activeTab === 'reports' && 'Executive Analytics & Ledger Reports'}
+                {activeTab === 'bank_limits' && 'Master Bank Account Limits & Compliance Dashboard'}
                 {activeTab === 'checklist' && 'Go-Live Diagnostics & Security Audits'}
                 {activeTab === 'settings' && 'System Settings & Access Controls'}
               </h2>
@@ -683,6 +708,13 @@ export default function App() {
             {activeTab === 'billing' && <BillingView />}
             
             {activeTab === 'reports' && <ReportsView />}
+            
+            {activeTab === 'bank_limits' && (
+              <BankLimitsView
+                onNavigateToSettings={() => handleTabTrigger('settings')}
+                onNavigateToBilling={(masterId) => handleTabTrigger('billing')}
+              />
+            )}
             
             {activeTab === 'checklist' && <ChecklistView />}
             

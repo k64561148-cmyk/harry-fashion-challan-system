@@ -33,6 +33,7 @@ export interface MasterPanAccount {
   ifsc_code: string;
   branch_name?: string;
   cheque_in_favour_of?: string;
+  limit_amount?: number; // Bank account limit, default 20 Lakhs (2,000,000)
   is_default?: boolean;
   is_active: boolean;
   createdAt: string;
