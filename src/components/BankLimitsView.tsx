@@ -96,37 +96,64 @@ export const BankLimitsView: React.FC<BankLimitsViewProps> = ({
   let totalDisbursedOverall = 0;
 
   summaryData.forEach((m) => {
-    totalAccounts += m.accounts.length;
-    m.accounts.forEach((accInfo: any) => {
-      totalDisbursedOverall += accInfo.totalBilled;
-      if (accInfo.isExceeded) totalExceededCount++;
-      else if (accInfo.isNearLimit) totalNearLimitCount++;
+    if (!m) return;
+    const accs = Array.isArray(m.accounts) ? m.accounts : [];
+    totalAccounts += accs.length;
+    accs.forEach((accInfo: any) => {
+      totalDisbursedOverall += accInfo?.totalBilled || 0;
+      if (accInfo?.isExceeded) totalExceededCount++;
+      else if (accInfo?.isNearLimit) totalNearLimitCount++;
     });
   });
 
-  // Filtered Masters
+  // Filtered Masters safely
   const filteredData = summaryData.filter((m) => {
-    const matchesSearch =
-      m.masterName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      m.masterCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      m.accounts.some(
-        (accInfo: any) =>
-          accInfo.account.bank_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          accInfo.account.account_no.includes(searchTerm) ||
-          accInfo.account.pan_no.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          accInfo.account.pan_name.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+    if (!m) return false;
+    const term = (searchTerm || '').toLowerCase().trim();
 
-    if (!matchesSearch) return false;
+    if (term) {
+      const masterNameStr = (m.masterName || '').toLowerCase();
+      const masterCodeStr = (m.masterCode || '').toLowerCase();
+      const masterTypeStr = (m.masterType || '').toLowerCase();
+
+      const matchesMaster =
+        masterNameStr.includes(term) ||
+        masterCodeStr.includes(term) ||
+        masterTypeStr.includes(term);
+
+      const matchesAccount = Array.isArray(m.accounts) && m.accounts.some((accInfo: any) => {
+        const acc = accInfo?.account;
+        if (!acc) return false;
+        const bankName = (acc.bank_name || '').toLowerCase();
+        const accountNo = (acc.account_no || '').toLowerCase();
+        const panNo = (acc.pan_no || '').toLowerCase();
+        const panName = (acc.pan_name || '').toLowerCase();
+        const label = (acc.label || '').toLowerCase();
+        const ifsc = (acc.ifsc_code || '').toLowerCase();
+
+        return (
+          bankName.includes(term) ||
+          accountNo.includes(term) ||
+          panNo.includes(term) ||
+          panName.includes(term) ||
+          label.includes(term) ||
+          ifsc.includes(term)
+        );
+      });
+
+      if (!matchesMaster && !matchesAccount) {
+        return false;
+      }
+    }
 
     if (statusFilter === 'exceeded') {
-      return m.hasExceededAccount;
+      return !!m.hasExceededAccount;
     }
     if (statusFilter === 'near_limit') {
-      return m.hasNearLimitAccount;
+      return !!m.hasNearLimitAccount;
     }
     if (statusFilter === 'normal') {
-      return m.accounts.length > 0 && !m.hasExceededAccount && !m.hasNearLimitAccount;
+      return Array.isArray(m.accounts) && m.accounts.length > 0 && !m.hasExceededAccount && !m.hasNearLimitAccount;
     }
 
     return true;

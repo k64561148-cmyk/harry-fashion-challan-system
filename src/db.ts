@@ -1366,10 +1366,10 @@ class DatabaseService {
       const hasNearLimitAccount = accounts.some(a => a.isNearLimit);
 
       return {
-        masterId: m.id,
-        masterName: m.name,
-        masterCode: m.code,
-        masterType: m.type,
+        masterId: m.id || '',
+        masterName: m.name || 'Unnamed Master',
+        masterCode: m.code || '',
+        masterType: m.type || '',
         accounts,
         totalBilledMaster,
         hasExceededAccount,
