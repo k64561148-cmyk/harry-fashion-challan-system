@@ -33,7 +33,10 @@ import {
   Search,
   Printer,
   Download,
-  Calendar
+  Calendar,
+  X,
+  Filter,
+  SlidersHorizontal
 } from 'lucide-react';
 import { MasterPanAccount } from '../types';
 import { auth, signInWithPopup, signOut, googleProvider } from '../firebase';
@@ -137,6 +140,14 @@ export const SettingsView: React.FC = () => {
   const [tempIsDefault, setTempIsDefault] = useState<boolean>(false);
   const [tempIsActive, setTempIsActive] = useState<boolean>(true);
   const [editingPanId, setEditingPanId] = useState<string | null>(null);
+
+  // Search & Filter states for Master Directory
+  const [masterSearchQuery, setMasterSearchQuery] = useState<string>('');
+  const [masterStatusFilter, setMasterStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [masterDivisionFilter, setMasterDivisionFilter] = useState<'all' | 'jacket' | 'pant'>('all');
+
+  // Search & Filter states for Material SKU Directory
+  const [materialSearchQuery, setMaterialSearchQuery] = useState<string>('');
 
   // Form states: Materials
   const [materialName, setMaterialName] = useState<string>('');
@@ -927,6 +938,45 @@ export const SettingsView: React.FC = () => {
     }
   };
 
+  // Computed filtered list for Master Directory
+  const filteredMasters = masters.filter(m => {
+    const query = (masterSearchQuery || '').toLowerCase().trim();
+    if (query) {
+      const nameMatch = (m.name || '').toLowerCase().includes(query);
+      const codeMatch = (m.code || '').toLowerCase().includes(query);
+      const typeMatch = (m.type || '').toLowerCase().includes(query);
+      const panMatch = Array.isArray(m.pan_accounts) && m.pan_accounts.some(acc => 
+        (acc.pan_name || '').toLowerCase().includes(query) ||
+        (acc.pan_no || '').toLowerCase().includes(query) ||
+        (acc.bank_name || '').toLowerCase().includes(query) ||
+        (acc.account_no || '').toLowerCase().includes(query) ||
+        (acc.label || '').toLowerCase().includes(query) ||
+        (acc.ifsc_code || '').toLowerCase().includes(query)
+      );
+
+      if (!nameMatch && !codeMatch && !typeMatch && !panMatch) {
+        return false;
+      }
+    }
+
+    if (masterStatusFilter === 'active' && !m.is_active) return false;
+    if (masterStatusFilter === 'inactive' && m.is_active) return false;
+    if (masterDivisionFilter !== 'all' && m.type !== masterDivisionFilter) return false;
+
+    return true;
+  });
+
+  // Computed filtered list for Material SKU Directory
+  const filteredMaterials = materials.filter(mat => {
+    const query = (materialSearchQuery || '').toLowerCase().trim();
+    if (query) {
+      const nameMatch = (mat.name || '').toLowerCase().includes(query);
+      const unitMatch = (mat.unit || '').toLowerCase().includes(query);
+      if (!nameMatch && !unitMatch) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="max-w-6xl mx-auto space-y-6" id="settings-view">
       
@@ -1290,12 +1340,65 @@ export const SettingsView: React.FC = () => {
 
           <div className="lg:col-span-12 xl:col-span-7">
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider mb-4 border-b border-slate-100 pb-2.5 uppercase">ACTIVE MASTER DIRECTORY</h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2.5 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">ACTIVE MASTER DIRECTORY</h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full font-mono">
+                    {filteredMasters.length} of {masters.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* SEARCH & FILTERS CONTROLS */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-3">
+                <div className="relative flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search by code (e.g. SG), name, PAN, bank..."
+                    value={masterSearchQuery}
+                    onChange={(e) => setMasterSearchQuery(e.target.value)}
+                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg pl-8 pr-7 py-1.5 text-xs text-slate-800 font-medium placeholder:text-slate-400 transition"
+                  />
+                  {masterSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setMasterSearchQuery('')}
+                      className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer rounded"
+                      title="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <select
+                    value={masterDivisionFilter}
+                    onChange={(e) => setMasterDivisionFilter(e.target.value as any)}
+                    className="bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#2D3E5D] cursor-pointer"
+                  >
+                    <option value="all">All Divisions</option>
+                    <option value="jacket">Jacket</option>
+                    <option value="pant">Pant</option>
+                  </select>
+
+                  <select
+                    value={masterStatusFilter}
+                    onChange={(e) => setMasterStatusFilter(e.target.value as any)}
+                    className="bg-slate-50 border border-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#2D3E5D] cursor-pointer"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="active">Active Only</option>
+                    <option value="inactive">Inactive Only</option>
+                  </select>
+                </div>
+              </div>
               
               <div className="overflow-x-auto max-h-[350px] overflow-y-auto pr-1 border border-slate-200 rounded-xl overflow-hidden">
                 <table className="w-full text-xs text-left border-collapse">
                   <thead>
-                    <tr className="bg-[#1A2E4A] text-white font-bold border-b border-slate-200">
+                    <tr className="bg-[#1A2E4A] text-white font-bold border-b border-slate-200 sticky top-0 z-10">
                       <th className="py-2.5 px-3">CODE</th>
                       <th className="py-2.5 px-3">FULL NAME</th>
                       <th className="py-2.5 px-3">DIVISION</th>
@@ -1304,44 +1407,70 @@ export const SettingsView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {masters.map(m => (
-                      <tr key={m.id} className="hover:bg-slate-50/60 transition">
-                        <td className="py-2.5 px-3 font-mono font-bold text-[#1A2E4A]">{m.code}</td>
-                        <td className="py-2.5 px-3 font-bold text-slate-800">
-                          <div>{m.name}</div>
-                          <div className="text-[10px] text-slate-400 font-medium font-mono">
-                            {m.pan_accounts && m.pan_accounts.length > 0 
-                              ? `${m.pan_accounts.length} PAN account(s) stored` 
-                              : 'No PAN details configured'}
+                    {filteredMasters.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-400">
+                          <div className="flex flex-col items-center justify-center gap-1.5">
+                            <Search className="w-6 h-6 text-slate-300" />
+                            <span className="text-xs font-semibold text-slate-600">
+                              {masterSearchQuery ? `No masters match "${masterSearchQuery}"` : 'No masters match the selected filters'}
+                            </span>
+                            {(masterSearchQuery || masterStatusFilter !== 'all' || masterDivisionFilter !== 'all') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setMasterSearchQuery('');
+                                  setMasterStatusFilter('all');
+                                  setMasterDivisionFilter('all');
+                                }}
+                                className="text-xs font-bold text-[#1A2E4A] hover:underline mt-1 cursor-pointer"
+                              >
+                                Reset Search &amp; Filters
+                              </button>
+                            )}
                           </div>
                         </td>
-                        <td className="py-2.5 px-3">
-                          <span className="bg-slate-100 text-slate-600 font-bold text-[9px] px-2 py-0.5 rounded-full inline-block">
-                            {m.type.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 uppercase text-[9px] font-bold">
-                          <span className={m.is_active ? 'text-emerald-600' : 'text-slate-400'}>
-                             {m.is_active ? 'Active' : 'Inactive'}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right flex gap-1.5 justify-end">
-                          <button
-                            onClick={() => handleEditMaster(m)}
-                            className="p-1 text-slate-400 hover:text-[#1A2E4A] hover:bg-slate-100 rounded cursor-pointer transition"
-                          >
-                            <Edit className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleToggleMasterState(m)}
-                            className={`p-1 rounded cursor-pointer transition ${m.is_active ? 'text-[#1A2E4A] hover:text-red-500 hover:bg-slate-100' : 'text-slate-400 hover:text-green-500'}`}
-                            title={m.is_active ? 'Deactivate Master' : 'Activate Master'}
-                          >
-                            {m.is_active ? <ToggleRight className="w-5 h-5 text-[#1A2E4A]" /> : <ToggleLeft className="w-5 h-5 text-slate-400" />}
-                          </button>
-                        </td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredMasters.map(m => (
+                        <tr key={m.id} className="hover:bg-slate-50/60 transition">
+                          <td className="py-2.5 px-3 font-mono font-bold text-[#1A2E4A]">{m.code}</td>
+                          <td className="py-2.5 px-3 font-bold text-slate-800">
+                            <div>{m.name}</div>
+                            <div className="text-[10px] text-slate-400 font-medium font-mono">
+                              {m.pan_accounts && m.pan_accounts.length > 0 
+                                ? `${m.pan_accounts.length} PAN account(s) stored` 
+                                : 'No PAN details configured'}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="bg-slate-100 text-slate-600 font-bold text-[9px] px-2 py-0.5 rounded-full inline-block">
+                              {m.type.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 uppercase text-[9px] font-bold">
+                            <span className={m.is_active ? 'text-emerald-600' : 'text-slate-400'}>
+                               {m.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right flex gap-1.5 justify-end">
+                            <button
+                              onClick={() => handleEditMaster(m)}
+                              className="p-1 text-slate-400 hover:text-[#1A2E4A] hover:bg-slate-100 rounded cursor-pointer transition"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleToggleMasterState(m)}
+                              className={`p-1 rounded cursor-pointer transition ${m.is_active ? 'text-[#1A2E4A] hover:text-red-500 hover:bg-slate-100' : 'text-slate-400 hover:text-green-500'}`}
+                              title={m.is_active ? 'Deactivate Master' : 'Activate Master'}
+                            >
+                              {m.is_active ? <ToggleRight className="w-5 h-5 text-[#1A2E4A]" /> : <ToggleLeft className="w-5 h-5 text-slate-400" />}
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1618,12 +1747,41 @@ export const SettingsView: React.FC = () => {
 
           <div className="lg:col-span-12 xl:col-span-7">
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-              <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider mb-4 border-b border-slate-100 pb-2.5 uppercase">DEPOT MATERIAL DIRECTORY</h3>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2.5 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">DEPOT MATERIAL DIRECTORY</h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-100 text-slate-700 rounded-full font-mono">
+                    {filteredMaterials.length} of {materials.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* MATERIAL SEARCH INPUT */}
+              <div className="relative mb-3">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Search material SKU by name or unit..."
+                  value={materialSearchQuery}
+                  onChange={(e) => setMaterialSearchQuery(e.target.value)}
+                  className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#2D3E5D] focus:ring-1 focus:ring-[#2D3E5D] focus:outline-none rounded-lg pl-8 pr-7 py-1.5 text-xs text-slate-800 font-medium placeholder:text-slate-400 transition"
+                />
+                {materialSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setMaterialSearchQuery('')}
+                    className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer rounded"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
               
               <div className="overflow-x-auto max-h-[460px] overflow-y-auto pr-1 border border-slate-200 rounded-xl overflow-hidden">
                 <table className="w-full text-xs text-left border-collapse">
                   <thead>
-                    <tr className="bg-[#1A2E4A] text-white font-bold border-b border-slate-200">
+                    <tr className="bg-[#1A2E4A] text-white font-bold border-b border-slate-200 sticky top-0 z-10">
                       <th className="py-2.5 px-3">SKU NAME DESCRIPTION</th>
                       <th className="py-2.5 px-3">UNIT</th>
                       <th className="py-2.5 px-3 text-right">STANDARD RATE</th>
@@ -1632,31 +1790,53 @@ export const SettingsView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {materials.map(mat => (
-                      <tr key={mat.id} className="hover:bg-slate-50/60 transition">
-                        <td className="py-2.5 px-3 font-bold text-slate-800">{mat.name}</td>
-                        <td className="py-2.5 px-3 font-bold text-slate-550">{mat.unit}</td>
-                        <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-800">{formatINR(mat.default_rate)}</td>
-                        <td className={`py-2.5 px-3 text-right font-mono font-bold ${mat.current_stock < 15 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                          {mat.current_stock.toFixed(1)}
-                        </td>
-                        <td className="py-2.5 px-3 text-right flex gap-1.5 justify-end">
-                          <button
-                            onClick={() => handleEditMaterial(mat)}
-                            className="p-1 text-slate-400 hover:text-[#1A2E4A] hover:bg-slate-100 rounded cursor-pointer transition"
-                          >
-                            <Edit className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleToggleMaterialState(mat)}
-                            className={`p-1 rounded cursor-pointer transition ${mat.is_active ? 'text-[#1A2E4A]' : 'text-slate-400'}`}
-                            title={mat.is_active ? 'Deactivate SKU' : 'Activate SKU'}
-                          >
-                            {mat.is_active ? <ToggleRight className="w-5 h-5 text-[#1A2E4A]" /> : <ToggleLeft className="w-5 h-5 text-slate-400" />}
-                          </button>
+                    {filteredMaterials.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="py-8 text-center text-slate-400">
+                          <div className="flex flex-col items-center justify-center gap-1.5">
+                            <Search className="w-6 h-6 text-slate-300" />
+                            <span className="text-xs font-semibold text-slate-600">
+                              {materialSearchQuery ? `No materials match "${materialSearchQuery}"` : 'No materials found'}
+                            </span>
+                            {materialSearchQuery && (
+                              <button
+                                type="button"
+                                onClick={() => setMaterialSearchQuery('')}
+                                className="text-xs font-bold text-[#1A2E4A] hover:underline mt-1 cursor-pointer"
+                              >
+                                Reset Search
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      filteredMaterials.map(mat => (
+                        <tr key={mat.id} className="hover:bg-slate-50/60 transition">
+                          <td className="py-2.5 px-3 font-bold text-slate-800">{mat.name}</td>
+                          <td className="py-2.5 px-3 font-bold text-slate-550">{mat.unit}</td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-800">{formatINR(mat.default_rate)}</td>
+                          <td className={`py-2.5 px-3 text-right font-mono font-bold ${mat.current_stock < 15 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                            {mat.current_stock.toFixed(1)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right flex gap-1.5 justify-end">
+                            <button
+                              onClick={() => handleEditMaterial(mat)}
+                              className="p-1 text-slate-400 hover:text-[#1A2E4A] hover:bg-slate-100 rounded cursor-pointer transition"
+                            >
+                              <Edit className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleToggleMaterialState(mat)}
+                              className={`p-1 rounded cursor-pointer transition ${mat.is_active ? 'text-[#1A2E4A]' : 'text-slate-400'}`}
+                              title={mat.is_active ? 'Deactivate SKU' : 'Activate SKU'}
+                            >
+                              {mat.is_active ? <ToggleRight className="w-5 h-5 text-[#1A2E4A]" /> : <ToggleLeft className="w-5 h-5 text-slate-400" />}
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
