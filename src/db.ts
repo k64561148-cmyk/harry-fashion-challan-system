@@ -42,36 +42,33 @@ import { getLocalTodayString } from './utils/dateUtils';
 // Global flag to force resolving live production collections for critical transactions
 export let forceLive = false;
 
-// Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
-function doc(firestoreInstance: any, collectionName: string, docId: string) {
-  const isKunal = (() => {
+// Helper to resolve collection names with sandbox prefix if sandbox mode is active
+export function getResolvedCollectionName(collectionName: string): string {
+  if (forceLive || collectionName === 'profiles' || collectionName === 'test_connection') {
+    return collectionName;
+  }
+  const storedSandbox = localStorage.getItem('hf_sandbox_mode_enabled');
+  if (storedSandbox === 'true') {
     try {
-      const currentUserStr = localStorage.getItem('current_user');
-      if (currentUserStr) {
-        const u = JSON.parse(currentUserStr);
+      const uStr = localStorage.getItem('hf_current_user') || localStorage.getItem('current_user');
+      if (uStr) {
+        const u = JSON.parse(uStr);
         const email = (u?.email || '').toLowerCase().trim();
         const name = (u?.name || u?.displayName || '').toLowerCase().trim();
-        const displayName = (u?.displayName || u?.name || '').toLowerCase().trim();
         const username = (u?.username || '').toLowerCase().trim();
-        return email.includes('kunal') || 
-               name.includes('kunal') || 
-               displayName.includes('kunal') ||
-               username.includes('kunal') ||
-               username === 'kunal3012' ||
-               email === 'kunal3012@harryfashion.com' ||
-               email === 'k64561148@gmail.com';
+        const isKunal = email.includes('kunal') || name.includes('kunal') || username.includes('kunal') || email === 'k64561148@gmail.com' || email === 'kunal3012@harryfashion.com' || username === 'kunal3012';
+        if (isKunal) {
+          return `sandbox_kunal_${collectionName}`;
+        }
       }
     } catch (_) {}
-    return false;
-  })();
+  }
+  return collectionName;
+}
 
-  const isSandbox = !forceLive && isKunal && (localStorage.getItem('hf_sandbox_mode_enabled') === 'true' || localStorage.getItem('hf_sandbox_mode_enabled') === null);
-
-  const resolvedCollection = (isSandbox && collectionName !== 'profiles' && collectionName !== 'test_connection')
-    ? `sandbox_kunal_${collectionName}`
-    : collectionName;
-
-  return firestoreDoc(firestoreInstance, resolvedCollection, docId);
+// Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
+function doc(firestoreInstance: any, collectionName: string, docId: string) {
+  return firestoreDoc(firestoreInstance, getResolvedCollectionName(collectionName), docId);
 }
 
 // Helper to generate UUID
@@ -528,10 +525,7 @@ class DatabaseService {
   }
 
   public getCollectionName(baseName: string): string {
-    if (this.isSandboxModeActive() && baseName !== 'profiles' && baseName !== 'test_connection') {
-      return `sandbox_kunal_${baseName}`;
-    }
-    return baseName;
+    return getResolvedCollectionName(baseName);
   }
 
   private getDocRef(collectionName: string, docId: string) {
@@ -756,9 +750,11 @@ class DatabaseService {
         console.log(`Authenticated with Cloud Database as ${user.email} (UID: ${user.uid}). Initializing Firestore Real-time synchronization...`);
         this.isFirebaseInitialized = true;
 
+        // Immediately start multi-collection real-time synchronization so all clients see live data
+        this.setupCloudSyncListeners();
+
         // 1. Establish real-time listener for current user's security profile
         const profileRef = doc(firestore, 'profiles', user.uid);
-        let cloudSyncStarted = false;
 
         const unsubscribeProfile = onSnapshot(profileRef, async (snap) => {
           this.cloudHealth.collectionStatus.profiles = 'healthy';
@@ -812,12 +808,6 @@ class DatabaseService {
 
             this.save('current_user', prof);
             window.dispatchEvent(new Event('db_sync'));
-
-            // Secure and deferred synchronization launch using official fetched role
-            if (!cloudSyncStarted) {
-              cloudSyncStarted = true;
-              this.setupCloudSyncListeners(prof.role);
-            }
           } else {
             // Check if registration is already in progress via system UI form
             if (localStorage.getItem('hf_registration_in_progress') === 'true') {
@@ -909,13 +899,10 @@ class DatabaseService {
       'rate_history',
       'stock_corrections',
       'master_advances',
-      'master_advance_ledger'
+      'master_advance_ledger',
+      'audit_logs',
+      'ledger_transactions'
     ];
-
-    // Only attempt to synchronize audit logs and ledger transactions if the authenticated user holds required admin privilege
-    if (role === 'admin') {
-      syncCollections.push('audit_logs', 'ledger_transactions');
-    }
 
     syncCollections.forEach((collName) => {
       try {
@@ -1073,6 +1060,7 @@ class DatabaseService {
       this.performCloudWrite(() => setDoc(doc(firestore, 'profiles', idToUse), this.enrichPayload(user)))
         .catch(err => console.warn('Could not sync user swap to cloud:', err));
     }
+    this.reinitializeCloudListeners();
   }
 
   getProfiles(): Profile[] {
@@ -2832,41 +2820,49 @@ class DatabaseService {
     const challans = this.getChallans();
     const challanItems = this.getChallanItems();
     challans.forEach(ch => {
-      if (ch.status === 'issued' || ch.status === 'billed') {
-        const items = challanItems.filter(item => item.challan_id === ch.id);
+      const s = (ch.status || '').toLowerCase();
+      if (s === 'issued' || s === 'billed') {
+        const items = challanItems.filter(item => item.challan_id === ch.id || (item as any).challanId === ch.id);
         items.forEach(item => {
-          const m = parseInt(ch.issued_date.split('-')[1], 10);
-          const y = parseInt(ch.issued_date.split('-')[0], 10);
+          const dateStr = ch.issued_date || (ch as any).challanDate || '';
+          const parts = dateStr.split('-');
+          const m = parts.length > 1 ? parseInt(parts[1], 10) : new Date().getMonth() + 1;
+          const y = parts.length > 0 ? parseInt(parts[0], 10) : new Date().getFullYear();
+          const itemQty = Number(item.qty) || 0;
+          const itemRate = Number(item.rate) || 0;
+          const itemAmount = Number(item.amount) !== undefined && !isNaN(Number(item.amount)) ? Number(item.amount) : (itemQty * itemRate);
           list.push({
             id: `gen_mi_${item.id}`,
             type: 'MATERIAL_ISSUE',
-            date: ch.issued_date,
-            master_id: ch.master_id,
-            material_id: item.material_id,
-            qty: item.qty,
-            rate: item.rate,
-            amount: item.amount, // represents deduction charge to master
+            date: dateStr,
+            master_id: ch.master_id || (ch as any).masterId || '',
+            material_id: item.material_id || (item as any).materialId || '',
+            qty: itemQty,
+            rate: itemRate,
+            amount: itemAmount, // represents deduction charge to master
             ref_id: item.id,
-            ref_no: ch.challan_no,
-            notes: ch.notes,
-            created_at: ch.created_at,
+            ref_no: ch.challan_no || '',
+            notes: ch.notes || '',
+            created_at: ch.created_at || (ch as any).createdAt || new Date().toISOString(),
             period_month: m,
             period_year: y
           });
         });
-      } else if (ch.status === 'voided') {
-        const m = parseInt(ch.issued_date.split('-')[1], 10);
-        const y = parseInt(ch.issued_date.split('-')[0], 10);
+      } else if (s === 'voided') {
+        const dateStr = ch.issued_date || (ch as any).challanDate || '';
+        const parts = dateStr.split('-');
+        const m = parts.length > 1 ? parseInt(parts[1], 10) : new Date().getMonth() + 1;
+        const y = parts.length > 0 ? parseInt(parts[0], 10) : new Date().getFullYear();
         list.push({
           id: `gen_void_ch_${ch.id}`,
           type: 'VOID',
-          date: ch.issued_date,
-          master_id: ch.master_id,
+          date: dateStr,
+          master_id: ch.master_id || (ch as any).masterId || '',
           amount: 0,
           ref_id: ch.id,
-          ref_no: ch.challan_no,
-          notes: `Voided Challan: ${ch.notes}`,
-          created_at: ch.created_at,
+          ref_no: ch.challan_no || '',
+          notes: `Voided Challan: ${ch.notes || ''}`,
+          created_at: ch.created_at || (ch as any).createdAt || new Date().toISOString(),
           period_month: m,
           period_year: y
         });

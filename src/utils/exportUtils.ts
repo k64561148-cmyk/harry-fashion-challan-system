@@ -802,8 +802,7 @@ export async function generateInvoicePDF(
     const mDeduction = invoice.stitching_deduction_amount || 0;
     const mSub = invoice.work_amount - invoice.material_deduction - mDiscount - mDeduction;
     const mSetoff = invoice.advanceSetoffAmount || 0;
-    const mNetTaxable = Math.max(0, mSub - mSetoff);
-    const mTds = invoice.tds_amount !== undefined ? invoice.tds_amount : (mNetTaxable > 0 ? parseFloat((mNetTaxable * 0.01).toFixed(2)) : 0);
+    const mTds = invoice.tds_amount !== undefined ? invoice.tds_amount : (mSub > 0 ? parseFloat((mSub * 0.01).toFixed(2)) : 0);
     const mGrand = invoice.grand_total || (mSub - mTds);
     const mNetPayable = invoice.net_payable !== undefined ? invoice.net_payable : Math.max(0, Math.round(mGrand - mSetoff));
 
@@ -841,13 +840,8 @@ export async function generateInvoicePDF(
       doc.text(String(Math.round(mSetoff)), rValueX, formulasY, { align: 'right' });
       formulasY += 5.5;
 
-      doc.setFont('Helvetica', 'bold');
-      doc.text('Net Taxable Base:', rLabelX - 6, formulasY);
-      doc.text(String(Math.round(mNetTaxable)), rValueX, formulasY, { align: 'right' });
-      formulasY += 5.5;
-
       doc.setFont('Helvetica', 'normal');
-      doc.text('-TDS: (1% on Net)', rLabelX - 5, formulasY);
+      doc.text('-TDS: (1% on Work)', rLabelX - 5, formulasY);
       doc.text(mTds.toFixed(2), rValueX, formulasY, { align: 'right' });
       formulasY += 4;
     } else {

@@ -30,7 +30,8 @@ import {
   ShieldCheck,
   CalendarCheck,
   Cloud,
-  CreditCard
+  CreditCard,
+  RefreshCw
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
@@ -430,19 +431,33 @@ export default function App() {
                 <Cloud className={`w-3.5 h-3.5 ${(cloudHealth.syncFailed || Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')) ? 'text-rose-500 animate-pulse' : 'text-blue-400'}`} />
                 Cloud Health Status
               </span>
-              <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
-                Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
-                  ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                  : cloudHealth.syncFailed
-                    ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-              }`}>
-                {Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
-                  ? 'Sync Warning'
-                  : cloudHealth.syncFailed
-                    ? 'Sync Failed'
-                    : 'Healthy'}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  id="btn-force-sync"
+                  onClick={() => {
+                    db.reinitializeCloudListeners();
+                    setCloudHealth(db.getCloudHealth());
+                  }}
+                  title="Force Sync / Reconnect Live Stream"
+                  className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/50 rounded transition-all"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                </button>
+                <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
+                  Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                    : cloudHealth.syncFailed
+                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                }`}>
+                  {Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                    ? 'Sync Warning'
+                    : cloudHealth.syncFailed
+                      ? 'Sync Failed'
+                      : 'Healthy'}
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-1.5 text-[10px] text-slate-350 font-mono mt-1 border-t border-[#2D3E5D]/40 pt-2">

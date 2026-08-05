@@ -287,21 +287,21 @@ service cloud.firestore {
     }
 
     match /audit_logs/{logId} {
-      allow read: if isBilling() || isKunal() || isKunalByUsername();
+      allow read: if isSignedIn();
       allow create: if isSignedIn() && isValidId(logId);
       allow update, delete: if false;
     }
 
     match /stock_corrections/{correctionId} {
       allow read: if isSignedIn();
-      allow create: if isBilling() && isValidId(correctionId) && isValidStockCorrection(request.resource.data);
+      allow create: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(correctionId) && isValidStockCorrection(request.resource.data);
       allow update, delete: if false;
     }
 
     match /ledger_transactions/{txId} {
-      allow read: if isBilling();
-      allow create, update: if isBilling() && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
-      allow delete: if isBilling() && isValidId(txId);
+      allow read: if isSignedIn();
+      allow create, update: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
+      allow delete: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(txId);
     }
 
     match /master_advances/{advanceId} {

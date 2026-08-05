@@ -527,12 +527,14 @@ export const BillingView: React.FC = () => {
     setNetPayable(workAmount - materialDeduction);
   }, [workAmount, materialDeduction]);
 
-  // Derived calculation variables according to professional accounting - TDS is calculated on Net Sub Total after Advance Setoff
+  // Derived calculation variables according to statutory rules - TDS (1%) is deducted on the full jobwork Sub Total (including Advance Setoff amount)
   const subTotal = workAmount - materialDeduction - discount - stitchingDeductionAmount;
-  const netTaxableForTds = Math.max(0, subTotal - advanceSetoff);
-  const tdsAmount = netTaxableForTds > 0 ? parseFloat((netTaxableForTds * 0.01).toFixed(2)) : 0;
+  const tdsAmount = subTotal > 0 ? parseFloat((subTotal * 0.01).toFixed(2)) : 0;
+  const tdsOnAdvanceSetoff = advanceSetoff > 0 ? parseFloat((advanceSetoff * 0.01).toFixed(2)) : 0;
+  const tdsOnNetSettle = Math.max(0, subTotal - advanceSetoff) > 0 ? parseFloat((Math.max(0, subTotal - advanceSetoff) * 0.01).toFixed(2)) : 0;
   const preciseGrandTotal = subTotal - tdsAmount;
   const roundedOffGrandTotal = Math.round(preciseGrandTotal);
+  const finalCashPayable = Math.max(0, roundedOffGrandTotal - advanceSetoff);
 
   const activeChallanIds = Object.keys(selectedChallanIds).filter(id => selectedChallanIds[id]);
   const isMasterSelected = !!selectedMasterId;
@@ -1946,14 +1948,18 @@ export const BillingView: React.FC = () => {
                               <span>Advance Setoff Applied (-):</span>
                               <span className="font-mono font-bold">- {formatINR(advanceSetoff)}</span>
                             </div>
+                            <div className="flex justify-between text-slate-600 bg-amber-50/60 px-1.5 py-0.5 rounded text-[11px]">
+                              <span>TDS on Advance Setoff (1%):</span>
+                              <span className="font-semibold font-mono text-amber-900">{formatINR(tdsOnAdvanceSetoff)}</span>
+                            </div>
                             <div className="flex justify-between text-slate-600 bg-slate-100/70 px-1.5 py-0.5 rounded text-[11px]">
-                              <span>Net Taxable Base:</span>
-                              <span className="font-semibold font-mono">{formatINR(netTaxableForTds)}</span>
+                              <span>TDS on Settle Balance (1%):</span>
+                              <span className="font-semibold font-mono">{formatINR(tdsOnNetSettle)}</span>
                             </div>
                           </>
                         )}
                         <div className="flex justify-between text-slate-500">
-                          <span>TDS Deduction (1%{advanceSetoff > 0 ? ' on Net' : ''}):</span>
+                          <span>Total TDS Deduction (1%):</span>
                           <span className="font-semibold text-orange-700 font-mono">{formatINR(tdsAmount)}</span>
                         </div>
                         <hr className="border-slate-200/60 my-1" />
