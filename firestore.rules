@@ -7,316 +7,104 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Global and Common Helpers
+    // Helper: Verify signed in user
     function isSignedIn() {
       return request.auth != null;
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
     }
 
     function isValidId(id) {
       return id is string && id.size() <= 128;
     }
 
-    // Role-based helper checks (guarded for non-existent profiles)
-    function getUserRole() {
-      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role;
-    }
-
-    function isEmailAdmin() {
-      return request.auth.token.email != null && (
-        request.auth.token.email.toLower() == 'k64561148@gmail.com' ||
-        request.auth.token.email.toLower() == 'kunal@harryfashion.com' ||
-        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com' ||
-        request.auth.token.email.toLower().matches('.*admin.*') ||
-        request.auth.token.email.toLower().matches('.*owner.*') ||
-        request.auth.token.email.toLower().matches('.*kunal.*')
-      );
-    }
-
-    function isEmailBilling() {
-      return request.auth.token.email != null && (
-        request.auth.token.email.toLower().matches('.*billing.*') ||
-        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
-      );
-    }
-
-    function isEmailIssueDept() {
-      return request.auth.token.email != null && (
-        request.auth.token.email.toLower().matches('.*issue.*') ||
-        request.auth.token.email.toLower().matches('.*dept.*') ||
-        request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
-      );
-    }
-
-    function isAdmin() {
-      return isSignedIn() && (
-        isEmailAdmin() ||
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && getUserRole() == 'admin')
-      );
-    }
-
-    function isKunal() {
-      return request.auth != null
-        && request.auth.token.email != null
-        && (
-          request.auth.token.email.toLower() == 'kunal3012@harryfashion.com'
-          || request.auth.token.email.toLower() == 'k64561148@gmail.com'
-          || request.auth.token.email.toLower() == 'kunal@harryfashion.com'
-          || request.auth.token.email.toLower().matches('.*kunal.*')
-        );
-    }
-
-    function isKunalByUsername() {
-      return request.auth != null
-        && exists(/databases/$(database)/documents/profiles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.username == "kunal3012";
-    }
-
-    function isBilling() {
-      return isSignedIn() && (
-        isEmailBilling() ||
-        isEmailAdmin() ||
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'billing' || getUserRole() == 'admin'))
-      );
-    }
-
-    function isIssueDept() {
-      return isSignedIn() && (
-        isEmailIssueDept() ||
-        isEmailBilling() ||
-        isEmailAdmin() ||
-        (exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) && (getUserRole() == 'issue_dept' || getUserRole() == 'billing' || getUserRole() == 'admin'))
-      );
-    }
-
-    function isValidProfile(data) {
-      return data.keys().hasAll(['uid', 'displayName', 'role', 'username', 'active', 'createdAt', 'updatedAt'])
-        && data.uid is string && data.uid.size() <= 128
-        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 200
-        && data.role is string && (data.role == 'issue_dept' || data.role == 'billing' || data.role == 'admin')
-        && data.username is string && data.username.size() >= 1 && data.username.size() <= 128
-        && data.active is bool
-        && data.createdAt is string
-        && data.updatedAt is string;
-    }
-
-    // Helper functions for entity schema validation
-    function isValidMaster(data) {
-      return data.keys().hasAll(['id', 'name', 'code', 'type', 'is_active', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
-        && data.code is string && data.code.size() >= 1 && data.code.size() <= 20
-        && data.type is string && (data.type == 'jacket' || data.type == 'pant')
-        && data.is_active is bool
-        && data.created_at is string
-        && (!data.keys().hasAny(['pan_accounts']) || data.pan_accounts is list);
-    }
-
-    function isValidMaterial(data) {
-      return data.keys().hasAll(['id', 'name', 'unit', 'default_rate', 'current_stock', 'is_active', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
-        && data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 20
-        && (data.default_rate is int || data.default_rate is float) && data.default_rate >= 0
-        && (data.current_stock is int || data.current_stock is float)
-        && data.is_active is bool
-        && data.created_at is string;
-    }
-
-    function isValidChallan(data) {
-      return data.keys().hasAll(['id', 'challan_no', 'master_id', 'issued_date', 'issued_by', 'status', 'notes', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.challan_no is string && data.challan_no.size() >= 1 && data.challan_no.size() <= 50
-        && data.master_id is string && data.master_id.size() <= 128
-        && data.issued_date is string
-        && data.issued_by is string && data.issued_by.size() <= 200
-        && data.status is string && (data.status == 'issued' || data.status == 'billed' || data.status == 'voided' || data.status == 'BILLED' || data.status == 'ISSUED' || data.status == 'VOIDED')
-        && data.notes is string && data.notes.size() <= 2000
-        && data.created_at is string;
-    }
-
-    function isValidChallanItem(data) {
-      return data.keys().hasAll(['id', 'challan_id', 'material_id', 'qty', 'rate', 'amount', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.challan_id is string && data.challan_id.size() <= 128
-        && data.material_id is string && data.material_id.size() <= 128
-        && (data.qty is int || data.qty is float) && data.qty >= 0
-        && (data.rate is int || data.rate is float) && data.rate >= 0
-        && (data.amount is int || data.amount is float) && data.amount >= 0
-        && data.created_at is string;
-    }
-
-    function isValidInwardEntry(data) {
-      return data.keys().hasAll(['id', 'material_id', 'qty_received', 'supplier_name', 'bill_no', 'inward_date', 'notes', 'created_by', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.material_id is string && data.material_id.size() <= 128
-        && (data.qty_received is int || data.qty_received is float) && data.qty_received >= 0
-        && data.supplier_name is string && data.supplier_name.size() <= 200
-        && data.bill_no is string && data.bill_no.size() <= 200
-        && data.inward_date is string
-        && data.notes is string && data.notes.size() <= 2000
-        && data.created_by is string && data.created_by.size() <= 200
-        && data.created_at is string;
-    }
-
-    function isValidInvoice(data) {
-      return data.keys().hasAll(['id', 'invoice_no', 'master_id', 'period_month', 'period_year', 'work_amount', 'material_deduction', 'net_payable', 'status', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.invoice_no is string && data.invoice_no.size() >= 1 && data.invoice_no.size() <= 50
-        && data.master_id is string && data.master_id.size() <= 128
-        && data.period_month is int && data.period_month >= 1 && data.period_month <= 12
-        && data.period_year is int && data.period_year >= 2000 && data.period_year <= 2100
-        && (data.work_amount is int || data.work_amount is float)
-        && (data.material_deduction is int || data.material_deduction is float)
-        && (data.net_payable is int || data.net_payable is float)
-        && data.status is string && (data.status == 'draft' || data.status == 'finalised')
-        && data.created_at is string
-        && (!data.keys().hasAny(['selected_pan_no']) || data.selected_pan_no is string)
-        && (!data.keys().hasAny(['selected_pan_name']) || data.selected_pan_name is string)
-        && (!data.keys().hasAny(['selected_bank_name']) || data.selected_bank_name is string)
-        && (!data.keys().hasAny(['selected_account_no']) || data.selected_account_no is string)
-        && (!data.keys().hasAny(['selected_ifsc_code']) || data.selected_ifsc_code is string)
-        && (!data.keys().hasAny(['selected_branch_name']) || data.selected_branch_name is string)
-        && (!data.keys().hasAny(['selected_cheque_in_favour_of']) || data.selected_cheque_in_favour_of is string)
-        && (!data.keys().hasAny(['selected_pan_account_id']) || data.selected_pan_account_id is string)
-        && (!data.keys().hasAny(['selected_payment_label']) || data.selected_payment_label is string)
-        && (!data.keys().hasAny(['paymentProfileSnapshot']) || data.paymentProfileSnapshot is map);
-    }
-
-    function isValidStockCorrection(data) {
-      return data.keys().hasAll(['id', 'material_id', 'before_stock', 'after_stock', 'reason', 'admin_user', 'timestamp'])
-        && data.id is string && data.id.size() <= 128
-        && data.material_id is string && data.material_id.size() <= 128
-        && (data.before_stock is int || data.before_stock is float)
-        && (data.after_stock is int || data.after_stock is float) && data.after_stock >= 0
-        && data.reason is string && data.reason.size() <= 2000
-        && data.admin_user is string && data.admin_user.size() <= 200
-        && data.timestamp is string;
-    }
-
-    function isValidLedgerTransaction(data) {
-      return data.keys().hasAll(['id', 'type', 'date', 'amount', 'ref_id', 'ref_no', 'created_at'])
-        && data.id is string && data.id.size() <= 128
-        && data.type is string && data.type.size() <= 50
-        && data.date is string
-        && (data.amount is int || data.amount is float)
-        && data.ref_id is string && data.ref_id.size() <= 128
-        && data.ref_no is string && data.ref_no.size() <= 100
-        && data.created_at is string;
-    }
-
-    // Match patterns for collections and fields
+    // User Profiles
     match /profiles/{profileId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(profileId) && (isKunal() || isKunalByUsername() || isValidProfile(request.resource.data));
-      allow update: if isSignedIn() && isValidId(profileId) && (isKunal() || isKunalByUsername() || (isValidProfile(request.resource.data) && (
-        isAdmin() || (request.auth.uid == profileId && request.resource.data.role == resource.data.role)
-      )));
-      allow delete: if isAdmin() || isKunal() || isKunalByUsername();
+      allow read, write: if isSignedIn() && isValidId(profileId);
     }
 
+    // Masters / Jobworkers
     match /masters/{masterId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if (isBilling() || isKunal() || isKunalByUsername()) && isValidId(masterId);
+      allow read, write: if isSignedIn() && isValidId(masterId);
     }
 
+    // Materials / Raw Stock
     match /materials/{materialId} {
-      allow read: if isSignedIn();
-      allow create, delete: if (isBilling() || isKunal() || isKunalByUsername()) && isValidId(materialId);
-      allow update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(materialId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidMaterial(request.resource.data));
+      allow read, write: if isSignedIn() && isValidId(materialId);
     }
 
+    // Challans (Daily Material Issues)
     match /challans/{challanId} {
-      allow read: if isSignedIn();
-      allow create: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(challanId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallan(request.resource.data));
-      allow update: if (isIssueDept() || isBilling() || isKunal() || isKunalByUsername()) && isValidId(challanId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallan(request.resource.data));
-      allow delete: if (isKunal() || isKunalByUsername()) && isValidId(challanId);
+      allow read, write: if isSignedIn() && isValidId(challanId);
     }
 
+    // Challan Line Items
     match /challan_items/{itemId} {
-      allow read: if isSignedIn();
-      allow create, update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(itemId) && (isAdmin() || isKunal() || isKunalByUsername() || isValidChallanItem(request.resource.data));
-      allow delete: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(itemId);
+      allow read, write: if isSignedIn() && isValidId(itemId);
     }
 
+    // Counters for Auto-increment Serial Numbers
     match /counters/{counterId} {
-      allow read: if isSignedIn();
-      allow create, update: if (isIssueDept() || isKunal() || isKunalByUsername()) && isValidId(counterId);
-      allow delete: if false;
+      allow read, write: if isSignedIn() && isValidId(counterId);
     }
 
+    // Connection Health & Diagnostics
     match /test_connection/{docId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isKunal() || isKunalByUsername() || isAdmin();
+      allow read, write: if isSignedIn();
     }
 
-    match /challans_transaction/{docId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isSignedIn() && (isIssueDept() || isBilling() || isAdmin() || isKunal() || isKunalByUsername());
-    }
-
+    // Material Inward Entries (Stock Inward)
     match /inward_entries/{entryId} {
-      allow read: if isSignedIn();
-      allow create: if isIssueDept() && isValidId(entryId) && isValidInwardEntry(request.resource.data);
-      allow update, delete: if isIssueDept() && isValidId(entryId);
+      allow read, write: if isSignedIn() && isValidId(entryId);
     }
 
+    // Billing Invoices (Settlements & Invoices)
     match /invoices/{invoiceId} {
-      allow read: if isSignedIn();
-      allow create, update: if isBilling() && isValidId(invoiceId) && isValidInvoice(request.resource.data);
-      allow delete: if isBilling() && isValidId(invoiceId);
+      allow read, write: if isSignedIn() && isValidId(invoiceId);
     }
 
+    // Invoice Challan Bridges
     match /invoice_challans/{id} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isBilling() && isValidId(id);
+      allow read, write: if isSignedIn() && isValidId(id);
     }
 
+    // Master Custom Rate Overrides
     match /master_rate_overrides/{overrideId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isBilling() && isValidId(overrideId);
+      allow read, write: if isSignedIn() && isValidId(overrideId);
     }
 
+    // Material Rate Change History
     match /rate_history/{historyId} {
-      allow read: if isSignedIn();
-      allow create: if isBilling() && isValidId(historyId);
-      allow update, delete: if false;
+      allow read, write: if isSignedIn() && isValidId(historyId);
     }
 
+    // System Audit Logs
     match /audit_logs/{logId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(logId);
-      allow update, delete: if false;
+      allow read, write: if isSignedIn() && isValidId(logId);
     }
 
+    // Physical Stock Corrections
     match /stock_corrections/{correctionId} {
-      allow read: if isSignedIn();
-      allow create: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(correctionId) && isValidStockCorrection(request.resource.data);
-      allow update, delete: if false;
+      allow read, write: if isSignedIn() && isValidId(correctionId);
     }
 
+    // Master Ledger Transactions
     match /ledger_transactions/{txId} {
-      allow read: if isSignedIn();
-      allow create, update: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(txId) && isValidLedgerTransaction(request.resource.data);
-      allow delete: if (isBilling() || isAdmin() || isKunal() || isKunalByUsername()) && isValidId(txId);
+      allow read, write: if isSignedIn() && isValidId(txId);
     }
 
+    // Master Financial Advance Accounts
     match /master_advances/{advanceId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isBilling() && isValidId(advanceId);
+      allow read, write: if isSignedIn() && isValidId(advanceId);
     }
 
+    // Master Advance Ledgers
     match /master_advance_ledger/{ledgerId} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isBilling() && isValidId(ledgerId);
+      allow read, write: if isSignedIn() && isValidId(ledgerId);
     }
 
-    // Isolated Sandbox Testing Environments (for kunal / developers to safely test the app)
+    // Legacy sandbox collection catch-all for backward compatibility
     match /{collName}/{docId=**} {
-      allow read, write: if isSignedIn() && collName.matches('sandbox_.*');
+      allow read, write: if isSignedIn();
     }
   }
 }
+

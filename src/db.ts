@@ -40,35 +40,16 @@ import { firestore, auth } from './firebase';
 import { getLocalTodayString } from './utils/dateUtils';
 
 // Global flag to force resolving live production collections for critical transactions
-export let forceLive = false;
+export let forceLive = true;
 
-// Helper to resolve collection names with sandbox prefix if sandbox mode is active
+// Helper to resolve collection names: all workstations connect to the shared canonical production collections
 export function getResolvedCollectionName(collectionName: string): string {
-  if (forceLive || collectionName === 'profiles' || collectionName === 'test_connection') {
-    return collectionName;
-  }
-  const storedSandbox = localStorage.getItem('hf_sandbox_mode_enabled');
-  if (storedSandbox === 'true') {
-    try {
-      const uStr = localStorage.getItem('hf_current_user') || localStorage.getItem('current_user');
-      if (uStr) {
-        const u = JSON.parse(uStr);
-        const email = (u?.email || '').toLowerCase().trim();
-        const name = (u?.name || u?.displayName || '').toLowerCase().trim();
-        const username = (u?.username || '').toLowerCase().trim();
-        const isKunal = email.includes('kunal') || name.includes('kunal') || username.includes('kunal') || email === 'k64561148@gmail.com' || email === 'kunal3012@harryfashion.com' || username === 'kunal3012';
-        if (isKunal) {
-          return `sandbox_kunal_${collectionName}`;
-        }
-      }
-    } catch (_) {}
-  }
   return collectionName;
 }
 
-// Custom wrapper for Firestore doc to support automatic sandbox collection prefix routing
+// Custom wrapper for Firestore doc
 function doc(firestoreInstance: any, collectionName: string, docId: string) {
-  return firestoreDoc(firestoreInstance, getResolvedCollectionName(collectionName), docId);
+  return firestoreDoc(firestoreInstance, collectionName, docId);
 }
 
 // Helper to generate UUID
@@ -153,13 +134,13 @@ export function parseErrorMessage(err: any): string {
   }
 
   if (msg.includes('temporarily unavailable') || msg.includes('UNAVAILABLE') || msg.includes('retry with exponential backoff')) {
-    return 'The database service was temporarily unavailable due to a network glitch. Please check your internet connection and try clicking the button again.';
+    return 'The database service was temporarily busy. Please retry in a few moments.';
   }
   if (msg.includes('Missing or insufficient permissions') || msg.includes('PERMISSION_DENIED')) {
-    return 'Access Denied: You do not have permission for this database operation. Please ensure you are logged in with the correct account.';
+    return 'Access Denied: Please ensure you are logged into the portal.';
   }
-  if (msg.includes('Quota exceeded')) {
-    return 'Database usage quota exceeded. Please try again later or contact system administrator.';
+  if (msg.includes('resource-exhausted') || msg.includes('RESOURCE_EXHAUSTED')) {
+    return 'Cloud database request rate limit reached. Please wait a moment and try again.';
   }
 
   return msg;
@@ -447,10 +428,6 @@ class DatabaseService {
     if (!isKunalUser) {
       return false;
     }
-    const storedSandbox = localStorage.getItem('hf_sandbox_mode_enabled');
-    if (storedSandbox !== null) {
-      return storedSandbox === 'true';
-    }
     return false;
   }
 
@@ -461,10 +438,6 @@ class DatabaseService {
   }
 
   public async promoteSandboxToLive(): Promise<void> {
-    if (!this.isSandboxModeActive()) {
-      throw new Error("Sandbox mode is not active. Cannot promote sandbox data to live.");
-    }
-
     const keysToCopy = [
       'masters',
       'materials',
@@ -480,17 +453,14 @@ class DatabaseService {
       'ledger_transactions'
     ];
 
-    // Copy each sandbox collection data to live storage keys and Firebase collections
     for (const key of keysToCopy) {
       const sandboxStorageKey = `sandbox_kunal_${key}`;
       const liveStorageKey = `hf_${key}`;
       const sandboxDataStr = localStorage.getItem(sandboxStorageKey);
       
       if (sandboxDataStr) {
-        // Copy in local storage
         localStorage.setItem(liveStorageKey, sandboxDataStr);
 
-        // Copy in Cloud Firestore
         if (this.isFirebaseInitialized) {
           try {
             const items = JSON.parse(sandboxDataStr);
@@ -514,11 +484,8 @@ class DatabaseService {
       }
     }
 
-    // Write audit log on live mode
     const currentUser = this.getCurrentUser();
-    this.addAuditLog(currentUser.email, 'SANDBOX_PROMOTED', `Successfully promoted all tested sandbox data to live production environment.`);
-
-    // Switch off sandbox mode to switch to live mode instantly
+    this.addAuditLog(currentUser.email, 'SANDBOX_PROMOTED', `Successfully unified all tested data across production database.`);
     localStorage.setItem('hf_sandbox_mode_enabled', 'false');
     this.reinitializeCloudListeners();
     window.dispatchEvent(new Event('db_sync'));
@@ -545,9 +512,6 @@ class DatabaseService {
   }
 
   private getStorageKey(key: string): string {
-    if (key !== 'current_user' && key !== 'profiles' && key !== 'sandbox_mode_enabled' && this.isSandboxModeActive()) {
-      return `sandbox_kunal_${key}`;
-    }
     return `hf_${key}`;
   }
 
@@ -606,6 +570,50 @@ class DatabaseService {
   }
 
   private initDatabase() {
+    // 0. Auto-migrate legacy sandbox data to canonical live storage
+    const sandboxKeys = [
+      'masters',
+      'materials',
+      'master_rate_overrides',
+      'challans',
+      'challan_items',
+      'inward_entries',
+      'invoices',
+      'invoice_challans',
+      'rate_history',
+      'stock_corrections',
+      'audit_logs',
+      'ledger_transactions'
+    ];
+    sandboxKeys.forEach((key) => {
+      const sbKey = `sandbox_kunal_${key}`;
+      const liveKey = `hf_${key}`;
+      const sbDataStr = localStorage.getItem(sbKey);
+      if (sbDataStr) {
+        try {
+          const sbItems = JSON.parse(sbDataStr);
+          if (Array.isArray(sbItems) && sbItems.length > 0) {
+            const liveDataStr = localStorage.getItem(liveKey);
+            const liveItems = liveDataStr ? JSON.parse(liveDataStr) : [];
+            if (!Array.isArray(liveItems) || liveItems.length === 0) {
+              localStorage.setItem(liveKey, sbDataStr);
+            } else {
+              const map = new Map<string, any>();
+              liveItems.forEach((it: any) => {
+                const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null);
+                if (id) map.set(id, it);
+              });
+              sbItems.forEach((it: any) => {
+                const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null);
+                if (id) map.set(id, it);
+              });
+              localStorage.setItem(liveKey, JSON.stringify(Array.from(map.values())));
+            }
+          }
+        } catch (_) {}
+      }
+    });
+
     // 1. Initialize masters
     const masters = this.load<Master[]>('masters', []);
     if (masters.length === 0) {
@@ -1809,6 +1817,7 @@ class DatabaseService {
       let masterSnapshotData: any = null;
       let generatedChallanNo = '';
       const savedChallanItems: ChallanItem[] = [];
+      let finalChallan: Challan | null = null;
 
       const uid = auth.currentUser?.uid || currentUser.uid || 'guest-01';
       const profileRef = doc(firestore, this.getCollectionName('profiles'), uid);
@@ -1919,7 +1928,7 @@ class DatabaseService {
             }
 
             // Construct Final Challan Payload
-            const finalChallan: Challan = {
+            finalChallan = {
               id: challanId,
               challan_no: generatedChallanNo,
               master_id: masterId,
@@ -2023,31 +2032,26 @@ class DatabaseService {
         throw lastTxError;
       }
 
-      // ---- POST-COMMIT VERIFICATION AND RE-READS ----
-      let reReadChallanSnap;
-      try {
-        reReadChallanSnap = await getDocFromServer(challanRef);
-      } catch (_) {
-        reReadChallanSnap = await getDoc(challanRef);
+      if (!finalChallan) {
+        throw new Error("Challan transaction could not be completed.");
       }
 
-      if (!reReadChallanSnap.exists()) {
-        throw new Error("Re-read verification failed: Challan document not found on Firestore server.");
-      }
-      const verifiedChallan = reReadChallanSnap.data() as Challan;
+      // Update local cache collections immediately so the UI is responsive on all tabs
+      const localChallans = this.load<Challan[]>('challans', []);
+      localChallans.unshift(finalChallan);
+      this.save('challans', localChallans);
 
-      for (const item of savedChallanItems) {
-        const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
-        let reReadItemSnap;
-        try {
-          reReadItemSnap = await getDocFromServer(itemRef);
-        } catch (_) {
-          reReadItemSnap = await getDoc(itemRef);
+      const localChallanItems = this.load<ChallanItem[]>('challan_items', []);
+      this.save('challan_items', [...savedChallanItems, ...localChallanItems]);
+
+      const localMaterials = this.load<Material[]>('materials', []);
+      items.forEach((item) => {
+        const matIdx = localMaterials.findIndex(m => m.id === item.material_id);
+        if (matIdx > -1) {
+          localMaterials[matIdx].current_stock = (localMaterials[matIdx].current_stock || 0) - item.qty;
         }
-        if (!reReadItemSnap.exists()) {
-          throw new Error("Re-read verification failed: Challan line item not found on Firestore server.");
-        }
-      }
+      });
+      this.save('materials', localMaterials);
 
       // Maintain last 1000 logs in local cache as well
       const localLogs = this.load<AuditLog[]>('audit_logs', []);
@@ -2057,8 +2061,8 @@ class DatabaseService {
         user_email: currentUser.email,
         action: isBackdated ? 'BACKDATED_CHALLAN_CREATED' : 'Challan Issued',
         details: isBackdated
-          ? `challanNo: ${verifiedChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${verifiedChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${verifiedChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`
-          : `Issued Challan ${verifiedChallan.challan_no} to Master ${masterNameVal} containing ${items.length} items`,
+          ? `challanNo: ${finalChallan.challan_no}, challanDate: ${challanDate}, createdAt: ${finalChallan.created_at}, createdBy: ${currentUser.username || currentUser.name || 'Office Desk'}, backdatedReason: "${finalChallan.backdatedReason}", affectedMonth: ${challanMonth}, affectedYear: ${challanYear}`
+          : `Issued Challan ${finalChallan.challan_no} to Master ${masterNameVal} containing ${items.length} items`,
         created_at: new Date().toISOString()
       };
       localLogs.unshift(auditPayloadLocal);
@@ -2067,7 +2071,7 @@ class DatabaseService {
       // Trigger local events to refresh active UI screens immediately
       window.dispatchEvent(new Event('db_sync'));
 
-      return verifiedChallan;
+      return finalChallan;
 
     } catch (err: any) {
       console.error('Firestore transaction or re-read verification failed:', err);
