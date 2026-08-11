@@ -513,18 +513,14 @@ class DatabaseService {
 
   private writeQueue: Promise<any> = Promise.resolve();
   private isWriteThrottled: boolean = false;
-  private isQuotaExceeded: boolean = false;
-  private quotaExceededTimestamp: number = 0;
+  private isQuotaExceeded: boolean = safeGetLocalStorage('hf_quota_exceeded') === 'true';
+  private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_timestamp') || '0');
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
 
   private scheduleAutoUpload(collName: string, missingRecords: any[]) {
-    if (!this.isFirebaseInitialized || !auth.currentUser) return;
-    // If quota was exceeded recently, back off background bulk uploads for 5 minutes
-    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp < 300000) {
-      return;
-    }
+    if (!this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
     if (!missingRecords || missingRecords.length === 0) return;
 
     // Filter out heavy logs from aggressive background spam
@@ -552,11 +548,7 @@ class DatabaseService {
   }
 
   private async processAutoUploadQueue() {
-    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser) return;
-    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp < 300000) {
-      this.autoUploadQueue.clear();
-      return;
-    }
+    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
     this.isUploadingPending = true;
 
     try {
@@ -623,6 +615,8 @@ class DatabaseService {
           console.warn("[Firestore] Daily write quota reached on free tier. Safely caching changes locally in browser database.");
           this.isQuotaExceeded = true;
           this.quotaExceededTimestamp = Date.now();
+          safeSetLocalStorage('hf_quota_exceeded', 'true');
+          safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
           this.autoUploadQueue.clear();
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
@@ -897,6 +891,16 @@ class DatabaseService {
 
   constructor() {
     this.isFirebaseInitialized = true;
+    const now = Date.now();
+    if (this.isQuotaExceeded && (now - this.quotaExceededTimestamp < 12 * 60 * 60 * 1000)) {
+      try {
+        disableNetwork(firestore).catch(() => {});
+      } catch (_) {}
+    } else if (this.isQuotaExceeded) {
+      this.isQuotaExceeded = false;
+      safeRemoveLocalStorage('hf_quota_exceeded');
+      safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+    }
     this.initDatabase();
     this.attemptBackgroundAuth();
     this.setupCloudSyncListeners();
@@ -927,6 +931,7 @@ class DatabaseService {
 
   // Mandatory connection test
   private async testCloudConnection() {
+    if (this.isQuotaExceeded) return;
     try {
       if (!auth.currentUser) {
         await this.attemptBackgroundAuth();
@@ -940,6 +945,13 @@ class DatabaseService {
     } catch (error: any) {
       if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
         console.warn("Firestore daily free quota reached. Operating in high-speed offline-first mode with complete local persistence.");
+        this.isQuotaExceeded = true;
+        this.quotaExceededTimestamp = Date.now();
+        safeSetLocalStorage('hf_quota_exceeded', 'true');
+        safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
+        try {
+          disableNetwork(firestore).catch(() => {});
+        } catch (_) {}
       } else if (error instanceof Error && error.message.includes('the client is offline')) {
         console.log("Terminal is in offline mode.");
       }
@@ -1120,12 +1132,6 @@ class DatabaseService {
       if (idx > -1 && currentMaterials[idx].current_stock >= 0) {
         currentMaterials[idx].current_stock = -15.0;
         this.save('materials', currentMaterials);
-        
-        // Also sync to cloud if firebase is initialized
-        if (this.isFirebaseInitialized) {
-          this.performCloudWrite(() => setDoc(doc(firestore, 'materials', currentMaterials[idx].id), this.enrichPayload(currentMaterials[idx])))
-            .catch(() => {});
-        }
       }
     }
   }
@@ -1193,7 +1199,7 @@ class DatabaseService {
               canCreateBackdatedChallan: canBackdate
             };
 
-            if (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate) {
+            if (!this.isQuotaExceeded && (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate)) {
               this.performCloudWrite(() => setDoc(profileRef, this.enrichPayload(prof))).catch(() => {});
             }
 
@@ -1247,13 +1253,16 @@ class DatabaseService {
               canCreateBackdatedChallan: canBackdate
             };
 
-            try {
-              const enrichedProfile = this.enrichPayload(newProfile);
-              await this.performCloudWrite(() => setDoc(profileRef, enrichedProfile));
-              window.dispatchEvent(new Event('db_sync'));
-            } catch (err) {
-              console.error('Error creating user profile in cloud:', err);
-              // Remove if failed so we can retry on next clean login, but keep to prevent local snapshot loop in the same session
+            this.save('current_user', newProfile);
+            window.dispatchEvent(new Event('db_sync'));
+
+            if (!this.isQuotaExceeded && !user.isAnonymous) {
+              try {
+                const enrichedProfile = this.enrichPayload(newProfile);
+                this.performCloudWrite(() => setDoc(profileRef, enrichedProfile)).catch(() => {});
+              } catch (err) {
+                console.warn('Profile sync deferred in offline mode:', err);
+              }
             }
           }
         }, (error) => {
@@ -1359,16 +1368,7 @@ class DatabaseService {
           });
 
           // Identify local records missing from remote (e.g. created on this device while offline or before sync)
-          const missingInRemote = localRecords.filter(item => {
-            const key = getKey(item);
-            return key && !remoteKeySet.has(key);
-          });
-
-          // If there are unsynced records on this client, queue them for upload
-          if (missingInRemote.length > 0 && remoteRecords.length > 0) {
-            this.scheduleAutoUpload(collName, missingInRemote);
-          }
-
+          // Local records are safely maintained in the merged map and local storage
           const mergedRecords = Array.from(mergedMap.values());
 
           // If challans synced, extract embedded items into challan_items so item-level queries are always 100% complete
