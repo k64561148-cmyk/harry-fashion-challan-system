@@ -194,7 +194,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
         return;
       }
-      const items = db.getChallanItems(c.id);
+      const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
+        ? db.getChallanItems(c.id)
+        : ((c as any).items || []);
 
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('PDF download timed out (15 seconds limit). Please check your browser connection.')), 15000)
@@ -222,7 +224,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
         return;
       }
-      const items = db.getChallanItems(c.id);
+      const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
+        ? db.getChallanItems(c.id)
+        : ((c as any).items || []);
 
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Print layout generation timed out (15 seconds limit). Please try again.')), 15000)
@@ -276,7 +280,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const updatedChallan = db.getChallans().find(c => c.id === voidingChallan.id)!;
       const masterObj = db.getMasters().find(m => m.id === updatedChallan.master_id)!;
       const materialsList = db.getMaterials();
-      const items = db.getChallanItems(updatedChallan.id);
+      const items = (db.getChallanItems(updatedChallan.id) && db.getChallanItems(updatedChallan.id).length > 0)
+        ? db.getChallanItems(updatedChallan.id)
+        : ((updatedChallan as any).items || []);
       
       // Save/Print automatically using our custom local structure + upload voided PDF
       await generateChallanPDF(updatedChallan, items, masterObj, materialsList, true, false);
@@ -295,9 +301,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     setEditReason('');
     
     // Populating line items
-    const rawItems = db.getChallanItems(c.id);
-    const mapped = rawItems.map(item => ({
-      material_id: item.material_id,
+    const rawItems = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
+      ? db.getChallanItems(c.id)
+      : ((c as any).items || []);
+    const mapped = rawItems.map((item: any) => ({
+      material_id: item.material_id || item.materialId,
       qty: item.qty,
       rate: item.rate
     }));
@@ -358,7 +366,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const updatedChallan = db.getChallans().find(c => c.id === editingChallan.id)!;
       const masterObj = db.getMasters().find(m => m.id === updatedChallan.master_id)!;
       const materialsList = db.getMaterials();
-      const items = db.getChallanItems(updatedChallan.id);
+      const items = (db.getChallanItems(updatedChallan.id) && db.getChallanItems(updatedChallan.id).length > 0)
+        ? db.getChallanItems(updatedChallan.id)
+        : ((updatedChallan as any).items || []);
       
       await generateChallanPDF(updatedChallan, items, masterObj, materialsList, true, false);
 
@@ -786,7 +796,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {(() => {
-                                            const items = db.getChallanItems(c.id);
+                                            const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
+                                              ? db.getChallanItems(c.id)
+                                              : ((c as any).items || []);
                                             const materials = db.getMaterials();
                                             if (items.length === 0) {
                                               return (
@@ -795,19 +807,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                                 </tr>
                                               );
                                             }
-                                            const totalAmt = items.reduce((sum, item) => sum + item.amount, 0);
+                                            const totalAmt = items.reduce((sum: number, item: any) => sum + (Number(item.amount) || (Number(item.qty || 0) * Number(item.rate || 0))), 0);
                                             return (
                                               <>
-                                                {items.map(item => {
-                                                  const mat = materials.find(m => m.id === item.material_id);
+                                                {items.map((item: any) => {
+                                                  const matId = item.material_id || item.materialId;
+                                                  const mat = materials.find(m => m.id === matId);
+                                                  const matName = item.materialName || (mat ? mat.name : 'Unknown Material');
+                                                  const matUnit = item.materialUnit || (mat ? mat.unit : 'pc');
+                                                  const qtyNum = Number(item.qty) || 0;
+                                                  const rateNum = Number(item.rate) || 0;
+                                                  const amtNum = item.amount !== undefined ? Number(item.amount) : (qtyNum * rateNum);
                                                   return (
-                                                    <tr key={item.id} className="text-slate-705 font-medium hover:bg-slate-50/20">
+                                                    <tr key={item.id || `${matId}-${qtyNum}`} className="text-slate-705 font-medium hover:bg-slate-50/20">
                                                       <td className="py-2 px-3 font-semibold text-slate-800">
-                                                        {mat ? mat.name : 'Unknown Material'} {mat?.unit ? `(${mat.unit})` : ''}
+                                                        {matName} {matUnit ? `(${matUnit})` : ''}
                                                       </td>
-                                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">{item.qty}</td>
-                                                      <td className="py-2 px-3 text-right font-mono text-slate-505">₹{item.rate.toFixed(2)}</td>
-                                                      <td className="py-2 px-3 text-right font-mono font-extrabold text-[#1A2E4A]">₹{item.amount.toFixed(2)}</td>
+                                                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">{qtyNum}</td>
+                                                      <td className="py-2 px-3 text-right font-mono text-slate-505">₹{rateNum.toFixed(2)}</td>
+                                                      <td className="py-2 px-3 text-right font-mono font-extrabold text-[#1A2E4A]">₹{amtNum.toFixed(2)}</td>
                                                     </tr>
                                                   );
                                                 })}

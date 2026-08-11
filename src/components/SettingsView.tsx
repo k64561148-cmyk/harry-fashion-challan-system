@@ -358,7 +358,10 @@ export const SettingsView: React.FC = () => {
         compiledCount++;
         setBatchCompileStatus(`Generating Challan [${compiledCount}/${totalDocs}]: ${challan.challan_no}...`);
 
-        const items = allChallanItems.filter(item => item.challan_id === challan.id);
+        let items = allChallanItems.filter(item => item.challan_id === challan.id || (item as any).challanId === challan.id);
+        if (items.length === 0 && Array.isArray((challan as any).items) && (challan as any).items.length > 0) {
+          items = (challan as any).items;
+        }
         const master = allMasters.find(m => m.id === challan.master_id) || {
           id: challan.master_id || challan.masterId || '',
           name: challan.masterSnapshot?.name || challan.masterDisplayName || challan.masterName || 'Unknown Master',
@@ -2460,6 +2463,24 @@ export const SettingsView: React.FC = () => {
                     </div>
                     
                     <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        onClick={async () => {
+                          setIsSyncing(true);
+                          try {
+                            const res = await db.syncAllDataWithCloud();
+                            showFeedback(res.message);
+                          } catch (e: any) {
+                            showFeedback(e.message || 'Sync failed', true);
+                          } finally {
+                            setIsSyncing(false);
+                          }
+                        }}
+                        disabled={isSyncing}
+                        className="inline-flex items-center gap-2 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs font-bold py-2 px-4.5 rounded-lg transition cursor-pointer disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} /> {isSyncing ? 'Syncing with Cloud...' : 'Force Sync All Records Now'}
+                      </button>
+
                       <button
                         onClick={handleGoogleSignOut}
                         className="inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold py-2 px-4.5 rounded-lg transition cursor-pointer"

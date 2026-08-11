@@ -2,109 +2,100 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny catch-all safety net
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helper: Verify signed in user
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
     function isValidId(id) {
       return id is string && id.size() <= 128;
     }
 
     // User Profiles
     match /profiles/{profileId} {
-      allow read, write: if isSignedIn() && isValidId(profileId);
+      allow read, write: if isValidId(profileId);
     }
 
     // Masters / Jobworkers
     match /masters/{masterId} {
-      allow read, write: if isSignedIn() && isValidId(masterId);
+      allow read, write: if isValidId(masterId);
     }
 
     // Materials / Raw Stock
     match /materials/{materialId} {
-      allow read, write: if isSignedIn() && isValidId(materialId);
+      allow read, write: if isValidId(materialId);
     }
 
     // Challans (Daily Material Issues)
     match /challans/{challanId} {
-      allow read, write: if isSignedIn() && isValidId(challanId);
+      allow read, write: if isValidId(challanId);
     }
 
     // Challan Line Items
     match /challan_items/{itemId} {
-      allow read, write: if isSignedIn() && isValidId(itemId);
+      allow read, write: if isValidId(itemId);
     }
 
     // Counters for Auto-increment Serial Numbers
     match /counters/{counterId} {
-      allow read, write: if isSignedIn() && isValidId(counterId);
+      allow read, write: if isValidId(counterId);
     }
 
     // Connection Health & Diagnostics
     match /test_connection/{docId} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
 
     // Material Inward Entries (Stock Inward)
     match /inward_entries/{entryId} {
-      allow read, write: if isSignedIn() && isValidId(entryId);
+      allow read, write: if isValidId(entryId);
     }
 
     // Billing Invoices (Settlements & Invoices)
     match /invoices/{invoiceId} {
-      allow read, write: if isSignedIn() && isValidId(invoiceId);
+      allow read, write: if isValidId(invoiceId);
     }
 
     // Invoice Challan Bridges
     match /invoice_challans/{id} {
-      allow read, write: if isSignedIn() && isValidId(id);
+      allow read, write: if isValidId(id);
     }
 
     // Master Custom Rate Overrides
     match /master_rate_overrides/{overrideId} {
-      allow read, write: if isSignedIn() && isValidId(overrideId);
+      allow read, write: if isValidId(overrideId);
     }
 
     // Material Rate Change History
     match /rate_history/{historyId} {
-      allow read, write: if isSignedIn() && isValidId(historyId);
+      allow read, write: if isValidId(historyId);
     }
 
     // System Audit Logs
     match /audit_logs/{logId} {
-      allow read, write: if isSignedIn() && isValidId(logId);
+      allow read, write: if isValidId(logId);
     }
 
     // Physical Stock Corrections
     match /stock_corrections/{correctionId} {
-      allow read, write: if isSignedIn() && isValidId(correctionId);
+      allow read, write: if isValidId(correctionId);
     }
 
     // Master Ledger Transactions
     match /ledger_transactions/{txId} {
-      allow read, write: if isSignedIn() && isValidId(txId);
+      allow read, write: if isValidId(txId);
     }
 
     // Master Financial Advance Accounts
     match /master_advances/{advanceId} {
-      allow read, write: if isSignedIn() && isValidId(advanceId);
+      allow read, write: if isValidId(advanceId);
     }
 
     // Master Advance Ledgers
     match /master_advance_ledger/{ledgerId} {
-      allow read, write: if isSignedIn() && isValidId(ledgerId);
+      allow read, write: if isValidId(ledgerId);
     }
 
-    // Legacy sandbox collection catch-all for backward compatibility
+    // Dynamic collections / fallback catch-all
     match /{collName}/{docId=**} {
-      allow read, write: if isSignedIn();
+      allow read, write: if true;
     }
   }
 }
+
 

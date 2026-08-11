@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, parseErrorMessage } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
-import { Master, Material, Challan, Profile } from '../types';
+import { Master, Material, Challan, Profile, ChallanItem } from '../types';
 import { generateChallanPDF, formatINR } from '../utils/exportUtils';
 import { 
   Plus, 
@@ -325,8 +325,32 @@ export const IssueChallanView: React.FC = () => {
 
     setItems(prev => prev.map(item => {
       if (item.id === rowId) {
-        const rateNum = parseFloat(String(item.rate)) || 0;
-        return { ...item, qty: finalVal, amount: qtyNum * rateNum, stockWarning: false };
+        let matId = item.material_id;
+        let rateVal: number | string = item.rate;
+        let unitStr = item.unit || 'pc';
+
+        if (!matId && rowSearchTerms[rowId]?.trim()) {
+          const searchTerm = rowSearchTerms[rowId].trim();
+          const match = getFilteredAndRankedMaterials(searchTerm, materials)[0] || materials.find(m => m.name.toLowerCase() === searchTerm.toLowerCase());
+          if (match) {
+            matId = match.id;
+            unitStr = match.unit;
+            if (rateVal === '' || rateVal === 0) {
+              rateVal = selectedMasterId ? db.getRateForMaster(selectedMasterId, match.id) : match.default_rate;
+            }
+          }
+        }
+
+        const rateNum = parseFloat(String(rateVal)) || 0;
+        return {
+          ...item,
+          material_id: matId,
+          unit: unitStr,
+          qty: finalVal,
+          rate: rateVal,
+          amount: qtyNum * rateNum,
+          stockWarning: false
+        };
       }
       return item;
     }));
@@ -347,6 +371,29 @@ export const IssueChallanView: React.FC = () => {
     }));
   };
 
+  // Helper to resolve any typed material names before validation or submit
+  const getResolvedFormItems = (): ChallanFormItem[] => {
+    return items.map(item => {
+      if (!item.material_id && rowSearchTerms[item.id]?.trim()) {
+        const searchTerm = rowSearchTerms[item.id].trim();
+        const match = getFilteredAndRankedMaterials(searchTerm, materials)[0] || materials.find(m => m.name.toLowerCase() === searchTerm.toLowerCase());
+        if (match) {
+          const defaultRate = selectedMasterId ? db.getRateForMaster(selectedMasterId, match.id) : match.default_rate;
+          const r = item.rate !== '' ? (parseFloat(String(item.rate)) || defaultRate) : defaultRate;
+          const q = parseFloat(String(item.qty)) || 0;
+          return {
+            ...item,
+            material_id: match.id,
+            unit: match.unit,
+            rate: r,
+            amount: q * r
+          };
+        }
+      }
+      return item;
+    });
+  };
+
   // Submit the issue challan records
   const handleIssueChallan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -357,10 +404,20 @@ export const IssueChallanView: React.FC = () => {
       return;
     }
 
+    const resolved = getResolvedFormItems();
+    setItems(resolved);
+
     // Filter valid lines
-    const validLines = items.filter(item => item.material_id !== '');
+    const validLines = resolved.filter(item => item.material_id !== '');
     if (validLines.length === 0) {
       setErrorMessage('Please add at least one material to issue.');
+      return;
+    }
+
+    const zeroQtyLine = validLines.find(item => (parseFloat(String(item.qty)) || 0) <= 0);
+    if (zeroQtyLine) {
+      const mat = materials.find(m => m.id === zeroQtyLine.material_id);
+      setErrorMessage(`Please enter a valid quantity greater than 0 for "${mat?.name || 'material'}".`);
       return;
     }
 
@@ -437,7 +494,12 @@ export const IssueChallanView: React.FC = () => {
         }
       }
 
-      const validLines = items.filter(item => item.material_id !== '');
+      const resolved = getResolvedFormItems();
+      const validLines = resolved.filter(item => item.material_id !== '');
+      if (validLines.length === 0) {
+        throw new Error("Please select and add at least one material to issue.");
+      }
+
       const challanData = {
         challan_no: challanNo,
         master_id: selectedMasterId,
@@ -447,21 +509,53 @@ export const IssueChallanView: React.FC = () => {
         backdatedReason: isBackdated ? backdatedReason.trim() : undefined
       };
 
-      const lineItems = validLines.map(line => ({
-        material_id: line.material_id,
-        qty: parseFloat(String(line.qty)) || 0,
-        rate: parseFloat(String(line.rate)) || 0
-      }));
+      const lineItems = validLines.map(line => {
+        const q = parseFloat(String(line.qty)) || 0;
+        const r = parseFloat(String(line.rate)) || 0;
+        return {
+          material_id: line.material_id,
+          qty: q,
+          rate: r
+        };
+      });
 
       // 1. Commit to DB
       const result = await db.saveChallan(challanData, lineItems, db.isSandboxModeActive() && confirmSandboxTest);
 
-      // 2. Generate PDF & Auto Download
+      // 2. Resolve items for PDF generation (with multi-layer safety check)
+      let itemsForPDF = db.getChallanItems(result.id);
+      if (!itemsForPDF || itemsForPDF.length === 0) {
+        if ((result as any).items && (result as any).items.length > 0) {
+          itemsForPDF = (result as any).items;
+        } else {
+          // Construct fallback items from form lines
+          itemsForPDF = validLines.map(line => {
+            const mat = materials.find(m => m.id === line.material_id);
+            const q = parseFloat(String(line.qty)) || 0;
+            const r = parseFloat(String(line.rate)) || 0;
+            return {
+              id: `item-${Date.now()}-${Math.random()}`,
+              challan_id: result.id,
+              challanId: result.id,
+              material_id: line.material_id,
+              materialId: line.material_id,
+              qty: q,
+              rate: r,
+              amount: q * r,
+              created_at: new Date().toISOString(),
+              materialName: mat?.name || 'Material',
+              materialUnit: mat?.unit || 'pc'
+            } as ChallanItem;
+          });
+        }
+      }
+
+      // 3. Generate PDF & Auto Download
       const masterObj = masters.find(m => m.id === selectedMasterId)!;
-      await generateChallanPDF(result, db.getChallanItems(result.id), masterObj, materials, true);
+      await generateChallanPDF(result, itemsForPDF, masterObj, materials, true);
 
       // Save success result triggers success frame
-      setSuccessChallan(result);
+      setSuccessChallan({ ...result, items: itemsForPDF });
     } catch (err: any) {
       setErrorMessage(parseErrorMessage(err));
     } finally {
@@ -472,14 +566,20 @@ export const IssueChallanView: React.FC = () => {
   const triggerPDFDownloadAgain = () => {
     if (successChallan) {
       const masterObj = masters.find(m => m.id === successChallan.master_id)!;
-      generateChallanPDF(successChallan, db.getChallanItems(successChallan.id), masterObj, materials, true, false);
+      const itemsForPDF = (successChallan.items && successChallan.items.length > 0)
+        ? successChallan.items
+        : db.getChallanItems(successChallan.id);
+      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, true, false);
     }
   };
 
   const triggerDirectPrint = () => {
     if (successChallan) {
       const masterObj = masters.find(m => m.id === successChallan.master_id)!;
-      generateChallanPDF(successChallan, db.getChallanItems(successChallan.id), masterObj, materials, false, true);
+      const itemsForPDF = (successChallan.items && successChallan.items.length > 0)
+        ? successChallan.items
+        : db.getChallanItems(successChallan.id);
+      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, false, true);
     }
   };
 
@@ -891,6 +991,13 @@ export const IssueChallanView: React.FC = () => {
                                 }
                               }}
                               onBlur={() => {
+                                const currentSearch = (rowSearchTerms[item.id] || '').trim();
+                                if (currentSearch && !item.material_id) {
+                                  const filtered = getFilteredAndRankedMaterials(currentSearch, materials);
+                                  if (filtered.length > 0) {
+                                    handleMaterialSelect(item.id, filtered[0].id);
+                                  }
+                                }
                                 // Delay slightly so clicks in dropdown register
                                 setTimeout(() => {
                                   setFocusedRowId(current => current === item.id ? null : current);

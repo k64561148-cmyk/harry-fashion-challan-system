@@ -649,8 +649,21 @@ export default function App() {
                       </span>
                     </div>
                     <button
+                      onClick={async () => {
+                        try {
+                          await db.syncAllDataWithCloud();
+                        } catch (e) {
+                          console.warn(e);
+                        }
+                      }}
+                      title="Force Sync all records between this PC and Google Cloud"
+                      className="text-[9px] font-extrabold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase flex items-center gap-1"
+                    >
+                      <RefreshCw className="w-2.5 h-2.5" /> Sync
+                    </button>
+                    <button
                       onClick={handleCloudLogout}
-                      className="text-[9px] font-extrabold text-[#1A2E4A] hover:text-rose-600 bg-slate-100 hover:bg-rose-50/70 border border-slate-250 hover:border-rose-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase"
+                      className="text-[9px] font-extrabold text-[#1A2E4A] hover:text-rose-600 bg-slate-100 hover:bg-rose-50/70 border border-slate-250 hover:border-rose-200 transition py-1 px-2 rounded-md cursor-pointer uppercase"
                     >
                       Disconnect
                     </button>

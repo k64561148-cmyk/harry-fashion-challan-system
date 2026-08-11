@@ -88,6 +88,7 @@ export interface Challan {
   status: ChallanStatus;
   notes: string;
   created_at: string;
+  items?: ChallanItem[];
   billedInvoiceId?: string;
   invoiceId?: string;
   invoiceNo?: string;
@@ -126,7 +127,9 @@ export interface Challan {
 export interface ChallanItem {
   id: string;
   challan_id: string;
+  challanId?: string;
   material_id: string;
+  materialId?: string;
   qty: number;
   rate: number;
   amount: number;

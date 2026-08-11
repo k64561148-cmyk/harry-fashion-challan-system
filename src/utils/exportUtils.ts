@@ -470,12 +470,22 @@ export async function generateChallanPDF(
     doc.setFont('Helvetica', 'normal');
     doc.setFontSize(fontSize);
 
-    items.forEach((item, index) => {
-      const mat = materials.find(m => m.id === item.material_id);
-      const materialName = mat ? mat.name : 'Unknown Material';
-      const unit = mat ? mat.unit : 'pc';
-      totalQty += item.qty;
-      totalAmount += item.amount;
+    const effectiveItems = (items && items.length > 0) ? items : ((challan as any).items || []);
+
+    effectiveItems.forEach((item: any, index: number) => {
+      const matId = item.material_id || item.materialId || (item.materialSnapshot && item.materialSnapshot.id);
+      const mat = materials.find(m => m.id === matId);
+      const materialName = item.materialName || (mat ? mat.name : (item.materialSnapshot?.name || 'Material'));
+      const unit = item.materialUnit || (mat ? mat.unit : (item.materialSnapshot?.unit || 'pc'));
+      
+      const qtyNum = parseFloat(String(item.qty)) || 0;
+      const rateNum = parseFloat(String(item.rate)) || 0;
+      const amountNum = (item.amount !== undefined && !isNaN(parseFloat(String(item.amount))) && parseFloat(String(item.amount)) > 0)
+        ? parseFloat(String(item.amount))
+        : (qtyNum * rateNum);
+
+      totalQty += qtyNum;
+      totalAmount += amountNum;
 
       // Dynamically adjust font size based on the length of materialName to prevent overlap
       let itemFontSize = 10;
@@ -491,10 +501,10 @@ export async function generateChallanPDF(
       
       // Reset font size for numbers/units
       doc.setFontSize(10);
-      doc.text(item.qty.toFixed(1), 116, currentY + rowHeight - 2.2, { align: 'right' });
+      doc.text(qtyNum.toFixed(1), 116, currentY + rowHeight - 2.2, { align: 'right' });
       doc.text(unit, 120, currentY + rowHeight - 2.2);
-      doc.text(formatINR(item.rate), 160, currentY + rowHeight - 2.2, { align: 'right' });
-      doc.text(formatINR(item.amount), 198, currentY + rowHeight - 2.2, { align: 'right' });
+      doc.text(formatINR(rateNum), 160, currentY + rowHeight - 2.2, { align: 'right' });
+      doc.text(formatINR(amountNum), 198, currentY + rowHeight - 2.2, { align: 'right' });
 
       // Bottom row border
       doc.setDrawColor(200, 200, 200);
