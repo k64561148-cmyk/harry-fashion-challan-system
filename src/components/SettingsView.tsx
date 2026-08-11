@@ -36,7 +36,13 @@ import {
   Calendar,
   X,
   Filter,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Upload,
+  FileUp,
+  FileDown,
+  CheckCircle2,
+  ExternalLink,
+  Zap
 } from 'lucide-react';
 import { MasterPanAccount } from '../types';
 import { auth, signInWithPopup, signOut, googleProvider } from '../firebase';
@@ -450,6 +456,60 @@ export const SettingsView: React.FC = () => {
     } finally {
       setIsBatchCompiling(false);
       setBatchCompileStatus('');
+    }
+  };
+
+  const handleExportFullJSON = () => {
+    try {
+      const jsonContent = db.exportCompleteDatabaseJSON();
+      const dateStr = new Date().toISOString().split('T')[0];
+      const fileName = `HarryFashion_Full_Database_Backup_${dateStr}.json`;
+      const blob = new Blob([jsonContent], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showFeedback(`Complete database backup exported: ${fileName}`);
+    } catch (err: any) {
+      console.error(err);
+      showFeedback('Backup export failed: ' + (err.message || String(err)), true);
+    }
+  };
+
+  const handleImportFullJSON = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const confirmRestore = window.confirm(
+      `Are you sure you want to import "${file.name}"?\nThis will merge all challans, invoices, master rates, and records from this file into this system.`
+    );
+    if (!confirmRestore) {
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const result = await db.importCompleteDatabaseJSON(text);
+      if (result.success) {
+        showFeedback(result.message);
+        // Refresh local lists
+        setMasters(db.getMasters());
+        setMaterials(db.getMaterials());
+        setProfiles(db.getProfiles());
+      } else {
+        showFeedback(result.message, true);
+      }
+    } catch (err: any) {
+      console.error(err);
+      showFeedback('File import error: ' + (err.message || String(err)), true);
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -2559,6 +2619,67 @@ export const SettingsView: React.FC = () => {
                   </div>
                 )}
 
+              </div>
+
+              {/* --- UNIVERSAL CROSS-PC DATA MIGRATION & 1-CLICK INSTANT BACKUP (JSON) --- */}
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-indigo-50/70 via-white to-sky-50/70 border border-indigo-200 shadow-xs space-y-4 text-left">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div>
+                    <h4 className="text-xs font-bold text-[#1A2E4A] uppercase tracking-wider flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-indigo-600" />
+                      Cross-PC Data Transfer & 1-Click Backup (Instant Offline Migration)
+                    </h4>
+                    <p className="text-[11px] text-slate-650 mt-0.5 font-medium leading-relaxed font-sans">
+                      Transfer all bills, challans, master rates, and records directly between PCs instantly without waiting for cloud quota resets!
+                    </p>
+                  </div>
+                  <span className="bg-indigo-100 text-indigo-800 text-[10px] font-extrabold px-2.5 py-1 rounded-md uppercase tracking-wider shrink-0">
+                    Zero-Delay Transfer
+                  </span>
+                </div>
+
+                <div className="bg-white p-4 rounded-xl border border-indigo-150 space-y-3">
+                  <div className="text-[11px] text-slate-700 space-y-1 leading-relaxed font-sans">
+                    <p className="font-bold text-[#1A2E4A]">💡 How to transfer bills generated on PC 1 to PC 2 right now:</p>
+                    <ol className="list-decimal pl-5 text-[10.5px] text-slate-650 space-y-1 font-sans">
+                      <li><strong>On PC 1 (where the bill was created)</strong>: Click <strong className="text-indigo-700">"Export Full Database Backup (.json)"</strong> below.</li>
+                      <li>Send that file to <strong>PC 2</strong> (via WhatsApp, Pen Drive, Google Drive, or Email).</li>
+                      <li><strong>On PC 2</strong>: Click <strong className="text-emerald-700">"Import Backup File (.json)"</strong> and select that file. All bills and challans will appear instantly!</li>
+                    </ol>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 pt-2">
+                    <button
+                      onClick={handleExportFullJSON}
+                      className="inline-flex items-center gap-2 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs font-bold py-2.5 px-4 rounded-xl transition cursor-pointer shadow-xs uppercase tracking-wider"
+                    >
+                      <FileDown className="w-4 h-4 text-sky-400" />
+                      Export Full Database Backup (.json)
+                    </button>
+
+                    <label className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition cursor-pointer shadow-xs uppercase tracking-wider">
+                      <FileUp className="w-4 h-4 text-emerald-200" />
+                      Import Backup File (.json)
+                      <input
+                        type="file"
+                        accept=".json"
+                        onChange={handleImportFullJSON}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Quota limit guide */}
+                <div className="p-3.5 bg-amber-50/80 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 leading-relaxed font-medium">
+                  <p className="font-bold text-amber-950 mb-1 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
+                    Why did Cloud Sync say "Quota limit exceeded"?
+                  </p>
+                  <p className="text-[10.5px] text-amber-850">
+                    Google Firestore's Free Plan allows <strong>20,000 writes per day</strong>. When that free limit is reached on any day, Google blocks writes until midnight. All your bills remain 100% safe on your computer. To eliminate all daily limits forever and ensure instant cloud sync on unlimited PCs 24/7, you can switch your Firebase project to the <strong>Blaze (Pay-as-you-go) Plan</strong> in the <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-blue-700 underline font-bold">Firebase Console</a> (costs almost ₹0–₹10/month for normal business use).
+                  </p>
+                </div>
               </div>
 
               {/* --- LOCAL SYSTEM FOLDER INTEGRATION (FILESYSTEM ACCESS API) --- */}

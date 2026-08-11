@@ -742,15 +742,19 @@ class DatabaseService {
   }
 
   public reinitializeCloudListeners() {
-    try {
-      enableNetwork(firestore).catch(() => {});
-    } catch (_) {}
-    this.isQuotaExceeded = false;
-    this.quotaExceededTimestamp = 0;
+    if (!this.isQuotaExceeded) {
+      try {
+        enableNetwork(firestore).catch(() => {});
+      } catch (_) {}
+    }
 
-    this.activeListeners.forEach(unsubscribe => unsubscribe());
+    this.activeListeners.forEach(unsubscribe => {
+      try { unsubscribe(); } catch (_) {}
+    });
     this.activeListeners = [];
-    this.activeSyncListeners.forEach(unsubscribe => unsubscribe());
+    this.activeSyncListeners.forEach(unsubscribe => {
+      try { unsubscribe(); } catch (_) {}
+    });
     this.activeSyncListeners.clear();
     this.resetCollectionStatuses();
 
@@ -1266,8 +1270,19 @@ class DatabaseService {
             }
           }
         }, (error) => {
-          console.warn('Profile listener blocked or failed:', error);
-          this.cloudHealth.collectionStatus.profiles = 'failed';
+          const errMsg = error?.message || String(error);
+          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || (error as any)?.code === 'resource-exhausted';
+          if (isQuota) {
+            this.isQuotaExceeded = true;
+            this.quotaExceededTimestamp = Date.now();
+            safeSetLocalStorage('hf_quota_exceeded', 'true');
+            safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
+            try {
+              disableNetwork(firestore).catch(() => {});
+            } catch (_) {}
+          }
+          console.warn('Profile listener deferred (offline or quota active):', error?.message || error);
+          this.cloudHealth.collectionStatus.profiles = isQuota ? 'healthy' : 'failed';
           const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
@@ -1416,6 +1431,22 @@ class DatabaseService {
           const isUnavailable = errMsg.includes('unavailable') || errMsg.includes('Could not reach Cloud Firestore') || error?.code === 'unavailable';
           const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
           
+          if (isQuota) {
+            this.isQuotaExceeded = true;
+            this.quotaExceededTimestamp = Date.now();
+            safeSetLocalStorage('hf_quota_exceeded', 'true');
+            safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
+            try {
+              disableNetwork(firestore).catch(() => {});
+            } catch (_) {}
+            if (collName in this.cloudHealth.collectionStatus) {
+              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+            }
+            this.cloudHealth.syncFailed = false;
+            window.dispatchEvent(new Event('db_sync'));
+            return;
+          }
+
           if (isPermissionError) {
             if (collName in this.cloudHealth.collectionStatus) {
               this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
@@ -1525,6 +1556,97 @@ class DatabaseService {
       total: totalRecords,
       message: `Cloud synchronization completed. ${totalUploaded} records verified and synced.`
     };
+  }
+
+  // Export 100% of the local database to a single portable JSON file
+  public exportCompleteDatabaseJSON(): string {
+    const collections = [
+      'masters',
+      'materials',
+      'master_rate_overrides',
+      'challans',
+      'challan_items',
+      'invoices',
+      'invoice_challans',
+      'inward_entries',
+      'master_advances',
+      'master_advance_ledger',
+      'stock_corrections',
+      'ledger_transactions',
+      'audit_logs',
+      'rate_history',
+      'profiles',
+      'master_pan_accounts',
+      'company_settings'
+    ];
+
+    const backupData: Record<string, any> = {
+      appName: 'Harry Fashion Challan & Billing Management System',
+      exportedAt: new Date().toISOString(),
+      version: '2.0.0',
+      data: {}
+    };
+
+    for (const coll of collections) {
+      backupData.data[coll] = this.load<any[]>(coll, []);
+    }
+
+    return JSON.stringify(backupData, null, 2);
+  }
+
+  // Import and merge a portable JSON backup file into the local and cloud database
+  public async importCompleteDatabaseJSON(jsonStr: string): Promise<{ success: boolean; message: string; recordCount: number }> {
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (!parsed || !parsed.data || typeof parsed.data !== 'object') {
+        throw new Error('Invalid backup file structure: missing data payload.');
+      }
+
+      let totalImported = 0;
+      for (const [collName, items] of Object.entries(parsed.data)) {
+        if (!Array.isArray(items)) continue;
+        
+        const currentLocal = this.load<any[]>(collName, []);
+        const mergedMap = new Map<string, any>();
+
+        // Put current records
+        currentLocal.forEach(it => {
+          const key = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null) || JSON.stringify(it);
+          mergedMap.set(key, it);
+        });
+
+        // Merge backup records (newer timestamp or overwriting if matching ID)
+        items.forEach(it => {
+          const key = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null) || JSON.stringify(it);
+          mergedMap.set(key, it);
+          totalImported++;
+        });
+
+        this.save(collName, Array.from(mergedMap.values()));
+      }
+
+      // Refresh in-memory caches and trigger UI update
+      this.initDatabase();
+      window.dispatchEvent(new Event('db_sync'));
+
+      // If online and quota allows, attempt to push new records to cloud
+      if (!this.isQuotaExceeded) {
+        this.reinitializeCloudListeners();
+      }
+
+      return {
+        success: true,
+        message: `Successfully imported and restored ${totalImported} records across all database tables.`,
+        recordCount: totalImported
+      };
+    } catch (err: any) {
+      console.error('Failed to import database backup:', err);
+      return {
+        success: false,
+        message: err?.message || 'Failed to parse and import backup file.',
+        recordCount: 0
+      };
+    }
   }
 
   // --- Profile / Auth ---
@@ -3949,7 +4071,21 @@ class DatabaseService {
   }
 
   async checkDuplicateChallans(challanIds: string[]): Promise<string | null> {
-    if (!this.isFirebaseInitialized) return null;
+    if (!this.isFirebaseInitialized || this.isQuotaExceeded) {
+      const localChallans = this.getChallans();
+      for (const challanId of challanIds) {
+        const found = localChallans.find(c => c.id === challanId);
+        if (found) {
+          const status = (found.status || '').toLowerCase();
+          const invoiceId = found.invoiceId || (found as any).invoice_id;
+          const invoiceNo = found.invoiceNo || (found as any).invoice_no;
+          if (status === 'billed' || status === 'voided' || status === 'void' || invoiceId) {
+            return invoiceNo || 'unknown';
+          }
+        }
+      }
+      return null;
+    }
     for (const challanId of challanIds) {
       try {
         const docRef = doc(firestore, 'challans', challanId);
@@ -3963,7 +4099,16 @@ class DatabaseService {
             return invoiceNo || 'unknown';
           }
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota limit exceeded')) {
+          this.isQuotaExceeded = true;
+          this.quotaExceededTimestamp = Date.now();
+          safeSetLocalStorage('hf_quota_exceeded', 'true');
+          safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
+          try {
+            disableNetwork(firestore).catch(() => {});
+          } catch (_) {}
+        }
         console.warn(`Failed to re-read challan ${challanId} from server:`, err);
       }
     }
