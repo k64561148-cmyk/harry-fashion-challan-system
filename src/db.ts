@@ -509,28 +509,51 @@ class DatabaseService {
     return cleanObject(enriched);
   }
 
+  private writeQueue: Promise<any> = Promise.resolve();
+  private isWriteThrottled: boolean = false;
+
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T> {
-    this.cloudHealth.pendingOfflineWrites += 1;
-    window.dispatchEvent(new Event('db_sync'));
-    try {
-      const result = await operation();
-      this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
-      safeSetLocalStorage('hf_health_last_write', this.cloudHealth.lastSuccessfulWrite);
-      this.cloudHealth.syncFailed = false;
-      this.cloudHealth.lastError = null;
-      return result;
-    } catch (error: any) {
-      console.error("Cloud write failed: ", error);
-      const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
-      if (isPermissionError) {
-        this.cloudHealth.syncFailed = true;
+    const execute = async (): Promise<T> => {
+      if (this.isWriteThrottled) {
+        await new Promise(res => setTimeout(res, 500));
       }
-      this.cloudHealth.lastError = error?.message || String(error);
-      throw error;
-    } finally {
-      this.cloudHealth.pendingOfflineWrites = Math.max(0, this.cloudHealth.pendingOfflineWrites - 1);
+      this.cloudHealth.pendingOfflineWrites += 1;
       window.dispatchEvent(new Event('db_sync'));
-    }
+      try {
+        const result = await operation();
+        this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+        safeSetLocalStorage('hf_health_last_write', this.cloudHealth.lastSuccessfulWrite);
+        this.cloudHealth.syncFailed = false;
+        this.cloudHealth.lastError = null;
+        this.isWriteThrottled = false;
+        return result;
+      } catch (error: any) {
+        const errMsg = error?.message || String(error);
+        const isExhausted = errMsg.includes('resource-exhausted') || errMsg.includes('maximum allowed queued writes');
+        const isUnavailable = errMsg.includes('unavailable') || errMsg.includes('Could not reach Cloud Firestore') || error?.code === 'unavailable';
+        const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
+        
+        if (isExhausted) {
+          console.warn("[Firestore] Write stream throttled by SDK. Backing off:", errMsg);
+          this.isWriteThrottled = true;
+          await new Promise(res => setTimeout(res, 1200));
+        } else if (isUnavailable) {
+          console.log("[Firestore] Operating in offline mode. Changes saved to local cache and will sync automatically upon reconnection.");
+          this.cloudHealth.syncFailed = false;
+        } else if (isPermissionError) {
+          this.cloudHealth.syncFailed = true;
+        }
+        this.cloudHealth.lastError = isUnavailable ? null : errMsg;
+        throw error;
+      } finally {
+        this.cloudHealth.pendingOfflineWrites = Math.max(0, this.cloudHealth.pendingOfflineWrites - 1);
+        window.dispatchEvent(new Event('db_sync'));
+      }
+    };
+
+    const chained = this.writeQueue.then(execute, execute);
+    this.writeQueue = chained.catch(() => {});
+    return chained;
   }
 
   public isSandboxModeActive(): boolean {
@@ -1255,53 +1278,21 @@ class DatabaseService {
           this.save(collName, mergedRecords);
           // Trigger customized global event so UI knows data synced
           window.dispatchEvent(new Event('db_sync'));
-
-          // AUTOMATIC TWO-WAY UPLOAD: If there are local records not in Firestore, auto-push them to Cloud!
-          if (missingInRemote.length > 0 && this.isFirebaseInitialized && auth.currentUser) {
-            console.log(`[Auto-Sync] Found ${missingInRemote.length} unsynced local records in '${collName}'. Uploading to Cloud Firestore...`);
-            try {
-              const chunkSize = 200;
-              for (let i = 0; i < missingInRemote.length; i += chunkSize) {
-                const chunk = missingInRemote.slice(i, i + chunkSize);
-                const batch = writeBatch(firestore);
-                chunk.forEach(item => {
-                  const docId = getKey(item) || generateUUID();
-                  const docRef = this.getDocRef(collName, docId);
-                  batch.set(docRef, this.enrichPayload(item), { merge: true });
-                });
-                await this.performCloudWrite(() => batch.commit());
-              }
-              console.log(`[Auto-Sync] Successfully uploaded ${missingInRemote.length} records in '${collName}' to Cloud Firestore!`);
-              
-              // If challans were missing, also ensure their items are uploaded
-              if (collName === 'challans') {
-                const allLocalItems = this.load<ChallanItem[]>('challan_items', []);
-                const missingChallanIds = new Set(missingInRemote.map(c => c.id));
-                const itemsToPush = allLocalItems.filter(it => missingChallanIds.has(it.challan_id || (it as any).challanId));
-                if (itemsToPush.length > 0) {
-                  const itemBatch = writeBatch(firestore);
-                  itemsToPush.forEach(it => {
-                    const itId = it.id || generateUUID();
-                    itemBatch.set(this.getDocRef('challan_items', itId), this.enrichPayload(it), { merge: true });
-                  });
-                  await this.performCloudWrite(() => itemBatch.commit());
-                }
-              }
-            } catch (err: any) {
-              console.warn(`[Auto-Sync] Background upload for ${collName} deferred:`, err?.message || err);
-            }
-          }
         }, (error: any) => {
-          const isQuota = error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted';
+          const errMsg = error?.message || String(error);
+          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
+          const isUnavailable = errMsg.includes('unavailable') || errMsg.includes('Could not reach Cloud Firestore') || error?.code === 'unavailable';
           if (isQuota) {
-            console.warn(`Firestore quota limit reached on collection ${collName}. Operating offline.`);
+            console.warn(`Firestore quota limit reached on collection ${collName}. Operating offline safely.`);
+          } else if (isUnavailable) {
+            console.log(`Firestore listener for ${collName} running in offline cache mode.`);
           } else {
-            console.warn(`Firestore listener error on selection ${collName}. Non-fatal, continuing offline.`, error);
+            console.warn(`Firestore listener note on ${collName}:`, errMsg);
           }
           if (collName in this.cloudHealth.collectionStatus) {
             this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'offline';
           }
-          const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
+          const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
             window.dispatchEvent(new Event('db_sync'));
@@ -1369,7 +1360,7 @@ class DatabaseService {
 
       if (localRecords.length > 0) {
         try {
-          const chunkSize = 200;
+          const chunkSize = 50;
           for (let i = 0; i < localRecords.length; i += chunkSize) {
             const chunk = localRecords.slice(i, i + chunkSize);
             const batch = writeBatch(firestore);
@@ -1382,6 +1373,8 @@ class DatabaseService {
             });
             await this.performCloudWrite(() => batch.commit());
             totalUploaded += chunk.length;
+            // Short throttle delay between batches to protect write stream buffers
+            await new Promise(r => setTimeout(r, 60));
           }
         } catch (err: any) {
           console.warn(`Sync push for ${collName} deferred:`, err?.message || err);
