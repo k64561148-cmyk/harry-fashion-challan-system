@@ -550,12 +550,25 @@ export const IssueChallanView: React.FC = () => {
         }
       }
 
-      // 3. Generate PDF & Auto Download
-      const masterObj = masters.find(m => m.id === selectedMasterId)!;
-      await generateChallanPDF(result, itemsForPDF, masterObj, materials, true);
+      // 3. Resolve Master object with safe fallback
+      const masterObj: Master = masters.find(m => m.id === selectedMasterId) || (result.masterSnapshot as Master) || {
+        id: selectedMasterId,
+        name: result.masterName || 'Master',
+        code: result.masterCode || 'M',
+        type: (result.masterType as any) || 'pant',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
 
-      // Save success result triggers success frame
+      // 4. Save success result triggers success frame immediately
       setSuccessChallan({ ...result, items: itemsForPDF });
+
+      // 5. Generate PDF & Auto Download safely
+      try {
+        await generateChallanPDF(result, itemsForPDF, masterObj, materials, true);
+      } catch (pdfErr) {
+        console.warn("Challan created successfully, but automated PDF popup/download was deferred:", pdfErr);
+      }
     } catch (err: any) {
       setErrorMessage(parseErrorMessage(err));
     } finally {
@@ -565,21 +578,35 @@ export const IssueChallanView: React.FC = () => {
 
   const triggerPDFDownloadAgain = () => {
     if (successChallan) {
-      const masterObj = masters.find(m => m.id === successChallan.master_id)!;
+      const masterObj: Master = masters.find(m => m.id === successChallan.master_id) || (successChallan.masterSnapshot as Master) || {
+        id: successChallan.master_id,
+        name: successChallan.masterName || 'Master',
+        code: successChallan.masterCode || 'M',
+        type: (successChallan.masterType as any) || 'pant',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
       const itemsForPDF = (successChallan.items && successChallan.items.length > 0)
         ? successChallan.items
         : db.getChallanItems(successChallan.id);
-      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, true, false);
+      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, true, false).catch(e => console.warn(e));
     }
   };
 
   const triggerDirectPrint = () => {
     if (successChallan) {
-      const masterObj = masters.find(m => m.id === successChallan.master_id)!;
+      const masterObj: Master = masters.find(m => m.id === successChallan.master_id) || (successChallan.masterSnapshot as Master) || {
+        id: successChallan.master_id,
+        name: successChallan.masterName || 'Master',
+        code: successChallan.masterCode || 'M',
+        type: (successChallan.masterType as any) || 'pant',
+        is_active: true,
+        created_at: new Date().toISOString()
+      };
       const itemsForPDF = (successChallan.items && successChallan.items.length > 0)
         ? successChallan.items
         : db.getChallanItems(successChallan.id);
-      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, false, true);
+      generateChallanPDF(successChallan, itemsForPDF, masterObj, materials, false, true).catch(e => console.warn(e));
     }
   };
 

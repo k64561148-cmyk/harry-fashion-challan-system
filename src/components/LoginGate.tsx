@@ -9,7 +9,7 @@ import { Profile, UserRole } from '../types';
 import { Lock, User, KeyRound, Sparkles, AlertCircle, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth, firestore } from '../firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 
 interface LoginGateProps {
   onLoginSuccess: (user: Profile) => void;
@@ -213,12 +213,6 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
         updatedAt: new Date().toISOString()
       };
 
-      // Try background cloud profile write without blocking
-      try {
-        const profileRef = doc(firestore, 'profiles', fbUser.uid);
-        setDoc(profileRef, fallbackProfile).catch(() => {});
-      } catch (_) {}
-      
       localStorage.setItem('hf_session_logged_in', 'true');
       localStorage.setItem('hf_session_user_id', fallbackProfile.id);
       db.setCurrentUser(fallbackProfile);
@@ -311,14 +305,7 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
         updatedAt: new Date().toISOString()
       };
 
-      // Store security metadata in Firestore if available
-      try {
-        const profileRef = doc(firestore, 'profiles', fbUser.uid);
-        await setDoc(profileRef, profilePayload);
-      } catch (cloudErr) {
-        console.warn('Cloud profile write deferred (quota or offline):', cloudErr);
-      }
-
+      // Save profile locally and sync to cloud if available
       db.saveProfile(profilePayload);
 
       setSuccessMsg('Employee registered successfully! Automatically checking in...');

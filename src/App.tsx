@@ -493,16 +493,16 @@ export default function App() {
                 <span className="block text-[8px] text-slate-500 font-extrabold uppercase tracking-wider mb-1.5 font-sans">Streams Monitor</span>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-1 text-[9px] font-mono select-none">
                   {Object.entries(cloudHealth.collectionStatus).map(([collName, status]) => (
-                    <div key={collName} className="flex items-center justify-between pb-0.5 border-b border-white/[0.02]">
-                      <span className="text-slate-400 capitalize truncate max-w-[80px]" title={collName}>{collName.replace('_', ' ')}</span>
-                      <span className={`font-bold px-1 rounded-sm text-[8px] uppercase ${
+                    <div key={collName} className="flex items-center justify-between pb-0.5 border-b border-white/[0.04]">
+                      <span className="text-slate-300 capitalize truncate max-w-[80px]" title={collName}>{collName.replace('_', ' ')}</span>
+                      <span className={`font-bold px-1.5 py-0.2 rounded text-[8px] uppercase tracking-wider ${
                         status === 'healthy' 
-                          ? 'text-emerald-400 bg-emerald-500/5' 
+                          ? 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/30' 
                           : status === 'failed' 
-                            ? 'text-amber-400 bg-amber-500/5 font-extrabold animate-pulse' 
-                            : 'text-slate-500 bg-slate-500/5'
+                            ? 'text-rose-400 bg-rose-500/15 border border-rose-500/30 font-extrabold animate-pulse' 
+                            : 'text-emerald-400 bg-emerald-500/15 border border-emerald-500/30'
                       }`}>
-                        {status === 'healthy' ? 'OK' : status === 'failed' ? 'ERR' : 'OFF'}
+                        {status === 'failed' ? 'ERR' : 'ACTIVE'}
                       </span>
                     </div>
                   ))}

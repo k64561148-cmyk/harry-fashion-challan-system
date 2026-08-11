@@ -102,8 +102,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     const allTransactions = db.getTransactions();
 
     const totalVal = allTransactions
-      .filter(tx => tx.type === 'MATERIAL_ISSUE' && tx.date.startsWith(monthPattern))
-      .reduce((acc, curr) => acc + curr.amount, 0);
+      .filter(tx => tx.type === 'MATERIAL_ISSUE' && (
+        tx.date.startsWith(monthPattern) ||
+        (tx.period_year === currentYear && tx.period_month === currentMonth)
+      ))
+      .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
 
     setThisMonthMaterialValue(totalVal);
 
