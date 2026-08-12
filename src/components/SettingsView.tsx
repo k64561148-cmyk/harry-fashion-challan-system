@@ -2527,7 +2527,7 @@ export const SettingsView: React.FC = () => {
                         onClick={async () => {
                           setIsSyncing(true);
                           try {
-                            const res = await db.syncAllDataWithCloud();
+                            const res = await db.manualFullSync();
                             showFeedback(res.message);
                           } catch (e: any) {
                             showFeedback(e.message || 'Sync failed', true);
@@ -2536,14 +2536,14 @@ export const SettingsView: React.FC = () => {
                           }
                         }}
                         disabled={isSyncing}
-                        className="inline-flex items-center gap-2 bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white text-xs font-bold py-2 px-4.5 rounded-lg transition cursor-pointer disabled:opacity-50"
+                        className="inline-flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold py-2.5 px-5 rounded-lg transition cursor-pointer disabled:opacity-50 shadow-sm"
                       >
-                        <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} /> {isSyncing ? 'Syncing with Cloud...' : 'Force Sync All Records Now'}
+                        <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} /> {isSyncing ? 'Running Manual Full Sync...' : 'Manual Full Sync (Clear Cache & Fetch All)'}
                       </button>
 
                       <button
                         onClick={handleGoogleSignOut}
-                        className="inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold py-2 px-4.5 rounded-lg transition cursor-pointer"
+                        className="inline-flex items-center gap-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold py-2 px-4 rounded-lg transition cursor-pointer"
                       >
                         <LogOut className="w-4 h-4" /> Stop Cloud Sync (Go Offline)
                       </button>

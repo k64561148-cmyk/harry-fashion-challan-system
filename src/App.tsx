@@ -59,6 +59,27 @@ export default function App() {
   const [isPromoting, setIsPromoting] = useState<boolean>(false);
   const [showPromoteModal, setShowPromoteModal] = useState<boolean>(false);
   const [promoteStatus, setPromoteStatus] = useState<string>('');
+  const [isManualSyncing, setIsManualSyncing] = useState<boolean>(false);
+  const [syncBannerMsg, setSyncBannerMsg] = useState<string | null>(null);
+
+  const handleManualFullSync = async () => {
+    setIsManualSyncing(true);
+    try {
+      const res = await db.manualFullSync();
+      setCloudHealth(db.getCloudHealth());
+      if (res.success) {
+        setSyncBannerMsg(`✓ Full Sync Success: ${res.totalFetched} records fetched from cloud, ${res.totalUploaded} uploaded.`);
+      } else {
+        setSyncBannerMsg(`⚠️ Sync Notice: ${res.message}`);
+      }
+      setTimeout(() => setSyncBannerMsg(null), 7000);
+    } catch (e: any) {
+      setSyncBannerMsg(`Sync error: ${e?.message || String(e)}`);
+      setTimeout(() => setSyncBannerMsg(null), 7000);
+    } finally {
+      setIsManualSyncing(false);
+    }
+  };
 
   const handleToggleSandbox = (val: boolean) => {
     db.setSandboxMode(val);
@@ -516,6 +537,18 @@ export default function App() {
                 {cloudHealth.lastError}
               </div>
             )}
+
+            {/* Manual Full Sync Action Button */}
+            <button
+              type="button"
+              id="btn-manual-full-sync"
+              onClick={handleManualFullSync}
+              disabled={isManualSyncing}
+              className="w-full mt-2 py-2 px-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-[10px] font-bold tracking-wider uppercase transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <RefreshCw className={`w-3 h-3 ${isManualSyncing ? 'animate-spin' : ''}`} />
+              {isManualSyncing ? 'Synchronizing Cloud...' : 'Manual Full Sync (Fetch All)'}
+            </button>
           </div>
 
           {/* Quick Active user Profile Panel */}
@@ -649,17 +682,12 @@ export default function App() {
                       </span>
                     </div>
                     <button
-                      onClick={async () => {
-                        try {
-                          await db.syncAllDataWithCloud();
-                        } catch (e) {
-                          console.warn(e);
-                        }
-                      }}
-                      title="Force Sync all records between this PC and Google Cloud"
-                      className="text-[9px] font-extrabold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase flex items-center gap-1"
+                      onClick={handleManualFullSync}
+                      disabled={isManualSyncing}
+                      title="Force Full Sync all records between this PC and Google Cloud"
+                      className="text-[9px] font-extrabold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition py-1 px-2 rounded-md cursor-pointer ml-1 uppercase flex items-center gap-1 disabled:opacity-50"
                     >
-                      <RefreshCw className="w-2.5 h-2.5" /> Sync
+                      <RefreshCw className={`w-2.5 h-2.5 ${isManualSyncing ? 'animate-spin' : ''}`} /> {isManualSyncing ? 'Syncing...' : 'Sync'}
                     </button>
                     <button
                       onClick={handleCloudLogout}
@@ -726,6 +754,20 @@ export default function App() {
 
           {/* Tab Pages rendering body */}
           <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto pb-12">
+            {syncBannerMsg && (
+              <div className="mb-4 p-3.5 bg-blue-50 border border-blue-200 text-blue-900 rounded-xl text-xs font-semibold flex items-center justify-between shadow-xs animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>{syncBannerMsg}</span>
+                </div>
+                <button
+                  onClick={() => setSyncBannerMsg(null)}
+                  className="text-blue-500 hover:text-blue-800 text-xs font-bold px-2 py-0.5 rounded cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             
             {activeTab === 'dashboard' && <DashboardView onNavigate={(t) => handleTabTrigger(t)} />}
             

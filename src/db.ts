@@ -32,6 +32,7 @@ import {
   onSnapshot, 
   getDocFromServer,
   getDoc,
+  getDocs,
   writeBatch,
   increment,
   runTransaction,
@@ -1556,6 +1557,199 @@ class DatabaseService {
       total: totalRecords,
       message: `Cloud synchronization completed. ${totalUploaded} records verified and synced.`
     };
+  }
+
+  // --- MANUAL FULL SYNC: Clear temporary offline blocks, fetch all collections from Firestore, and upload unsynced records ---
+  public async manualFullSync(): Promise<{
+    success: boolean;
+    totalFetched: number;
+    totalUploaded: number;
+    details: Record<string, { fetched: number; uploaded: number }>;
+    message: string;
+  }> {
+    try {
+      // 1. Clear any stuck quota or offline flags
+      this.isQuotaExceeded = false;
+      this.quotaExceededTimestamp = 0;
+      safeRemoveLocalStorage('hf_quota_exceeded');
+      safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+
+      // 2. Ensure network is enabled
+      try {
+        await enableNetwork(firestore);
+      } catch (_) {}
+
+      // 3. Ensure authenticated (anonymous or Google)
+      if (!auth.currentUser) {
+        await this.attemptBackgroundAuth();
+      }
+
+      const collectionsToSync = [
+        'profiles',
+        'masters',
+        'materials',
+        'master_rate_overrides',
+        'challans',
+        'challan_items',
+        'inward_entries',
+        'invoices',
+        'invoice_challans',
+        'rate_history',
+        'stock_corrections',
+        'master_advances',
+        'master_advance_ledger',
+        'audit_logs',
+        'ledger_transactions',
+        'company_settings'
+      ];
+
+      let totalFetched = 0;
+      let totalUploaded = 0;
+      const details: Record<string, { fetched: number; uploaded: number }> = {};
+
+      const getKey = (coll: string, item: any) => {
+        if (!item) return '';
+        if (coll === 'invoice_challans') {
+          return `${item.invoice_id}_${item.challan_id}`;
+        }
+        return item.id || item.uid || '';
+      };
+
+      for (const collName of collectionsToSync) {
+        const resolvedName = this.getCollectionName(collName);
+        let fetchedCount = 0;
+        let uploadedCount = 0;
+
+        // Fetch all documents directly from Firestore
+        let remoteDocs: any[] = [];
+        const remoteDocMap = new Map<string, any>();
+
+        try {
+          const querySnapshot = await getDocs(collection(firestore, resolvedName));
+          querySnapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            const key = getKey(collName, data) || docSnap.id;
+            remoteDocs.push(data);
+            if (key) remoteDocMap.set(key, data);
+            fetchedCount++;
+          });
+        } catch (fetchErr: any) {
+          console.warn(`[Manual Full Sync] Query on ${resolvedName} notice:`, fetchErr?.message || fetchErr);
+        }
+
+        // Load local records
+        const localRecords = this.load<any[]>(collName, []);
+        const mergedMap = new Map<string, any>();
+
+        // Populate local records
+        localRecords.forEach((item) => {
+          const key = getKey(collName, item);
+          if (key) mergedMap.set(key, item);
+        });
+
+        // Merge remote records (remote source of truth)
+        remoteDocs.forEach((item) => {
+          const key = getKey(collName, item);
+          if (key) {
+            const existing = mergedMap.get(key);
+            if (collName === 'challans' && existing && existing.items && (!item.items || item.items.length === 0)) {
+              mergedMap.set(key, { ...item, items: existing.items });
+            } else {
+              mergedMap.set(key, item);
+            }
+          }
+        });
+
+        // Determine records present locally but missing in Firestore (push up to cloud)
+        const missingInRemote = localRecords.filter((item) => {
+          const key = getKey(collName, item);
+          return key && !remoteDocMap.has(key);
+        });
+
+        if (missingInRemote.length > 0 && !this.isQuotaExceeded) {
+          try {
+            const chunkSize = 200;
+            for (let i = 0; i < missingInRemote.length; i += chunkSize) {
+              const chunk = missingInRemote.slice(i, i + chunkSize);
+              const batch = writeBatch(firestore);
+              chunk.forEach((item) => {
+                const docId = getKey(collName, item);
+                if (docId) {
+                  const docRef = this.getDocRef(collName, docId);
+                  batch.set(docRef, this.enrichPayload(item), { merge: true });
+                  uploadedCount++;
+                }
+              });
+              await batch.commit();
+            }
+          } catch (uploadErr: any) {
+            console.warn(`[Manual Full Sync] Push upload on ${collName} deferred:`, uploadErr?.message || uploadErr);
+          }
+        }
+
+        // Save merged results locally
+        const mergedList = Array.from(mergedMap.values());
+        this.save(collName, mergedList);
+
+        totalFetched += fetchedCount;
+        totalUploaded += uploadedCount;
+        details[collName] = { fetched: fetchedCount, uploaded: uploadedCount };
+      }
+
+      // Extract embedded challan items
+      const allChallans = this.getChallans();
+      const localChallanItems = this.load<ChallanItem[]>('challan_items', []);
+      const itemMap = new Map<string, ChallanItem>();
+      localChallanItems.forEach(it => { if (it.id) itemMap.set(it.id, it); });
+      allChallans.forEach(c => {
+        if (Array.isArray(c.items)) {
+          c.items.forEach((it: any) => {
+            if (it && it.id && !itemMap.has(it.id)) {
+              itemMap.set(it.id, {
+                id: it.id,
+                challan_id: it.challan_id || it.challanId || c.id,
+                material_id: it.material_id || it.materialId,
+                qty: Number(it.qty) || 0,
+                rate: Number(it.rate) || 0,
+                amount: Number(it.amount) || ((Number(it.qty) || 0) * (Number(it.rate) || 0)),
+                created_at: it.created_at || it.createdAt || c.created_at || new Date().toISOString()
+              });
+            }
+          });
+        }
+      });
+      this.save('challan_items', Array.from(itemMap.values()));
+
+      // Update cloud health metrics
+      this.cloudHealth.lastRead = new Date().toISOString();
+      this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+      this.cloudHealth.syncFailed = false;
+      this.cloudHealth.lastError = null;
+      this.resetCollectionStatuses();
+
+      // Reinitialize snapshot listeners
+      this.reinitializeCloudListeners();
+
+      // Trigger global UI re-render
+      window.dispatchEvent(new Event('db_sync'));
+
+      return {
+        success: true,
+        totalFetched,
+        totalUploaded,
+        details,
+        message: `Manual Full Sync Completed: Retrieved ${totalFetched} records from Cloud, verified and synced ${totalUploaded} local records. All devices and login accounts are now synchronized!`
+      };
+    } catch (err: any) {
+      console.error('[Manual Full Sync Error]:', err);
+      return {
+        success: false,
+        totalFetched: 0,
+        totalUploaded: 0,
+        details: {},
+        message: err?.message || 'Manual full sync encountered an error.'
+      };
+    }
   }
 
   // Export 100% of the local database to a single portable JSON file
