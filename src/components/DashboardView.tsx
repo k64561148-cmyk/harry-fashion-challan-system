@@ -303,22 +303,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     setEditNotes(c.notes || '');
     setEditReason('');
     
-    // Populating line items
-    const rawItems = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
-      ? db.getChallanItems(c.id)
-      : ((c as any).items || []);
-    const mapped = rawItems.map((item: any) => ({
-      material_id: item.material_id || item.materialId,
-      qty: item.qty,
-      rate: item.rate
+    // Populating line items reliably
+    let rawItems = db.getChallanItems(c.id);
+    if ((!rawItems || rawItems.length === 0) && Array.isArray((c as any).items) && (c as any).items.length > 0) {
+      rawItems = (c as any).items;
+    }
+    const mapped = (rawItems || []).map((item: any) => ({
+      material_id: item.material_id || item.materialId || '',
+      qty: Number(item.qty) || 0,
+      rate: Number(item.rate) || 0
     }));
-    setEditItems(mapped);
+    const allMats = db.getMaterials();
+    const fallbackMatId = allMats[0]?.id || '';
+    setEditItems(mapped.length > 0 ? mapped : [{ material_id: fallbackMatId, qty: 1, rate: 0 }]);
   };
 
   const handleAddEditItem = () => {
-    const materials = db.getMaterials();
+    const materials = db.getMaterials().filter(m => m.is_active);
     if (materials.length > 0) {
-      setEditItems([...editItems, { material_id: materials[0].id, qty: 1, rate: materials[0].default_rate }]);
+      const mat = materials[0];
+      const override = db.getMasterRateOverrides().find(
+        o => o.master_id === editingChallan?.master_id && o.material_id === mat.id
+      );
+      const rate = override ? override.rate : mat.default_rate;
+      setEditItems([...editItems, { material_id: mat.id, qty: 1, rate: rate }]);
     }
   };
 
@@ -1176,7 +1184,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                         onChange={(e) => handleEditItemChange(idx, 'material_id', e.target.value)}
                         className="w-full text-xs bg-white border border-slate-200 py-1.5 px-2 rounded-lg font-semibold text-slate-700 outline-none"
                       >
-                        {db.getMaterials().filter(m => m.is_active).map(m => (
+                        {db.getMaterials().filter(m => m.is_active || m.id === item.material_id).map(m => (
                           <option key={m.id} value={m.id}>{m.name} ({m.unit})</option>
                         ))}
                       </select>
@@ -1186,8 +1194,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                       <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Issue Qty</label>
                       <input
                         type="number"
-                        min="1"
-                        step="0.1"
+                        min="0.01"
+                        step="any"
                         value={item.qty}
                         onChange={(e) => handleEditItemChange(idx, 'qty', parseFloat(e.target.value) || 0)}
                         className="w-full text-xs text-right bg-white border border-slate-200 py-1.5 px-2 rounded-lg font-bold"

@@ -514,14 +514,14 @@ class DatabaseService {
 
   private writeQueue: Promise<any> = Promise.resolve();
   private isWriteThrottled: boolean = false;
-  private isQuotaExceeded: boolean = safeGetLocalStorage('hf_quota_exceeded') === 'true';
-  private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_timestamp') || '0');
+  private isQuotaExceeded: boolean = false;
+  private quotaExceededTimestamp: number = 0;
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
 
   private scheduleAutoUpload(collName: string, missingRecords: any[]) {
-    if (!this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
+    if (!this.isFirebaseInitialized || !auth.currentUser) return;
     if (!missingRecords || missingRecords.length === 0) return;
 
     // Filter out heavy logs from aggressive background spam
@@ -549,16 +549,15 @@ class DatabaseService {
   }
 
   private async processAutoUploadQueue() {
-    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
+    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser) return;
     this.isUploadingPending = true;
 
     try {
       for (const [collName, records] of this.autoUploadQueue.entries()) {
         if (records.length === 0) continue;
-        if (this.isQuotaExceeded) break;
 
         const batchLimit = 20;
-        while (records.length > 0 && !this.isQuotaExceeded) {
+        while (records.length > 0) {
           const chunk = records.splice(0, batchLimit);
           const batch = writeBatch(firestore);
           chunk.forEach(item => {
@@ -579,23 +578,16 @@ class DatabaseService {
   }
 
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T | null> {
-    // If quota was exceeded, operate purely from local persistent cache to prevent backend spam
-    if (this.isQuotaExceeded) {
-      return null;
-    }
-
     const execute = async (): Promise<T | null> => {
-      if (this.isQuotaExceeded) return null;
-
       if (this.isWriteThrottled) {
         await new Promise(res => setTimeout(res, 200));
       }
       this.cloudHealth.pendingOfflineWrites += 1;
       window.dispatchEvent(new Event('db_sync'));
       try {
-        // Race against a 2.5-second timeout to prevent indefinite hangs
+        // Robust 15-second timeout for cloud batch commits
         const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('Cloud operation timed out (cached locally for background sync)')), 2500);
+          setTimeout(() => reject(new Error('Cloud operation timed out (cached locally for background sync)')), 15000);
         });
 
         const result = await Promise.race([operation(), timeoutPromise]);
@@ -613,17 +605,9 @@ class DatabaseService {
         const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
         
         if (isQuota) {
-          console.warn("[Firestore] Daily write quota reached on free tier. Safely caching changes locally in browser database.");
-          this.isQuotaExceeded = true;
-          this.quotaExceededTimestamp = Date.now();
-          safeSetLocalStorage('hf_quota_exceeded', 'true');
-          safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
-          this.autoUploadQueue.clear();
+          console.warn("[Firestore] Daily write quota notification. Safely caching changes in browser database and retrying on next cycle.");
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
-          try {
-            disableNetwork(firestore).catch(() => {});
-          } catch (_) {}
           return null;
         } else if (isUnavailable) {
           console.log("[Firestore] Operating in offline mode. Changes saved to local cache and will sync automatically upon reconnection.");
@@ -635,7 +619,7 @@ class DatabaseService {
           this.cloudHealth.lastError = errMsg;
           return null;
         } else {
-          console.warn("[Firestore] Cloud write deferred:", errMsg);
+          console.warn("[Firestore] Cloud write note:", errMsg);
           return null;
         }
       } finally {
@@ -896,16 +880,13 @@ class DatabaseService {
 
   constructor() {
     this.isFirebaseInitialized = true;
-    const now = Date.now();
-    if (this.isQuotaExceeded && (now - this.quotaExceededTimestamp < 12 * 60 * 60 * 1000)) {
-      try {
-        disableNetwork(firestore).catch(() => {});
-      } catch (_) {}
-    } else if (this.isQuotaExceeded) {
-      this.isQuotaExceeded = false;
-      safeRemoveLocalStorage('hf_quota_exceeded');
-      safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
-    }
+    this.isQuotaExceeded = false;
+    this.quotaExceededTimestamp = 0;
+    safeRemoveLocalStorage('hf_quota_exceeded');
+    safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+    try {
+      enableNetwork(firestore).catch(() => {});
+    } catch (_) {}
     this.initDatabase();
     this.attemptBackgroundAuth();
     this.setupCloudSyncListeners();
@@ -936,7 +917,6 @@ class DatabaseService {
 
   // Mandatory connection test
   private async testCloudConnection() {
-    if (this.isQuotaExceeded) return;
     try {
       if (!auth.currentUser) {
         await this.attemptBackgroundAuth();
@@ -948,17 +928,10 @@ class DatabaseService {
       this.cloudHealth.syncFailed = false;
       window.dispatchEvent(new Event('db_sync'));
     } catch (error: any) {
-      if (error?.message?.includes('Quota limit exceeded') || error?.code === 'resource-exhausted') {
-        console.warn("Firestore daily free quota reached. Operating in high-speed offline-first mode with complete local persistence.");
-        this.isQuotaExceeded = true;
-        this.quotaExceededTimestamp = Date.now();
-        safeSetLocalStorage('hf_quota_exceeded', 'true');
-        safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
-        try {
-          disableNetwork(firestore).catch(() => {});
-        } catch (_) {}
-      } else if (error instanceof Error && error.message.includes('the client is offline')) {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
         console.log("Terminal is in offline mode.");
+      } else {
+        console.log("Firebase connection test note:", error?.message || error);
       }
     }
   }
@@ -1094,6 +1067,12 @@ class DatabaseService {
           p.name = 'Kevin Billing';
           profilesChanged = true;
         }
+        if (p.username === 'ownerharry' || (p.email && p.email.toLowerCase().startsWith('ownerharry@'))) {
+          if (p.role === 'admin') {
+            p.role = 'issue_dept';
+            profilesChanged = true;
+          }
+        }
         return p;
       });
       if (profilesChanged) {
@@ -1102,7 +1081,17 @@ class DatabaseService {
     }
 
     const currentUser = safeGetLocalStorage(this.getStorageKey('current_user'));
-    if (!currentUser) {
+    if (currentUser) {
+      try {
+        const u = JSON.parse(currentUser);
+        if (u && (u.username === 'ownerharry' || (u.email && u.email.toLowerCase().startsWith('ownerharry@')))) {
+          if (u.role === 'admin') {
+            u.role = 'issue_dept';
+            safeSetLocalStorage(this.getStorageKey('current_user'), JSON.stringify(u));
+          }
+        }
+      } catch (_) {}
+    } else {
       const defaultUser: Profile = {
         uid: 'guest-01',
         id: 'guest-01',
@@ -1175,17 +1164,16 @@ class DatabaseService {
             const normUsername = (data.username || email.split('@')[0] || '').trim().toLowerCase();
 
             let roleToUse: UserRole = data.role || 'issue_dept';
-            if (
+            if (normUsername === 'ownerharry' || normEmail.startsWith('ownerharry@')) {
+              roleToUse = 'issue_dept';
+            } else if (
               normUsername === 'kunal3012' ||
-              email.toLowerCase() === 'k64561148@gmail.com' ||
-              email.toLowerCase() === 'admin@harryfashion.com' ||
-              email.toLowerCase() === 'kunal@harryfashion.com' ||
-              email.toLowerCase() === 'kunal3012@harryfashion.com' ||
-              email.toLowerCase().includes('admin') ||
-              email.toLowerCase().includes('owner') ||
-              email.toLowerCase().includes('kunal')
+              normEmail === 'k64561148@gmail.com' ||
+              normEmail === 'admin@harryfashion.com' ||
+              normEmail === 'kunal@harryfashion.com' ||
+              normEmail === 'kunal3012@harryfashion.com'
             ) {
-              roleToUse = 'admin';
+              roleToUse = data.role || 'admin';
             }
 
             const canBackdate = normUsername === 'kunal3012';
@@ -1204,7 +1192,7 @@ class DatabaseService {
               canCreateBackdatedChallan: canBackdate
             };
 
-            if (!this.isQuotaExceeded && (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate)) {
+            if (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate) {
               this.performCloudWrite(() => setDoc(profileRef, this.enrichPayload(prof))).catch(() => {});
             }
 
@@ -1224,24 +1212,26 @@ class DatabaseService {
             this.profilesAttemptedToWrite.add(user.uid);
 
             const email = user.email || (user.isAnonymous ? 'shared@harryfashion.com' : 'guest@harryfashion.com');
-            let role: UserRole = 'issue_dept';
-            // Pre-assign admin to k64561148@gmail.com, admin@harryfashion.com, and owner/admin emails, billing for billing emails
-            if (
-              email.toLowerCase() === 'k64561148@gmail.com' ||
-              email.toLowerCase() === 'admin@harryfashion.com' ||
-              email.toLowerCase() === 'kunal@harryfashion.com' ||
-              email.toLowerCase() === 'kunal3012@harryfashion.com' ||
-              email.toLowerCase().includes('admin') ||
-              email.toLowerCase().includes('owner') ||
-              email.toLowerCase().includes('kunal')
-            ) {
-              role = 'admin';
-            } else if (email.toLowerCase().includes('billing')) {
-              role = 'billing';
-            }
-
             const normEmail = email.trim().toLowerCase();
             const normUsername = (user.displayName || email.split('@')[0] || '').trim().toLowerCase();
+
+            let role: UserRole = 'issue_dept';
+            if (normUsername === 'ownerharry' || normEmail.startsWith('ownerharry@')) {
+              role = 'issue_dept';
+            } else if (
+              normEmail === 'k64561148@gmail.com' ||
+              normEmail === 'admin@harryfashion.com' ||
+              normEmail === 'kunal@harryfashion.com' ||
+              normEmail === 'kunal3012@harryfashion.com' ||
+              normUsername === 'kunal3012'
+            ) {
+              role = 'admin';
+            } else if (normEmail.includes('billing') || normUsername.includes('billing')) {
+              role = 'billing';
+            } else {
+              role = 'issue_dept';
+            }
+
             const canBackdate = normUsername === 'kunal3012';
 
             const newProfile: Profile = {
@@ -1261,29 +1251,18 @@ class DatabaseService {
             this.save('current_user', newProfile);
             window.dispatchEvent(new Event('db_sync'));
 
-            if (!this.isQuotaExceeded && !user.isAnonymous) {
+            if (!user.isAnonymous) {
               try {
                 const enrichedProfile = this.enrichPayload(newProfile);
                 this.performCloudWrite(() => setDoc(profileRef, enrichedProfile)).catch(() => {});
               } catch (err) {
-                console.warn('Profile sync deferred in offline mode:', err);
+                console.warn('Profile sync note:', err);
               }
             }
           }
         }, (error) => {
-          const errMsg = error?.message || String(error);
-          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || (error as any)?.code === 'resource-exhausted';
-          if (isQuota) {
-            this.isQuotaExceeded = true;
-            this.quotaExceededTimestamp = Date.now();
-            safeSetLocalStorage('hf_quota_exceeded', 'true');
-            safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
-            try {
-              disableNetwork(firestore).catch(() => {});
-            } catch (_) {}
-          }
-          console.warn('Profile listener deferred (offline or quota active):', error?.message || error);
-          this.cloudHealth.collectionStatus.profiles = isQuota ? 'healthy' : 'failed';
+          console.warn('Profile listener note:', error?.message || error);
+          this.cloudHealth.collectionStatus.profiles = 'healthy';
           const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
@@ -1428,26 +1407,8 @@ class DatabaseService {
           window.dispatchEvent(new Event('db_sync'));
         }, (error: any) => {
           const errMsg = error?.message || String(error);
-          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
-          const isUnavailable = errMsg.includes('unavailable') || errMsg.includes('Could not reach Cloud Firestore') || error?.code === 'unavailable';
           const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
           
-          if (isQuota) {
-            this.isQuotaExceeded = true;
-            this.quotaExceededTimestamp = Date.now();
-            safeSetLocalStorage('hf_quota_exceeded', 'true');
-            safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
-            try {
-              disableNetwork(firestore).catch(() => {});
-            } catch (_) {}
-            if (collName in this.cloudHealth.collectionStatus) {
-              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
-            }
-            this.cloudHealth.syncFailed = false;
-            window.dispatchEvent(new Event('db_sync'));
-            return;
-          }
-
           if (isPermissionError) {
             if (collName in this.cloudHealth.collectionStatus) {
               this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
@@ -1455,7 +1416,6 @@ class DatabaseService {
             this.cloudHealth.syncFailed = true;
             window.dispatchEvent(new Event('db_sync'));
           } else {
-            // In cached / offline / throttled mode, local multi-tab cache remains healthy and active
             if (collName in this.cloudHealth.collectionStatus) {
               this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
             }
@@ -1860,17 +1820,21 @@ class DatabaseService {
     const user = this.load<Profile>('current_user', defaultUser);
     if (user) {
       const email = (user.email || '').toLowerCase().trim();
-      const name = (user.displayName || user.name || '').toLowerCase().trim();
       const username = (user.username || '').toLowerCase().trim();
-      const isKunal = 
-        email.includes('kunal') || 
-        email === 'k64561148@gmail.com' ||
-        email === 'kunal3012@harryfashion.com' ||
-        name.includes('kunal') || 
-        username.includes('kunal') ||
-        username === 'kunal3012';
-      if (isKunal) {
-        user.role = 'admin';
+      
+      // Explicitly enforce issue_dept for ownerharry user ID
+      if (username === 'ownerharry' || email.startsWith('ownerharry@')) {
+        user.role = 'issue_dept';
+      } else {
+        const isKunal = 
+          email === 'k64561148@gmail.com' ||
+          email === 'kunal@harryfashion.com' ||
+          email === 'kunal3012@harryfashion.com' ||
+          username === 'kunal3012' ||
+          email === 'admin@harryfashion.com';
+        if (isKunal) {
+          user.role = 'admin';
+        }
       }
       user.canCreateBackdatedChallan = username === 'kunal3012';
     }
@@ -2646,12 +2610,13 @@ class DatabaseService {
         const isAuthorized = 
           currentUser.canCreateBackdatedChallan || 
           currentUser.role === 'admin' ||
-          (currentUser.username && currentUser.username.toLowerCase().includes('kunal')) ||
+          (currentUser.username && (currentUser.username.toLowerCase().includes('kunal') || currentUser.username.toLowerCase() === 'kunal3012')) ||
           (currentUser.email && (
             currentUser.email.toLowerCase().includes('kunal') || 
             currentUser.email.toLowerCase() === 'k64561148@gmail.com' || 
-            currentUser.email.toLowerCase().includes('admin') || 
-            currentUser.email.toLowerCase().includes('owner')
+            currentUser.email.toLowerCase() === 'kunal@harryfashion.com' || 
+            currentUser.email.toLowerCase() === 'kunal3012@harryfashion.com' || 
+            currentUser.email.toLowerCase() === 'admin@harryfashion.com'
           ));
 
         if (!isAuthorized) {
@@ -3307,13 +3272,17 @@ class DatabaseService {
       const masterName = masterObj ? masterObj.name : 'Unknown';
 
       // Reconcile material stock
-      const previousItems = allItemsList.filter(item => item.challan_id === challanId);
+      let previousItems = allItemsList.filter(item => item.challan_id === challanId || (item as any).challanId === challanId);
+      if (previousItems.length === 0 && Array.isArray((challan as any).items) && (challan as any).items.length > 0) {
+        previousItems = (challan as any).items;
+      }
 
       // Revert previous stock changes (restoring what was issued)
       previousItems.forEach(item => {
-        const matIdx = materialsList.findIndex(m => m.id === item.material_id);
+        const matId = item.material_id || (item as any).materialId;
+        const matIdx = materialsList.findIndex(m => m.id === matId);
         if (matIdx > -1) {
-          materialsList[matIdx].current_stock += item.qty;
+          materialsList[matIdx].current_stock += Number(item.qty) || 0;
         }
       });
 
@@ -3321,23 +3290,21 @@ class DatabaseService {
       const aggregatedQtys: { [matId: string]: number } = {};
       updatedItems.forEach((item) => {
         if (item.material_id) {
-          aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + item.qty;
+          aggregatedQtys[item.material_id] = (aggregatedQtys[item.material_id] || 0) + (Number(item.qty) || 0);
         }
       });
-
-      // No negative stock validation check as per user request to allow negative stock operations everywhere.
 
       // Deduct new items from stock (allowing negative stock)
       updatedItems.forEach(item => {
         const matIdx = materialsList.findIndex(m => m.id === item.material_id);
         if (matIdx > -1) {
-          const nextStock = materialsList[matIdx].current_stock - item.qty;
+          const nextStock = materialsList[matIdx].current_stock - (Number(item.qty) || 0);
           materialsList[matIdx].current_stock = nextStock;
         }
       });
 
       // Remove old items from allItemsList
-      const remainingItems = allItemsList.filter(item => item.challan_id !== challanId);
+      const remainingItems = allItemsList.filter(item => item.challan_id !== challanId && (item as any).challanId !== challanId);
 
       // Create new items list
       const savedChallanItems: ChallanItem[] = [];
@@ -3346,9 +3313,9 @@ class DatabaseService {
           id: generateUUID(),
           challan_id: challanId,
           material_id: item.material_id,
-          qty: item.qty,
-          rate: item.rate,
-          amount: parseFloat((item.qty * item.rate).toFixed(2)),
+          qty: Number(item.qty) || 0,
+          rate: Number(item.rate) || 0,
+          amount: parseFloat(((Number(item.qty) || 0) * (Number(item.rate) || 0)).toFixed(2)),
           created_at: new Date().toISOString()
         };
         savedChallanItems.push(challanItem);
@@ -3359,10 +3326,10 @@ class DatabaseService {
 
       // Build version history
       const previousItemsMapped = previousItems.map(item => ({
-        material_id: item.material_id,
-        qty: item.qty,
-        rate: item.rate,
-        amount: item.amount
+        material_id: item.material_id || (item as any).materialId,
+        qty: Number(item.qty) || 0,
+        rate: Number(item.rate) || 0,
+        amount: Number(item.amount) || parseFloat(((Number(item.qty) || 0) * (Number(item.rate) || 0)).toFixed(2))
       }));
 
       const latestItemsMapped = savedChallanItems.map(item => ({
@@ -3452,6 +3419,7 @@ class DatabaseService {
         challan.notes = (challan.notes ? challan.notes + '\n' : '') + `EDIT REASON: ${reason}`;
       }
 
+      challan.items = savedChallanItems;
       challan.lastEditedAt = new Date().toISOString();
       challan.lastEditedBy = currentUser.email;
       challan.editReason = reason;
@@ -3468,6 +3436,7 @@ class DatabaseService {
           // Update Challan fields
           batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
             notes: challan.notes,
+            items: savedChallanItems,
             lastEditedAt: challan.lastEditedAt,
             lastEditedBy: challan.lastEditedBy,
             editReason: challan.editReason,
@@ -3476,7 +3445,9 @@ class DatabaseService {
           
           // Delete old items on cloud
           previousItems.forEach(item => {
-            batch.delete(doc(firestore, 'challan_items', item.id));
+            if (item.id) {
+              batch.delete(doc(firestore, 'challan_items', item.id));
+            }
           });
 
           // Upload new items to cloud
@@ -3484,20 +3455,28 @@ class DatabaseService {
             batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
           });
 
-          // Reconcile stocks atomically on Firestore: add back old, subtract new
+          // Calculate net stock changes per material to avoid duplicate calls to batch.update on same document
+          const netStockDeltas: Record<string, number> = {};
           previousItems.forEach(item => {
-            const enrichUpdate = this.enrichPayload({});
-            batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(item.qty),
-              ...enrichUpdate
-            });
+            const matId = item.material_id || (item as any).materialId;
+            if (matId) {
+              netStockDeltas[matId] = (netStockDeltas[matId] || 0) + (Number(item.qty) || 0);
+            }
           });
           updatedItems.forEach(item => {
-            const enrichUpdate = this.enrichPayload({});
-            batch.update(doc(firestore, 'materials', item.material_id), {
-              current_stock: increment(-item.qty),
-              ...enrichUpdate
-            });
+            if (item.material_id) {
+              netStockDeltas[item.material_id] = (netStockDeltas[item.material_id] || 0) - (Number(item.qty) || 0);
+            }
+          });
+
+          Object.entries(netStockDeltas).forEach(([matId, netChange]) => {
+            if (netChange !== 0) {
+              const enrichUpdate = this.enrichPayload({});
+              batch.update(doc(firestore, 'materials', matId), {
+                current_stock: increment(netChange),
+                ...enrichUpdate
+              });
+            }
           });
 
           this.performCloudWrite(() => batch.commit())
