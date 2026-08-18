@@ -29,7 +29,7 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 // EXPORT ALL REQUIRED FIREBASE COMPONENTS
 // Note: using the distinct firestoreDatabaseId is required by our applet infrastructure template
 export const firestore = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true,
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
   })

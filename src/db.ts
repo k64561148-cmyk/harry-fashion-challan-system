@@ -1128,6 +1128,58 @@ class DatabaseService {
         this.save('materials', currentMaterials);
       }
     }
+
+    this.sanitizeChallanItems();
+  }
+
+  public sanitizeChallanItems(): void {
+    try {
+      const challans = this.load<Challan[]>('challans', []);
+      let challanItems = this.load<ChallanItem[]>('challan_items', []);
+      let modified = false;
+
+      challans.forEach((c, idx) => {
+        if (Array.isArray(c.items) && c.items.length > 0) {
+          const seenIds = new Set<string>();
+          const cleanEmbedded: ChallanItem[] = [];
+          c.items.forEach(it => {
+            if (it && it.id) {
+              if (!seenIds.has(it.id)) {
+                seenIds.add(it.id);
+                cleanEmbedded.push(it);
+              }
+            } else if (it) {
+              cleanEmbedded.push(it);
+            }
+          });
+
+          if (cleanEmbedded.length !== c.items.length) {
+            challans[idx].items = cleanEmbedded;
+            modified = true;
+          }
+
+          const embeddedIds = new Set(cleanEmbedded.map(it => it.id).filter(Boolean));
+          const beforeCount = challanItems.length;
+          challanItems = challanItems.filter(it => {
+            const cId = it.challan_id || (it as any).challanId;
+            if (cId === c.id) {
+              return embeddedIds.has(it.id);
+            }
+            return true;
+          });
+          if (challanItems.length !== beforeCount) {
+            modified = true;
+          }
+        }
+      });
+
+      if (modified) {
+        this.save('challans', challans);
+        this.save('challan_items', challanItems);
+      }
+    } catch (err) {
+      console.warn("Self-healing sanitizeChallanItems error:", err);
+    }
   }
 
   // Listen to Auth changes and enable cloud listeners
@@ -1403,6 +1455,9 @@ class DatabaseService {
           }
 
           this.save(collName, mergedRecords);
+          if (collName === 'challans') {
+            this.sanitizeChallanItems();
+          }
           // Trigger customized global event so UI knows data synced
           window.dispatchEvent(new Event('db_sync'));
         }, (error: any) => {
@@ -1679,6 +1734,7 @@ class DatabaseService {
         }
       });
       this.save('challan_items', Array.from(itemMap.values()));
+      this.sanitizeChallanItems();
 
       // Update cloud health metrics
       this.cloudHealth.lastRead = new Date().toISOString();
@@ -2513,40 +2569,47 @@ class DatabaseService {
   }
 
   getChallanItems(challanId?: string): ChallanItem[] {
-    const items = this.load<ChallanItem[]>('challan_items', []);
-    if (challanId) {
-      const filtered = items.filter(item => 
-        item.challan_id === challanId || 
-        (item as any).challanId === challanId
-      );
-      if (filtered.length > 0) return filtered;
+    const challans = this.load<Challan[]>('challans', []);
 
-      // Fallback: check challans list if items were embedded on the challan document
-      const challans = this.load<Challan[]>('challans', []);
+    if (challanId) {
+      // 1. Primary source of truth: check if target challan exists and has embedded items array
       const ch = challans.find(c => c.id === challanId || c.challan_no === challanId);
       if (ch && Array.isArray((ch as any).items) && (ch as any).items.length > 0) {
         return (ch as any).items;
       }
-      return [];
+
+      // 2. Fallback: filter from challan_items table
+      const items = this.load<ChallanItem[]>('challan_items', []);
+      return items.filter(item => 
+        item.challan_id === challanId || 
+        (item as any).challanId === challanId
+      );
     }
     
-    // When returning all challan items, also include any embedded items not already present
-    const challans = this.load<Challan[]>('challans', []);
-    const itemMap = new Map<string, ChallanItem>();
-    items.forEach(it => {
-      if (it.id) itemMap.set(it.id, it);
-    });
+    // When returning ALL challan items across all challans:
+    const rawChallanItems = this.load<ChallanItem[]>('challan_items', []);
+    const resultItems: ChallanItem[] = [];
+    const processedChallanIds = new Set<string>();
+
     challans.forEach(c => {
-      if (Array.isArray(c.items)) {
-        c.items.forEach(it => {
-          if (it.id && !itemMap.has(it.id)) {
-            itemMap.set(it.id, it);
-          }
-        });
+      processedChallanIds.add(c.id);
+      if (Array.isArray(c.items) && c.items.length > 0) {
+        resultItems.push(...c.items);
+      } else {
+        const cItems = rawChallanItems.filter(it => it.challan_id === c.id || (it as any).challanId === c.id);
+        resultItems.push(...cItems);
       }
     });
 
-    return Array.from(itemMap.values());
+    // Include any items for challanIds not in challans list
+    rawChallanItems.forEach(it => {
+      const cId = it.challan_id || (it as any).challanId;
+      if (cId && !processedChallanIds.has(cId)) {
+        resultItems.push(it);
+      }
+    });
+
+    return resultItems;
   }
 
   getNextChallanNo(isBackdated?: boolean): string {

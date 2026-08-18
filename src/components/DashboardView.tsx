@@ -197,9 +197,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
         return;
       }
-      const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
-        ? db.getChallanItems(c.id)
-        : ((c as any).items || []);
+      const items = db.getChallanItems(c.id);
 
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('PDF download timed out (15 seconds limit). Please check your browser connection.')), 15000)
@@ -227,9 +225,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         setAlertMsg({ text: 'Error: Stitching Master not set on challan.', isError: true });
         return;
       }
-      const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
-        ? db.getChallanItems(c.id)
-        : ((c as any).items || []);
+      const items = db.getChallanItems(c.id);
 
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Print layout generation timed out (15 seconds limit). Please try again.')), 15000)
@@ -283,9 +279,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const updatedChallan = db.getChallans().find(c => c.id === voidingChallan.id)!;
       const masterObj = db.getMasters().find(m => m.id === updatedChallan.master_id)!;
       const materialsList = db.getMaterials();
-      const items = (db.getChallanItems(updatedChallan.id) && db.getChallanItems(updatedChallan.id).length > 0)
-        ? db.getChallanItems(updatedChallan.id)
-        : ((updatedChallan as any).items || []);
+      const items = db.getChallanItems(updatedChallan.id);
       
       // Save/Print automatically using our custom local structure + upload voided PDF
       await generateChallanPDF(updatedChallan, items, masterObj, materialsList, true, false);
@@ -377,9 +371,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       const updatedChallan = db.getChallans().find(c => c.id === editingChallan.id)!;
       const masterObj = db.getMasters().find(m => m.id === updatedChallan.master_id)!;
       const materialsList = db.getMaterials();
-      const items = (db.getChallanItems(updatedChallan.id) && db.getChallanItems(updatedChallan.id).length > 0)
-        ? db.getChallanItems(updatedChallan.id)
-        : ((updatedChallan as any).items || []);
+      const items = db.getChallanItems(updatedChallan.id);
       
       await generateChallanPDF(updatedChallan, items, masterObj, materialsList, true, false);
 
@@ -807,9 +799,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                         </thead>
                                         <tbody className="divide-y divide-slate-100">
                                           {(() => {
-                                            const items = (db.getChallanItems(c.id) && db.getChallanItems(c.id).length > 0)
-                                              ? db.getChallanItems(c.id)
-                                              : ((c as any).items || []);
+                                            const items = db.getChallanItems(c.id);
                                             const materials = db.getMaterials();
                                             if (items.length === 0) {
                                               return (
