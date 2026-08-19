@@ -775,9 +775,23 @@ export async function generateInvoicePDF(
 
     vouchersData.forEach((v) => {
       // Add a page break if table grows too long for A4
-      if (y > 265) {
+      if (y > 240) {
         doc.addPage();
         y = 20;
+        doc.setFont('Helvetica', 'bold');
+        doc.setFillColor(235, 238, 242);
+        doc.rect(14, y, 182, 8, 'F');
+        doc.rect(14, y, 182, 8, 'D');
+
+        doc.text('Date', 16, y + 5.5);
+        doc.text('Voucher No', 76, y + 5.5);
+        doc.text('Amount', 136, y + 5.5);
+
+        doc.line(74, y, 74, y + 8);
+        doc.line(134, y, 134, y + 8);
+
+        y += 8;
+        doc.setFont('Helvetica', 'normal');
       }
       doc.rect(14, y, 182, 7.5, 'D');
       doc.text(v.date, 16, y + 5);
@@ -815,6 +829,13 @@ export async function generateInvoicePDF(
     const mTds = invoice.tds_amount !== undefined ? invoice.tds_amount : (mSub > 0 ? parseFloat((mSub * 0.01).toFixed(2)) : 0);
     const mGrand = invoice.grand_total || (mSub - mTds);
     const mNetPayable = invoice.net_payable !== undefined ? invoice.net_payable : Math.max(0, Math.round(mGrand - mSetoff));
+
+    // Ensure the calculations summary block doesn't overflow the page boundary
+    const approxFormulasHeight = (7 + (mDeduction > 0 ? 1 : 0) + (mSetoff > 0 ? 2 : 0)) * 6 + 15;
+    if (y + approxFormulasHeight > 250) {
+      doc.addPage();
+      y = 20;
+    }
 
     doc.setFont('Helvetica', 'normal');
     doc.setTextColor(0, 0, 0);
@@ -1062,6 +1083,22 @@ export async function generateMasterLedgerPDF(
   doc.setTextColor(20, 30, 40);
 
   ledgerRows.forEach((row, idx) => {
+    if (y > 260) {
+      doc.addPage();
+      y = 20;
+      doc.setFillColor(26, 46, 74);
+      doc.rect(14, y, 182, 8, 'F');
+      doc.setFontSize(8.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text('DATE', 18, y + 5.5);
+      doc.text('REF / TRANS ID', 38, y + 5.5);
+      doc.text('TX TYPE', 70, y + 5.5);
+      doc.text('PARTICULAR / REMARK', 100, y + 5.5);
+      doc.text('VALUE', 192, y + 5.5, { align: 'right' });
+      y += 8;
+      doc.setFont('Helvetica', 'normal');
+      doc.setTextColor(20, 30, 40);
+    }
     if (idx % 2 === 1) {
       doc.setFillColor(248, 249, 250);
       doc.rect(14, y, 182, 7, 'F');
@@ -1150,6 +1187,23 @@ export async function generateMaterialLedgerPDF(
   doc.setTextColor(20, 30, 40);
 
   events.forEach((row, idx) => {
+    if (y > 260) {
+      doc.addPage();
+      y = 20;
+      doc.setFillColor(26, 46, 74);
+      doc.rect(14, y, 182, 8, 'F');
+      doc.setFontSize(8.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text('DATE', 18, y + 5.5);
+      doc.text('BILL / CHALLAN REFERENCE', 40, y + 5.5);
+      doc.text('TX ACTION', 85, y + 5.5);
+      doc.text('PARTY DETAIL (SUPPLIER/MASTER)', 110, y + 5.5);
+      doc.text('CHANGE QTY', 165, y + 5.5, { align: 'right' });
+      doc.text('RUNNING STOCK', 192, y + 5.5, { align: 'right' });
+      y += 8;
+      doc.setFont('Helvetica', 'normal');
+      doc.setTextColor(20, 30, 40);
+    }
     if (idx % 2 === 1) {
       doc.setFillColor(248, 249, 250);
       doc.rect(14, y, 182, 7, 'F');
