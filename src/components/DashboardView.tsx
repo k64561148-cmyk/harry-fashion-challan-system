@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
-import { Challan, Invoice, Material, ChallanItem } from '../types';
+import { Challan, Invoice, Material, ChallanItem, MissingChallanGap } from '../types';
 import { formatINR, generateChallanPDF } from '../utils/exportUtils';
 import { 
   FileText, 
@@ -32,7 +32,12 @@ import {
   Lock,
   ShieldCheck,
   ChevronDown,
-  History
+  History,
+  Calendar,
+  RefreshCw,
+  Sparkles,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -63,7 +68,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   // Search, filter, and view toggles
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'issued' | 'billed' | 'voided'>('all');
+  const [dateFilter, setDateFilter] = useState<string>('all');
+  const [customDate, setCustomDate] = useState<string>('');
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [currentPage, setCurrentPage] = useState<number>(1);
   const [showAll, setShowAll] = useState(false);
+
+  // Missing Sequence Gap Detector & Restoration
+  const [missingGaps, setMissingGaps] = useState<MissingChallanGap[]>([]);
+  const [isRestoringGaps, setIsRestoringGaps] = useState(false);
+  const [showGapModal, setShowGapModal] = useState(false);
 
   // Administrative actions feedback and state
   const [alertMsg, setAlertMsg] = useState<{ text: string; isError?: boolean } | null>(null);
@@ -133,6 +147,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     // Sort challans chronologically desc, so fresh ones appear first
     const sortedChallans = [...challans].sort((a, b) => b.created_at.localeCompare(a.created_at));
     setRecentChallans(sortedChallans);
+
+    // 6. Sequence Gaps Audit
+    const detectedGaps = db.getMissingChallanSequences();
+    setMissingGaps(detectedGaps);
+  };
+
+  const handleAutoRestoreMissingGaps = async () => {
+    setIsRestoringGaps(true);
+    try {
+      const res = await db.autoRestoreAllMissingChallanGaps();
+      setAlertMsg({ text: `Successfully restored ${res.totalRestored} missing challans across all dates! Sequence is now 100% continuous and complete.` });
+      setShowGapModal(false);
+      loadDashboardData();
+    } catch (err: any) {
+      setAlertMsg({ text: `Failed to restore sequence gaps: ${err?.message || err}`, isError: true });
+    } finally {
+      setIsRestoringGaps(false);
+    }
   };
 
   const handleApplyCorrection = (e: React.FormEvent) => {
@@ -426,16 +458,34 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     }
   };
 
+  // Unique dates from challans for quick filtering
+  const availableDates = Array.from(new Set(recentChallans.map(c => c.issued_date).filter(Boolean))).sort().reverse();
+
   // Perform search & filters on challans collection
   const filteredChallans = recentChallans.filter(c => {
     const mName = getMasterName(c.master_id, c);
     const matchesSearch = c.challan_no.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          mName.toLowerCase().includes(searchQuery.toLowerCase());
+                          mName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          (c.issued_date && c.issued_date.includes(searchQuery));
     const matchesStatus = statusFilter === 'all' ? true : c.status === statusFilter;
-    return matchesSearch && matchesStatus;
+
+    let matchesDate = true;
+    if (dateFilter === 'today') {
+      matchesDate = c.issued_date === getLocalTodayString();
+    } else if (dateFilter === 'custom' && customDate) {
+      matchesDate = c.issued_date === customDate;
+    } else if (dateFilter !== 'all' && dateFilter !== 'custom') {
+      matchesDate = c.issued_date === dateFilter;
+    }
+
+    return matchesSearch && matchesStatus && matchesDate;
   });
 
-  const displayedChallans = showAll ? filteredChallans : filteredChallans.slice(0, 5);
+  const effectivePageSize = showAll ? (pageSize === -1 ? (filteredChallans.length || 1) : pageSize) : 5;
+  const totalPages = effectivePageSize > 0 ? Math.ceil(filteredChallans.length / effectivePageSize) || 1 : 1;
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+  const startIndex = showAll ? (pageSize === -1 ? 0 : (safeCurrentPage - 1) * pageSize) : 0;
+  const displayedChallans = showAll ? (pageSize === -1 ? filteredChallans : filteredChallans.slice(startIndex, startIndex + pageSize)) : filteredChallans.slice(0, 5);
 
   return (
     <div className="space-y-6" id="dashboard-tab">
@@ -578,45 +628,168 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           )}
 
+          {/* Missing Sequence Gaps Notice & 1-Click Restore Banner */}
+          {missingGaps.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-amber-100 rounded-lg text-amber-800 flex-shrink-0 mt-0.5">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
+                    Sequence Gaps Detected ({missingGaps.reduce((sum, g) => sum + g.missingCount, 0)} Missing Challans)
+                  </h4>
+                  <p className="text-xs text-amber-750 mt-0.5">
+                    Found {missingGaps.length} sequence gaps in the challan registry. Missing numbers include:{' '}
+                    <span className="font-mono font-semibold">
+                      {missingGaps.map(g => `${g.missingNumbers[0]}...${g.missingNumbers[g.missingNumbers.length - 1]}`).join(', ')}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <button
+                  onClick={handleAutoRestoreMissingGaps}
+                  disabled={isRestoringGaps}
+                  className="w-full sm:w-auto bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 shadow-sm transition disabled:opacity-50 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRestoringGaps ? 'animate-spin' : ''}`} />
+                  {isRestoringGaps ? 'Restoring Gaps...' : '1-Click Restore All Missing Challans'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Recent Challans List */}
           <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-              <h4 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MATERIAL ISSUED CHALLANS REPOSITORY</h4>
+              <div>
+                <h4 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MATERIAL ISSUED CHALLANS REPOSITORY</h4>
+                <div className="text-[11px] text-slate-500 font-medium mt-0.5 flex items-center gap-2">
+                  <span>{filteredChallans.length} challans match filters</span>
+                  <span>•</span>
+                  <span>{recentChallans.length} total in registry</span>
+                  {dateFilter !== 'all' && (
+                    <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-mono text-[10px] font-bold border border-blue-100">
+                      Date: {dateFilter === 'custom' ? customDate : dateFilter}
+                    </span>
+                  )}
+                </div>
+              </div>
               
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button 
-                  onClick={() => setShowAll(!showAll)}
+                  onClick={() => {
+                    setShowAll(true);
+                    setPageSize(pageSize === -1 ? 25 : -1);
+                  }}
                   className="text-xs text-[#2D3E5D] hover:text-[#1A2E4A] font-bold flex items-center gap-1 cursor-pointer transition border border-slate-200 py-1 px-2.5 rounded-lg hover:bg-slate-50"
                 >
-                  {showAll ? 'Show Recent 5' : 'View All Challans'}
+                  {showAll && pageSize === -1 ? 'Paginate List' : 'View All at Once'}
+                </button>
+                <button 
+                  onClick={() => {
+                    setShowAll(!showAll);
+                    if (!showAll) setPageSize(25);
+                  }}
+                  className="text-xs bg-[#1A2E4A] hover:bg-[#2D3E5D] text-white font-bold flex items-center gap-1 cursor-pointer transition py-1 px-3 rounded-lg shadow-sm"
+                >
+                  {showAll ? 'Show Recent 5' : 'Show Full Repository'}
                 </button>
               </div>
             </div>
 
             {/* Filter Sub-toolbar */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4 bg-slate-50 p-3 rounded-lg border border-slate-100">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
                 <input 
                   type="text"
-                  placeholder="Query Challan reference # or Master Stitcher..."
+                  placeholder="Query Challan #, Master, or Date..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1.5 pl-8 pr-3 font-medium text-slate-800 outline-none focus:border-slate-350"
                 />
               </div>
 
+              {/* Date Filter Dropdown */}
               <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Status:</span>
+                <Calendar className="w-3.5 h-3.5 text-slate-400" />
                 <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as any)}
+                  value={dateFilter}
+                  onChange={(e) => {
+                    setDateFilter(e.target.value);
+                    setCurrentPage(1);
+                    setShowAll(true);
+                  }}
+                  className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1 px-2 font-bold text-slate-700 outline-none cursor-pointer focus:border-slate-300"
+                >
+                  <option value="all">ALL DATES ({recentChallans.length})</option>
+                  <option value="today">TODAY ({todayChallans.length})</option>
+                  {availableDates.map((d: string) => {
+                    const countForDate = recentChallans.filter(c => c.issued_date === d).length;
+                    return (
+                      <option key={d} value={d}>
+                        {d.split('-').reverse().join('/')} ({countForDate} challans)
+                      </option>
+                    );
+                  })}
+                  <option value="custom">Custom Date...</option>
+                </select>
+              </div>
+
+              {/* Custom Date Input */}
+              {dateFilter === 'custom' ? (
+                <div className="flex items-center gap-1.5">
+                  <input 
+                    type="date"
+                    value={customDate}
+                    onChange={(e) => {
+                      setCustomDate(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1 px-2.5 font-medium text-slate-800 outline-none focus:border-slate-350"
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Status:</span>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => {
+                      setStatusFilter(e.target.value as any);
+                      setCurrentPage(1);
+                    }}
+                    className="w-full text-xs bg-white border border-slate-200 rounded-lg py-1 px-2.5 font-bold text-slate-700 outline-none cursor-pointer focus:border-slate-300"
+                  >
+                    <option value="all">ALL STATUSES</option>
+                    <option value="issued">ISSUED</option>
+                    <option value="billed">BILLED (SETTLED)</option>
+                    <option value="voided">VOIDED (REVERSED)</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Page Size Selector */}
+              <div className="flex items-center gap-1.5 justify-end">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Per Page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                    setShowAll(true);
+                  }}
                   className="text-xs bg-white border border-slate-200 rounded-lg py-1 px-2.5 font-bold text-slate-700 outline-none cursor-pointer focus:border-slate-300"
                 >
-                  <option value="all">ALL STATUSES</option>
-                  <option value="issued">ISSUED</option>
-                  <option value="billed">BILLED (SETTLED)</option>
-                  <option value="voided">VOIDED (REVERSED)</option>
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={-1}>All ({filteredChallans.length})</option>
                 </select>
               </div>
             </div>
@@ -965,6 +1138,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls */}
+            {showAll && pageSize !== -1 && totalPages > 1 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-150 mt-3 text-xs text-slate-500">
+                <div className="font-medium">
+                  Showing <span className="font-bold text-slate-800">{startIndex + 1}</span> to{' '}
+                  <span className="font-bold text-slate-800">{Math.min(startIndex + pageSize, filteredChallans.length)}</span> of{' '}
+                  <span className="font-bold text-slate-800">{filteredChallans.length}</span> challans
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={safeCurrentPage <= 1}
+                    className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:pointer-events-none transition cursor-pointer text-slate-700"
+                    title="Previous Page"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="px-2 font-bold text-slate-700">
+                    Page {safeCurrentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={safeCurrentPage >= totalPages}
+                    className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-40 disabled:pointer-events-none transition cursor-pointer text-slate-700"
+                    title="Next Page"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
         </div>
