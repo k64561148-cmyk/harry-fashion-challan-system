@@ -6,7 +6,7 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, signInAnonymously } from 'firebase/auth';
-import { initializeFirestore, persistentLocalCache, persistentSingleTabManager, disableNetwork, enableNetwork } from 'firebase/firestore';
+import { getFirestore, disableNetwork, enableNetwork } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import rawFirebaseConfig from '../firebase-applet-config.json';
 
@@ -27,13 +27,8 @@ const firebaseConfig = {
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 // EXPORT ALL REQUIRED FIREBASE COMPONENTS
-// Note: using persistentSingleTabManager avoids storing cross-tab query target metadata in localStorage, preventing QuotaExceededError
-export const firestore = initializeFirestore(app, {
-  experimentalForceLongPolling: true,
-  localCache: persistentLocalCache({
-    tabManager: persistentSingleTabManager({ forceOwnership: true })
-  })
-}, firebaseConfig.firestoreDatabaseId);
+export const firestore = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = firestore;
 
 // Export active config for diagnostics
 export const activeFirebaseConfig = firebaseConfig;

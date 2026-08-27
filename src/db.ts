@@ -21,8 +21,7 @@ import {
   TransactionType,
   StockCorrection,
   MasterAdvance,
-  MasterAdvanceLedger,
-  MissingChallanGap
+  MasterAdvanceLedger
 } from './types';
 
 import { 
@@ -36,9 +35,7 @@ import {
   getDocs,
   writeBatch,
   increment,
-  runTransaction,
-  disableNetwork,
-  enableNetwork
+  runTransaction
 } from 'firebase/firestore';
 import { firestore, auth } from './firebase';
 import { getLocalTodayString } from './utils/dateUtils';
@@ -728,12 +725,6 @@ class DatabaseService {
   }
 
   public reinitializeCloudListeners() {
-    if (!this.isQuotaExceeded) {
-      try {
-        enableNetwork(firestore).catch(() => {});
-      } catch (_) {}
-    }
-
     this.activeListeners.forEach(unsubscribe => {
       try { unsubscribe(); } catch (_) {}
     });
@@ -892,9 +883,6 @@ class DatabaseService {
     this.quotaExceededTimestamp = 0;
     safeRemoveLocalStorage('hf_quota_exceeded');
     safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
-    try {
-      enableNetwork(firestore).catch(() => {});
-    } catch (_) {}
     this.initDatabase();
     this.attemptBackgroundAuth();
     this.setupCloudSyncListeners();
@@ -1597,12 +1585,7 @@ class DatabaseService {
       safeRemoveLocalStorage('hf_quota_exceeded');
       safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
 
-      // 2. Ensure network is enabled
-      try {
-        await enableNetwork(firestore);
-      } catch (_) {}
-
-      // 3. Ensure authenticated (anonymous or Google)
+      // 2. Ensure authenticated (anonymous or Google)
       if (!auth.currentUser) {
         await this.attemptBackgroundAuth();
       }
@@ -2892,295 +2875,6 @@ class DatabaseService {
     } finally {
       forceLive = false;
     }
-  }
-
-  /**
-   * Scans and returns all missing sequence gaps in challan numbering.
-   */
-  getMissingChallanSequences(): MissingChallanGap[] {
-    const challans = this.getChallans();
-    const gaps: MissingChallanGap[] = [];
-
-    // Scan standard HF-2526-
-    const standardList: { num: number; full: string; date: string; master: string }[] = [];
-    challans.forEach(c => {
-      if (c.challan_no && c.challan_no.startsWith('HF-2526-')) {
-        const parts = c.challan_no.split('-');
-        if (parts.length === 3) {
-          const n = parseInt(parts[2], 10);
-          if (!isNaN(n)) {
-            standardList.push({
-              num: n,
-              full: c.challan_no,
-              date: c.issued_date || '',
-              master: c.masterName || c.masterDisplayName || c.master_id || ''
-            });
-          }
-        }
-      }
-    });
-
-    standardList.sort((a, b) => a.num - b.num);
-
-    for (let i = 0; i < standardList.length - 1; i++) {
-      const cur = standardList[i];
-      const next = standardList[i + 1];
-      if (next.num > cur.num + 1) {
-        const missing: string[] = [];
-        for (let k = cur.num + 1; k < next.num; k++) {
-          missing.push(`HF-2526-${String(k).padStart(4, '0')}`);
-        }
-        let suggestedDate = cur.date;
-        if (cur.date === next.date) {
-          suggestedDate = cur.date;
-        } else if (cur.num >= 1118 && next.num >= 1124) {
-          suggestedDate = '2026-08-26';
-        } else if (cur.num >= 1124 && next.num >= 1136) {
-          suggestedDate = '2026-08-26';
-        } else if (cur.num >= 1050 && next.num >= 1054) {
-          suggestedDate = '2026-08-22';
-        } else if (cur.num >= 1055 && next.num >= 1062) {
-          suggestedDate = '2026-08-22';
-        } else if (cur.num >= 1074 && next.num >= 1088) {
-          suggestedDate = '2026-08-24';
-        } else if (cur.date) {
-          suggestedDate = cur.date;
-        } else if (next.date) {
-          suggestedDate = next.date;
-        } else {
-          suggestedDate = getLocalTodayString();
-        }
-
-        gaps.push({
-          series: 'standard',
-          startNum: cur.num + 1,
-          endNum: next.num - 1,
-          missingCount: missing.length,
-          missingNumbers: missing,
-          suggestedDate,
-          prevChallan: { challan_no: cur.full, issued_date: cur.date, masterName: cur.master },
-          nextChallan: { challan_no: next.full, issued_date: next.date, masterName: next.master }
-        });
-      }
-    }
-
-    return gaps;
-  }
-
-  /**
-   * Restores an array of missing challan records with full cloud sync and audit logs.
-   */
-  async restoreMissingChallans(
-    gapEntries: Array<{
-      challan_no: string;
-      issued_date: string;
-      master_id?: string;
-      notes?: string;
-      issued_by?: string;
-      items?: Array<{ material_id: string; qty: number; rate: number }>;
-    }>
-  ): Promise<{ success: boolean; count: number; restored: Challan[] }> {
-    const masters = this.getMasters().filter(m => m.is_active);
-    const defaultMaster = masters[0] || {
-      id: 'default_master',
-      name: 'General Master',
-      code: 'GM',
-      type: 'jacket' as const,
-      is_active: true,
-      created_at: new Date().toISOString()
-    };
-    const materials = this.getMaterials().filter(m => m.is_active);
-    const defaultMaterial = materials[0] || {
-      id: 'default_mat',
-      name: 'Standard Jobwork Material',
-      unit: 'pc',
-      default_rate: 100,
-      current_stock: 500,
-      is_active: true,
-      created_at: new Date().toISOString()
-    };
-
-    const currentUser = this.getCurrentUser();
-    const existingChallans = this.getChallans();
-    const existingItems = this.getChallanItems();
-    const localLogs = this.load<AuditLog[]>('audit_logs', []);
-
-    const newChallans: Challan[] = [];
-    const newItems: ChallanItem[] = [];
-    const restoredChallans: Challan[] = [];
-
-    const firestoreBatch = this.isFirebaseInitialized ? writeBatch(firestore) : null;
-
-    for (const entry of gapEntries) {
-      if (existingChallans.some(c => c.challan_no === entry.challan_no)) {
-        continue;
-      }
-
-      const challanId = generateUUID();
-      const targetMaster = (entry.master_id && masters.find(m => m.id === entry.master_id)) || defaultMaster;
-      const challanDate = entry.issued_date || getLocalTodayString();
-      const dateParts = challanDate.split('-');
-      const challanYear = parseInt(dateParts[0], 10) || new Date().getFullYear();
-      const challanMonth = parseInt(dateParts[1], 10) || (new Date().getMonth() + 1);
-
-      const challanItemsToCreate = (entry.items && entry.items.length > 0) ? entry.items : [
-        {
-          material_id: defaultMaterial.id,
-          qty: 10,
-          rate: defaultMaterial.default_rate || 50
-        }
-      ];
-
-      const itemRecords: ChallanItem[] = [];
-      challanItemsToCreate.forEach(it => {
-        const mat = materials.find(m => m.id === it.material_id) || defaultMaterial;
-        const itemId = generateUUID();
-        const itemObj: ChallanItem = {
-          id: itemId,
-          challan_id: challanId,
-          challanId: challanId,
-          material_id: it.material_id,
-          materialId: it.material_id,
-          qty: Number(it.qty) || 1,
-          rate: Number(it.rate) || 0,
-          amount: (Number(it.qty) || 1) * (Number(it.rate) || 0),
-          created_at: new Date().toISOString(),
-          materialName: mat.name,
-          materialUnit: mat.unit || 'pc',
-          materialSnapshot: {
-            id: mat.id,
-            name: mat.name,
-            unit: mat.unit,
-            default_rate: mat.default_rate,
-            current_stock: mat.current_stock,
-            is_active: mat.is_active,
-            created_at: mat.created_at
-          }
-        };
-        itemRecords.push(itemObj);
-        newItems.push(itemObj);
-
-        if (firestoreBatch) {
-          const itemRef = doc(firestore, this.getCollectionName('challan_items'), itemId);
-          firestoreBatch.set(itemRef, this.enrichPayload(itemObj), { merge: true });
-        }
-      });
-
-      const restoredChallan: Challan = {
-        id: challanId,
-        challan_no: entry.challan_no,
-        master_id: targetMaster.id,
-        issued_date: challanDate,
-        issued_by: entry.issued_by || 'Sundar',
-        status: 'issued',
-        notes: entry.notes || 'Restored missing sequential challan',
-        created_at: `${challanDate}T10:00:00.000Z`,
-        items: [...itemRecords],
-        challanDate: challanDate,
-        createdAt: `${challanDate}T10:00:00.000Z`,
-        createdBy: currentUser.email || 'kunal3012@harryfashion.com',
-        backdated: challanDate < getLocalTodayString(),
-        originalCreatedMonth: `${challanYear}-${String(challanMonth).padStart(2, '0')}`,
-        challanMonth: challanMonth,
-        challanYear: challanYear,
-        masterId: targetMaster.id,
-        masterName: targetMaster.name,
-        masterCode: targetMaster.code,
-        masterType: targetMaster.type,
-        masterDisplayName: targetMaster.name,
-        masterSnapshot: {
-          id: targetMaster.id,
-          name: targetMaster.name,
-          code: targetMaster.code,
-          type: targetMaster.type,
-          is_active: targetMaster.is_active,
-          created_at: targetMaster.created_at
-        }
-      };
-
-      newChallans.push(restoredChallan);
-      restoredChallans.push(restoredChallan);
-
-      if (firestoreBatch) {
-        const challanRef = doc(firestore, this.getCollectionName('challans'), challanId);
-        firestoreBatch.set(challanRef, this.enrichPayload(restoredChallan), { merge: true });
-      }
-
-      const auditLog: AuditLog = {
-        id: generateUUID(),
-        user_email: currentUser.email || 'kunal3012@harryfashion.com',
-        action: 'CHALLAN_SEQUENCE_RESTORED',
-        details: `Restored missing sequence challan ${entry.challan_no} for date ${challanDate} (Master: ${targetMaster.name})`,
-        created_at: new Date().toISOString()
-      };
-      localLogs.unshift(auditLog);
-
-      if (firestoreBatch) {
-        const auditRef = doc(firestore, this.getCollectionName('audit_logs'), auditLog.id);
-        firestoreBatch.set(auditRef, this.enrichPayload(auditLog), { merge: true });
-      }
-    }
-
-    if (newChallans.length > 0) {
-      const mergedChallans = [...existingChallans, ...newChallans];
-      const mergedItems = [...existingItems, ...newItems];
-
-      this.save('challans', mergedChallans);
-      this.save('challan_items', mergedItems);
-      this.save('audit_logs', localLogs.slice(0, 1000));
-
-      if (firestoreBatch) {
-        try {
-          await this.performCloudWrite(() => firestoreBatch.commit());
-        } catch (err: any) {
-          console.warn('[Restore] Cloud commit queued/deferred:', err?.message || err);
-        }
-      }
-
-      window.dispatchEvent(new Event('db_sync'));
-    }
-
-    return {
-      success: true,
-      count: restoredChallans.length,
-      restored: restoredChallans
-    };
-  }
-
-  /**
-   * 1-Click Auto Restore of ALL detected sequence gaps across all dates.
-   */
-  async autoRestoreAllMissingChallanGaps(): Promise<{ success: boolean; totalRestored: number; restored: Challan[] }> {
-    const gaps = this.getMissingChallanSequences();
-    const entriesToRestore: Array<{
-      challan_no: string;
-      issued_date: string;
-      master_id?: string;
-      notes: string;
-    }> = [];
-
-    const masters = this.getMasters().filter(m => m.is_active);
-
-    gaps.forEach(gap => {
-      gap.missingNumbers.forEach((numStr, idx) => {
-        const assignedDate = gap.suggestedDate;
-        const assignedMaster = masters[idx % masters.length]?.id;
-
-        entriesToRestore.push({
-          challan_no: numStr,
-          issued_date: assignedDate,
-          master_id: assignedMaster,
-          notes: `Auto-restored sequence gap (${numStr}) for date ${assignedDate}`
-        });
-      });
-    });
-
-    const res = await this.restoreMissingChallans(entriesToRestore);
-    return {
-      success: true,
-      totalRestored: res.count,
-      restored: res.restored
-    };
   }
 
   async runDataRepair(): Promise<void> {
@@ -4638,9 +4332,6 @@ class DatabaseService {
           this.quotaExceededTimestamp = Date.now();
           safeSetLocalStorage('hf_quota_exceeded', 'true');
           safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
-          try {
-            disableNetwork(firestore).catch(() => {});
-          } catch (_) {}
         }
         console.warn(`Failed to re-read challan ${challanId} from server:`, err);
       }

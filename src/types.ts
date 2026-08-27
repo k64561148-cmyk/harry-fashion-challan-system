@@ -120,7 +120,6 @@ export interface Challan {
     type?: string;
     activeStatus?: boolean;
     is_active?: boolean;
-    created_at?: string;
   };
   deviceId?: string;
 }
@@ -310,15 +309,4 @@ export interface LedgerTransaction {
   net_payable?: number;
   period_month?: number;
   period_year?: number;
-}
-
-export interface MissingChallanGap {
-  series: 'standard' | 'backdated';
-  startNum: number;
-  endNum: number;
-  missingCount: number;
-  missingNumbers: string[];
-  suggestedDate: string;
-  prevChallan?: { challan_no: string; issued_date: string; masterName: string };
-  nextChallan?: { challan_no: string; issued_date: string; masterName: string };
 }
