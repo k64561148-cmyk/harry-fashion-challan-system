@@ -518,8 +518,9 @@ class DatabaseService {
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
 
-  private scheduleAutoUpload(collName: string, missingRecords: any[]) {
+  private async scheduleAutoUpload(collName: string, missingRecords: any[]) {
     if (!this.isFirebaseInitialized || !auth.currentUser) return;
+    if (this.isQuotaExceeded) return;
     if (!missingRecords || missingRecords.length === 0) return;
 
     // Filter out heavy logs from aggressive background spam
@@ -547,7 +548,7 @@ class DatabaseService {
   }
 
   private async processAutoUploadQueue() {
-    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser) return;
+    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
     this.isUploadingPending = true;
 
     try {
@@ -555,7 +556,7 @@ class DatabaseService {
         if (records.length === 0) continue;
 
         const batchLimit = 20;
-        while (records.length > 0) {
+        while (records.length > 0 && !this.isQuotaExceeded) {
           const chunk = records.splice(0, batchLimit);
           const batch = writeBatch(firestore);
           chunk.forEach(item => {
@@ -577,6 +578,14 @@ class DatabaseService {
 
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T | null> {
     const execute = async (): Promise<T | null> => {
+      if (this.isQuotaExceeded) {
+        if (Date.now() - this.quotaExceededTimestamp < 10 * 60 * 1000) {
+          return null;
+        } else {
+          this.isQuotaExceeded = false;
+        }
+      }
+
       if (this.isWriteThrottled) {
         await new Promise(res => setTimeout(res, 200));
       }
@@ -603,7 +612,10 @@ class DatabaseService {
         const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
         
         if (isQuota) {
-          console.warn("[Firestore] Daily write quota notification. Safely caching changes in browser database and retrying on next cycle.");
+          this.isQuotaExceeded = true;
+          this.quotaExceededTimestamp = Date.now();
+          this.autoUploadQueue.clear();
+          console.warn("[Firestore] Daily write quota reached. Operating seamlessly in offline local mode.");
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
           return null;
@@ -1383,8 +1395,6 @@ class DatabaseService {
             const rawData = docSnap.data();
             const data = { id: docSnap.id, ...rawData };
             if (collName === 'challans' && this.isDummyRestoredChallan(data)) {
-              // Automatically delete dummy from cloud
-              this.performCloudWrite(() => deleteDoc(docSnap.ref)).catch(() => {});
               return;
             }
             remoteRecords.push(data);
@@ -2943,9 +2953,11 @@ class DatabaseService {
   }
 
   async runDataRepair(): Promise<void> {
-    // Delete any dummy challans created for missing numbers (e.g. dummy restored sequence challans)
+    const hasRun = safeGetLocalStorage('hf_dummy_cleanup_done_v2') === 'true';
+    if (hasRun) return;
     try {
       await this.cleanupDummyChallans();
+      safeSetLocalStorage('hf_dummy_cleanup_done_v2', 'true');
     } catch (e) {
       console.error("[Cleanup] Error running dummy challans cleanup:", e);
     }
@@ -2956,7 +2968,7 @@ class DatabaseService {
 
     // 1. Clean from localStorage for both prod and sandbox
     const prodChallans = this.load<any[]>('challans', []);
-    const dummyIds = new Set<string>(['hf-bd-0015-repaired-uuid-sagir']);
+    const dummyIds = new Set<string>();
     const dummyItemIds = new Set<string>();
     
     const filteredProdChallans = prodChallans.filter((c: any) => {
@@ -3122,7 +3134,6 @@ class DatabaseService {
     const allItemsList = this.getChallanItems();
     const currentUser = this.getCurrentUser();
 
-    // Verify only Kunal is authorized to permanently delete challans
     const email = currentUser?.email || '';
     const name = currentUser?.displayName || currentUser?.name || '';
     const username = currentUser?.username || '';
@@ -3130,17 +3141,19 @@ class DatabaseService {
       email.toLowerCase().includes('kunal') || 
       email.toLowerCase() === 'k64561148@gmail.com' ||
       name.toLowerCase().includes('kunal') || 
-      username.toLowerCase().includes('kunal');
-    if (!isKunal) {
-      throw new Error("Unauthorized: Only Kunal (the developer) is allowed to delete challans.");
-    }
+      username.toLowerCase().includes('kunal') ||
+      currentUser?.role === 'admin';
 
     const mastersList = this.getMasters();
 
     const idx = challanList.findIndex(c => c.id === challanId);
     if (idx > -1) {
       const challan = challanList[idx];
-      if (challan.status === 'billed') {
+      const isDummy = this.isDummyRestoredChallan(challan);
+      if (!isKunal && !isDummy) {
+        throw new Error("Unauthorized: Only Admins/Developers can delete challans.");
+      }
+      if (challan.status === 'billed' && !isDummy) {
         const isBackdated = challan.backdated === true || (challan.issued_date && challan.issued_date < getLocalTodayString());
         if (!(isKunal && isBackdated)) {
           throw new Error('Completed/Billed challans cannot be deleted unless the bill is first reversed');

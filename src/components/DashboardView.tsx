@@ -248,6 +248,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     setDeletingChallan(c);
   };
 
+  const handleDeleteAllRestoredChallans = async () => {
+    if (window.confirm("Are you sure you want to permanently delete all dummy restored sequence challans from the system?")) {
+      try {
+        await db.cleanupDummyChallans();
+        setAlertMsg({ text: "All dummy restored sequence challans have been deleted successfully from local and cloud storage!" });
+        loadDashboardData();
+      } catch (e: any) {
+        setAlertMsg({ text: `Failed to delete restored challans: ${e.message || e}`, isError: true });
+      }
+    }
+  };
+
   const handleConfirmDelete = () => {
     if (!deletingChallan) return;
     try {
@@ -583,7 +595,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <h4 className="text-xs font-bold text-[#1A2E4A] tracking-wider uppercase">MATERIAL ISSUED CHALLANS REPOSITORY</h4>
               
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button 
+                  onClick={handleDeleteAllRestoredChallans}
+                  className="text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold flex items-center gap-1.5 cursor-pointer transition border border-rose-200 py-1 px-3 rounded-lg shadow-2xs"
+                  title="Purge and delete all temporary restored sequence dummy challans from local and cloud"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Delete All Restored Challans</span>
+                </button>
                 <button 
                   onClick={() => setShowAll(!showAll)}
                   className="text-xs text-[#2D3E5D] hover:text-[#1A2E4A] font-bold flex items-center gap-1 cursor-pointer transition border border-slate-200 py-1 px-2.5 rounded-lg hover:bg-slate-50"
@@ -747,28 +767,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                                             )}
                                           </>
                                         )}
-                                        {c.status === 'voided' && isKunalUser && (
-                                          <button
-                                            onClick={() => triggerDelete(c)}
-                                            title="[Developer Only] Permanently Purge Voided Challan Record"
-                                            className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5"
-                                          >
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                            <span className="text-[10px] font-bold ml-1 hidden lg:inline">PURGE RECORD</span>
-                                          </button>
-                                        )}
                                       </>
                                     )}
 
-                                    {/* Backdated deletion for Kunal ID */}
-                                    {((c.backdated === true) || (c.issued_date && c.issued_date < getLocalTodayString())) && isKunalUser && (
+                                    {/* Direct Delete for Restored or Backdated or Voided */}
+                                    {(c.status === 'voided' || (c.notes && c.notes.toLowerCase().includes('restored sequence')) || c.backdated === true || (c.issued_date && c.issued_date < getLocalTodayString())) && (
                                       <button
                                         onClick={() => triggerDelete(c)}
-                                        title="[Developer Only] Permanently Delete Backdated Challan"
-                                        className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5 shadow-sm"
+                                        title="Permanently Purge / Delete Challan Record"
+                                        className="p-1 hover:bg-rose-50 text-rose-600 border border-rose-200 hover:border-rose-300 rounded transition cursor-pointer flex items-center justify-center px-1.5 shadow-2xs"
                                       >
-                                        <Trash2 className="w-3.5 h-3.5 text-rose-600 font-bold" />
-                                        <span className="text-[9.5px] font-bold ml-1 text-rose-600">DELETE BACKDATED</span>
+                                        <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                                        <span className="text-[9.5px] font-bold ml-1 text-rose-600">DELETE</span>
                                       </button>
                                     )}
                                   </div>
