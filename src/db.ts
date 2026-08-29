@@ -512,8 +512,11 @@ class DatabaseService {
 
   private writeQueue: Promise<any> = Promise.resolve();
   private isWriteThrottled: boolean = false;
-  private isQuotaExceeded: boolean = false;
-  private quotaExceededTimestamp: number = 0;
+  private isQuotaExceeded: boolean = (() => {
+    const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
+    return ts > 0 && Date.now() - ts < 30 * 60 * 1000;
+  })();
+  private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
@@ -579,10 +582,11 @@ class DatabaseService {
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T | null> {
     const execute = async (): Promise<T | null> => {
       if (this.isQuotaExceeded) {
-        if (Date.now() - this.quotaExceededTimestamp < 10 * 60 * 1000) {
+        if (Date.now() - this.quotaExceededTimestamp < 30 * 60 * 1000) {
           return null;
         } else {
           this.isQuotaExceeded = false;
+          safeSetLocalStorage('hf_quota_exceeded_ts', '');
         }
       }
 
@@ -604,6 +608,7 @@ class DatabaseService {
         this.cloudHealth.lastError = null;
         this.isWriteThrottled = false;
         this.isQuotaExceeded = false;
+        safeSetLocalStorage('hf_quota_exceeded_ts', '');
         return result;
       } catch (error: any) {
         const errMsg = error?.message || String(error);
@@ -614,6 +619,7 @@ class DatabaseService {
         if (isQuota) {
           this.isQuotaExceeded = true;
           this.quotaExceededTimestamp = Date.now();
+          safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
           this.autoUploadQueue.clear();
           console.warn("[Firestore] Daily write quota reached. Operating seamlessly in offline local mode.");
           this.cloudHealth.syncFailed = false;
@@ -1402,33 +1408,35 @@ class DatabaseService {
             if (key) remoteKeySet.add(key);
           });
 
-          // Robust local-remote merge to prevent local data loss/wipeouts!
+          // Remote Firestore records is canonical cloud source of truth
           const localRecords = this.load<any[]>(collName, []);
-          const mergedMap = new Map<string, any>();
+          const myDevId = this.getDeviceId();
           
-          // First load all local records
-          localRecords.forEach(item => {
-            if (collName === 'challans' && this.isDummyRestoredChallan(item)) {
-              return;
-            }
-            const key = getKey(item);
-            if (key) mergedMap.set(key, item);
+          // Only preserve genuinely pending local items created on THIS device that haven't been confirmed in the cloud yet
+          const pendingLocalRecords = localRecords.filter(item => {
+            const k = getKey(item);
+            return k && !remoteKeySet.has(k) && (item._locallyPending === true || (item.deviceId && item.deviceId === myDevId));
           });
 
-          // Overwrite/merge with remote records (remote is source of truth, and always overwrites local duplicates to handle live sync instantly)
+          // Construct merged map: canonical remote records + genuine local pending writes
+          const mergedMap = new Map<string, any>();
           remoteRecords.forEach(item => {
-            if (collName === 'challans' && this.isDummyRestoredChallan(item)) {
-              return;
-            }
             const key = getKey(item);
             if (key) {
-              const existing = mergedMap.get(key);
-              // If existing local challan has items attached and remote does not, preserve items array
-              if (collName === 'challans' && existing && existing.items && (!item.items || item.items.length === 0)) {
-                mergedMap.set(key, { ...item, items: existing.items });
+              // If local record has items and remote does not, keep items array
+              const localMatch = localRecords.find(lr => getKey(lr) === key);
+              if (collName === 'challans' && localMatch && localMatch.items && (!item.items || item.items.length === 0)) {
+                mergedMap.set(key, { ...item, items: localMatch.items });
               } else {
                 mergedMap.set(key, item);
               }
+            }
+          });
+
+          pendingLocalRecords.forEach(item => {
+            const key = getKey(item);
+            if (key && !mergedMap.has(key)) {
+              mergedMap.set(key, item);
             }
           });
 
@@ -1437,19 +1445,13 @@ class DatabaseService {
             this.backupLocalCollectionToCloud(collName);
           }
 
-          // Check if there are locally created records missing from remote (e.g. created while offline)
-          const missingFromRemote = localRecords.filter(item => {
-            const k = getKey(item);
-            return k && !remoteKeySet.has(k);
-          });
-          if (missingFromRemote.length > 0 && remoteRecords.length > 0) {
+          // If there are genuine un-uploaded pending records, schedule auto upload
+          if (pendingLocalRecords.length > 0) {
             if (collName === 'challans' || collName === 'inward_entries' || collName === 'invoices' || collName === 'master_advances') {
-              this.scheduleAutoUpload(collName, missingFromRemote);
+              this.scheduleAutoUpload(collName, pendingLocalRecords);
             }
           }
 
-          // Identify local records missing from remote (e.g. created on this device while offline or before sync)
-          // Local records are safely maintained in the merged map and local storage
           const mergedRecords = Array.from(mergedMap.values());
 
           // If challans synced, extract embedded items into challan_items so item-level queries are always 100% complete
@@ -1521,6 +1523,7 @@ class DatabaseService {
 
   // Helper to sync local database to Cloud when initially connected
   private async backupLocalCollectionToCloud(collName: string) {
+    if (this.isQuotaExceeded) return;
     const localData = this.load<any[]>(collName, []);
     if (localData.length === 0) return;
 
@@ -1684,38 +1687,41 @@ class DatabaseService {
 
         // Load local records
         const localRecords = this.load<any[]>(collName, []);
-        const mergedMap = new Map<string, any>();
-
-        // Populate local records
-        localRecords.forEach((item) => {
+        const myDevId = this.getDeviceId();
+        const pendingLocalRecords = localRecords.filter(item => {
           const key = getKey(collName, item);
-          if (key) mergedMap.set(key, item);
+          return key && !remoteDocMap.has(key) && (item._locallyPending === true || (item.deviceId && item.deviceId === myDevId));
         });
 
-        // Merge remote records (remote source of truth)
+        const mergedMap = new Map<string, any>();
+
+        // 1. Populate remote records (canonical source of truth)
         remoteDocs.forEach((item) => {
           const key = getKey(collName, item);
           if (key) {
-            const existing = mergedMap.get(key);
-            if (collName === 'challans' && existing && existing.items && (!item.items || item.items.length === 0)) {
-              mergedMap.set(key, { ...item, items: existing.items });
+            const localMatch = localRecords.find(lr => getKey(collName, lr) === key);
+            if (collName === 'challans' && localMatch && localMatch.items && (!item.items || item.items.length === 0)) {
+              mergedMap.set(key, { ...item, items: localMatch.items });
             } else {
               mergedMap.set(key, item);
             }
           }
         });
 
-        // Determine records present locally but missing in Firestore (push up to cloud)
-        const missingInRemote = localRecords.filter((item) => {
+        // 2. Add local pending records
+        pendingLocalRecords.forEach((item) => {
           const key = getKey(collName, item);
-          return key && !remoteDocMap.has(key);
+          if (key && !mergedMap.has(key)) {
+            mergedMap.set(key, item);
+          }
         });
 
-        if (missingInRemote.length > 0 && !this.isQuotaExceeded) {
+        // Push ONLY genuine locally pending records to Firestore
+        if (pendingLocalRecords.length > 0 && !this.isQuotaExceeded) {
           try {
             const chunkSize = 200;
-            for (let i = 0; i < missingInRemote.length; i += chunkSize) {
-              const chunk = missingInRemote.slice(i, i + chunkSize);
+            for (let i = 0; i < pendingLocalRecords.length; i += chunkSize) {
+              const chunk = pendingLocalRecords.slice(i, i + chunkSize);
               const batch = writeBatch(firestore);
               chunk.forEach((item) => {
                 const docId = getKey(collName, item);
@@ -1725,7 +1731,7 @@ class DatabaseService {
                   uploadedCount++;
                 }
               });
-              await batch.commit();
+              await this.performCloudWrite(() => batch.commit());
             }
           } catch (uploadErr: any) {
             console.warn(`[Manual Full Sync] Push upload on ${collName} deferred:`, uploadErr?.message || uploadErr);
@@ -2788,8 +2794,10 @@ class DatabaseService {
             current_stock: matData.current_stock || 0,
             is_active: matData.is_active !== undefined ? matData.is_active : true,
             created_at: matData.created_at || new Date().toISOString()
-          }
-        });
+          },
+          deviceId: this.getDeviceId(),
+          _locallyPending: true
+        } as any);
       }
 
       const finalChallan: Challan = {
@@ -2823,8 +2831,9 @@ class DatabaseService {
           type: masterSnapshotData.type || (masterSnapshotData as any).category || '',
           activeStatus: masterSnapshotData.is_active !== undefined ? masterSnapshotData.is_active : true
         },
-        deviceId: this.getDeviceId()
-      };
+        deviceId: this.getDeviceId(),
+        _locallyPending: true
+      } as any;
 
       const masterNameVal = masterSnapshotData?.name || 'Unknown Master';
       const auditPayloadLocal: AuditLog = {

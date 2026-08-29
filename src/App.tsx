@@ -123,12 +123,19 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    // Ensure cloud sync is established on start
+    db.attemptBackgroundAuth();
+    db.reinitializeCloudListeners();
+  }, []);
+
   const handleCloudLogin = async () => {
     setIsCloudLoggingIn(true);
     setCloudError(null);
     try {
       await signInWithPopup(auth, googleProvider);
       db.addAuditLog(currentUser.email, 'Cloud Sync Enabled', 'Linked browser terminal instance to Firebase cloud synchronizer.');
+      await db.manualFullSync();
     } catch (err: any) {
       console.error(err);
       setCloudError(err.message || 'Verification rejected.');
@@ -140,7 +147,9 @@ export default function App() {
   const handleCloudLogout = async () => {
     try {
       await signOut(auth);
-      db.addAuditLog(currentUser.email, 'Cloud Sync Disabled', 'Unlinked browser terminal instance from Firebase cloud.');
+      db.addAuditLog(currentUser.email, 'Cloud Sync Reconnected', 'Switched browser terminal to shared anonymous sync.');
+      await db.attemptBackgroundAuth();
+      db.reinitializeCloudListeners();
     } catch (err: any) {
       console.error(err);
     }

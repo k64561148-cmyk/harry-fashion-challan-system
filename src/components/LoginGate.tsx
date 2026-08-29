@@ -171,6 +171,12 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
         db.setCurrentUser(matchedProfile);
         db.saveProfile(matchedProfile);
 
+        // Immediately link cloud and pull all latest records across all login IDs
+        db.attemptBackgroundAuth().then(() => {
+          db.reinitializeCloudListeners();
+          db.manualFullSync().catch(() => {});
+        });
+
         onLoginSuccess(matchedProfile);
         return;
       }
@@ -218,6 +224,12 @@ export default function LoginGate({ onLoginSuccess }: LoginGateProps) {
       db.setCurrentUser(fallbackProfile);
       db.saveProfile(fallbackProfile);
       
+      // Immediately link cloud and pull all latest records across all login IDs
+      db.attemptBackgroundAuth().then(() => {
+        db.reinitializeCloudListeners();
+        db.manualFullSync().catch(() => {});
+      });
+
       onLoginSuccess(fallbackProfile);
 
     } catch (err: any) {
