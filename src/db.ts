@@ -1197,7 +1197,7 @@ class DatabaseService {
         this.setupCloudSyncListeners();
 
         // 1. Establish real-time listener for current user's security profile
-        const profileRef = doc(firestore, 'profiles', user.uid);
+        const profileRef = this.getDocRef('profiles', user.uid);
 
         const unsubscribeProfile = onSnapshot(profileRef, async (snap) => {
           this.cloudHealth.collectionStatus.profiles = 'healthy';
@@ -1380,7 +1380,13 @@ class DatabaseService {
           };
 
           snapshot.forEach((docSnap) => {
-            const data = docSnap.data();
+            const rawData = docSnap.data();
+            const data = { id: docSnap.id, ...rawData };
+            if (collName === 'challans' && this.isDummyRestoredChallan(data)) {
+              // Automatically delete dummy from cloud
+              this.performCloudWrite(() => deleteDoc(docSnap.ref)).catch(() => {});
+              return;
+            }
             remoteRecords.push(data);
             const key = getKey(data) || docSnap.id;
             if (key) remoteKeySet.add(key);
@@ -1392,12 +1398,18 @@ class DatabaseService {
           
           // First load all local records
           localRecords.forEach(item => {
+            if (collName === 'challans' && this.isDummyRestoredChallan(item)) {
+              return;
+            }
             const key = getKey(item);
             if (key) mergedMap.set(key, item);
           });
 
           // Overwrite/merge with remote records (remote is source of truth, and always overwrites local duplicates to handle live sync instantly)
           remoteRecords.forEach(item => {
+            if (collName === 'challans' && this.isDummyRestoredChallan(item)) {
+              return;
+            }
             const key = getKey(item);
             if (key) {
               const existing = mergedMap.get(key);
@@ -1409,6 +1421,22 @@ class DatabaseService {
               }
             }
           });
+
+          // Auto-seed cloud if remote collection is empty but local has seed data
+          if (remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
+            this.backupLocalCollectionToCloud(collName);
+          }
+
+          // Check if there are locally created records missing from remote (e.g. created while offline)
+          const missingFromRemote = localRecords.filter(item => {
+            const k = getKey(item);
+            return k && !remoteKeySet.has(k);
+          });
+          if (missingFromRemote.length > 0 && remoteRecords.length > 0) {
+            if (collName === 'challans' || collName === 'inward_entries' || collName === 'invoices' || collName === 'master_advances') {
+              this.scheduleAutoUpload(collName, missingFromRemote);
+            }
+          }
 
           // Identify local records missing from remote (e.g. created on this device while offline or before sync)
           // Local records are safely maintained in the merged map and local storage
@@ -1633,7 +1661,8 @@ class DatabaseService {
         try {
           const querySnapshot = await getDocs(collection(firestore, resolvedName));
           querySnapshot.forEach((docSnap) => {
-            const data = docSnap.data();
+            const rawData = docSnap.data();
+            const data = { id: docSnap.id, ...rawData };
             const key = getKey(collName, data) || docSnap.id;
             remoteDocs.push(data);
             if (key) remoteDocMap.set(key, data);
@@ -1895,7 +1924,7 @@ class DatabaseService {
     // Write back profile to Firebase if synced
     if (this.isFirebaseInitialized && user.uid && user.uid !== 'guest-01') {
       const idToUse = user.uid || user.id;
-      this.performCloudWrite(() => setDoc(doc(firestore, 'profiles', idToUse), this.enrichPayload(user)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('profiles', idToUse), this.enrichPayload(user), { merge: true }))
         .catch(err => console.warn('Could not sync user swap to cloud:', err));
     }
     this.reinitializeCloudListeners();
@@ -1918,7 +1947,7 @@ class DatabaseService {
     this.save('profiles', list);
 
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'profiles', idToFind), this.enrichPayload(profile)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('profiles', idToFind), this.enrichPayload(profile), { merge: true }))
         .catch(err => handleFirestoreError(err, OperationType.WRITE, `profiles/${idToFind}`));
     }
     window.dispatchEvent(new Event('db_sync'));
@@ -2020,7 +2049,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'masters', result.id), this.enrichPayload(result)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('masters', result.id), this.enrichPayload(result), { merge: true }))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `masters/${result.id}`));
     }
 
@@ -2118,10 +2147,10 @@ class DatabaseService {
     // Sync changes to cloud if initialized
     if (this.isFirebaseInitialized) {
       // update target
-      this.performCloudWrite(() => setDoc(doc(firestore, 'masters', targetId), this.enrichPayload(targetMaster)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('masters', targetId), this.enrichPayload(targetMaster), { merge: true }))
         .catch(err => console.error("Cloud write target master failed in merge:", err));
       // delete source
-      this.performCloudWrite(() => deleteDoc(doc(firestore, 'masters', sourceId)))
+      this.performCloudWrite(() => deleteDoc(this.getDocRef('masters', sourceId)))
         .catch(err => console.error("Cloud write source delete failed in merge:", err));
     }
   }
@@ -2215,7 +2244,7 @@ class DatabaseService {
         this.save('masters', masters);
         
         if (this.isFirebaseInitialized) {
-          this.performCloudWrite(() => setDoc(doc(firestore, 'masters', masterId), this.enrichPayload(masters[idx])))
+          this.performCloudWrite(() => setDoc(this.getDocRef('masters', masterId), this.enrichPayload(masters[idx]), { merge: true }))
             .catch(() => {});
         }
         window.dispatchEvent(new Event('db_sync'));
@@ -2375,7 +2404,7 @@ class DatabaseService {
 
       // Sync duplicate update to cloud
       if (this.isFirebaseInitialized) {
-        await this.performCloudWrite(() => setDoc(doc(firestore, 'masters', dupId), this.enrichPayload(dupMaster)))
+        await this.performCloudWrite(() => setDoc(this.getDocRef('masters', dupId), this.enrichPayload(dupMaster), { merge: true }))
           .catch(err => console.error(`Cloud write duplicate merge failed for ${dupId}:`, err));
       }
     }
@@ -2389,7 +2418,7 @@ class DatabaseService {
 
     // Sync canonical master update to cloud
     if (this.isFirebaseInitialized) {
-      await this.performCloudWrite(() => setDoc(doc(firestore, 'masters', canonicalId), this.enrichPayload(canonicalMaster)))
+      await this.performCloudWrite(() => setDoc(this.getDocRef('masters', canonicalId), this.enrichPayload(canonicalMaster), { merge: true }))
         .catch(err => console.error("Cloud write canonical master failed:", err));
     }
 
@@ -2453,7 +2482,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'materials', result.id), this.enrichPayload(result)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('materials', result.id), this.enrichPayload(result), { merge: true }))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `materials/${result.id}`));
     }
 
@@ -2492,7 +2521,7 @@ class DatabaseService {
         const itemRem = list[existingIdx];
         list.splice(existingIdx, 1);
         if (this.isFirebaseInitialized) {
-          this.performCloudWrite(() => deleteDoc(doc(firestore, 'master_rate_overrides', itemRem.id)))
+          this.performCloudWrite(() => deleteDoc(this.getDocRef('master_rate_overrides', itemRem.id)))
             .catch(err => console.warn(err));
         }
       }
@@ -2507,7 +2536,7 @@ class DatabaseService {
 
     // Dynamic Cloud Sync write
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'master_rate_overrides', result.id), this.enrichPayload(result)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('master_rate_overrides', result.id), this.enrichPayload(result), { merge: true }))
         .catch(error => handleFirestoreError(error, OperationType.WRITE, `master_rate_overrides/${result.id}`));
     }
 
@@ -2527,7 +2556,7 @@ class DatabaseService {
       this.save('master_rate_overrides', list);
 
       if (this.isFirebaseInitialized) {
-        this.performCloudWrite(() => deleteDoc(doc(firestore, 'master_rate_overrides', id)))
+        this.performCloudWrite(() => deleteDoc(this.getDocRef('master_rate_overrides', id)))
           .catch(error => handleFirestoreError(error, OperationType.DELETE, `master_rate_overrides/${id}`));
       }
     }
@@ -2830,16 +2859,16 @@ class DatabaseService {
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
-          const challanRef = doc(firestore, this.getCollectionName('challans'), challanId);
+          const challanRef = this.getDocRef('challans', challanId);
           batch.set(challanRef, this.enrichPayload(finalChallan), { merge: true });
 
           savedChallanItems.forEach((item) => {
-            const itemRef = doc(firestore, this.getCollectionName('challan_items'), item.id);
+            const itemRef = this.getDocRef('challan_items', item.id);
             batch.set(itemRef, this.enrichPayload(item), { merge: true });
           });
 
           items.forEach((item) => {
-            const matRef = doc(firestore, this.getCollectionName('materials'), item.material_id);
+            const matRef = this.getDocRef('materials', item.material_id);
             const enrichUpdate = this.enrichPayload({});
             batch.set(matRef, {
               current_stock: increment(-item.qty),
@@ -2848,11 +2877,11 @@ class DatabaseService {
           });
 
           if (isBackdated) {
-            const counterRef = doc(firestore, this.getCollectionName('counters'), 'challan_backdated');
+            const counterRef = this.getDocRef('counters', 'challan_backdated');
             batch.set(counterRef, { nextNumber: increment(1) }, { merge: true });
           }
 
-          const auditRef = doc(firestore, this.getCollectionName('audit_logs'), auditId);
+          const auditRef = this.getDocRef('audit_logs', auditId);
           batch.set(auditRef, this.enrichPayload(auditPayloadLocal), { merge: true });
 
           this.performCloudWrite(() => batch.commit()).catch(cloudErr => {
@@ -2877,215 +2906,137 @@ class DatabaseService {
     }
   }
 
-  async runDataRepair(): Promise<void> {
-    // 1. Existing SG Master repair logic
-    const isRepaired = safeGetLocalStorage('hf_challans_repaired_sg_v2') === 'true';
-    if (!isRepaired) {
-      // Delay briefly to allow Firestore listeners to sync initial collections
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      const masters = this.getMasters();
-      const sgMaster = masters.find(m => m.name === 'SG');
-      if (sgMaster) {
-        const challans = this.getChallans();
-        const targetNos = ['HF-BD-0006', 'HF-BD-0005', 'HF-BD-0003'];
-        const toRepair = challans.filter(c => targetNos.includes(c.challan_no));
-
-        if (toRepair.length > 0) {
-          let updatedAny = false;
-          for (const c of toRepair) {
-            if (c.masterDisplayName === 'SG' && c.master_id === sgMaster.id) {
-              continue;
-            }
-
-            console.log(`Repairing backdated challan ${c.challan_no}: setting master to SG master (snapshot + masterId).`);
-            
-            c.master_id = sgMaster.id;
-            c.masterId = sgMaster.id;
-            c.masterName = sgMaster.name;
-            c.masterCode = sgMaster.code;
-            c.masterType = sgMaster.type;
-            c.masterDisplayName = sgMaster.name;
-            c.masterSnapshot = {
-              id: sgMaster.id,
-              name: sgMaster.name,
-              code: sgMaster.code,
-              type: sgMaster.type,
-              activeStatus: sgMaster.is_active
-            };
-
-            updatedAny = true;
-          }
-
-          if (updatedAny) {
-            this.save('challans', challans);
-
-            if (this.isFirebaseInitialized) {
-              try {
-                const batch = writeBatch(firestore);
-                for (const c of toRepair) {
-                  batch.update(doc(firestore, 'challans', c.id), {
-                    master_id: sgMaster.id,
-                    masterId: sgMaster.id,
-                    masterName: sgMaster.name,
-                    masterCode: sgMaster.code,
-                    masterType: sgMaster.type,
-                    masterDisplayName: sgMaster.name,
-                    masterSnapshot: c.masterSnapshot,
-                    ...this.enrichPayload({})
-                  });
-                }
-                await this.performCloudWrite(() => batch.commit());
-                console.log("[Repair] Firestore update committed successfully for target challans.");
-              } catch (err) {
-                console.error("[Repair] Cloud write failed, local updated.", err);
-              }
-            }
-            window.dispatchEvent(new Event('db_sync'));
-          }
-        }
-      }
-      safeSetLocalStorage('hf_challans_repaired_sg_v2', 'true');
+  private isDummyRestoredChallan(c: any): boolean {
+    if (!c) return false;
+    const notes = String(c.notes || c.note || c.remarks || '').toLowerCase();
+    const editReason = String(c.editReason || '').toLowerCase();
+    const backdatedReason = String(c.backdatedReason || '').toLowerCase();
+    
+    if (
+      notes.includes('restored sequence challan') ||
+      notes.includes('restored sequence') ||
+      notes.includes('restored missing sequence') ||
+      notes.includes('repaired missing backdated') ||
+      notes.includes('repaired missing cloud challan') ||
+      notes.includes('repaired missing') ||
+      notes.includes('restored sequence challan hf-') ||
+      editReason.includes('restored sequence') ||
+      backdatedReason.includes('restored sequence')
+    ) {
+      return true;
     }
 
-    // 2. Custom repair for Sagir Master's backdated challan HF-BD-0015
+    if (c.id === 'hf-bd-0015-repaired-uuid-sagir' || c.id === 'hf-bd-0015-dummy') {
+      return true;
+    }
+
+    // Identify single placeholder items of Rs 800 Paisley French Pink
+    if (Array.isArray(c.items) && c.items.length === 1) {
+      const item = c.items[0];
+      const matName = String(item.material_name || item.materialName || item.name || '').toLowerCase();
+      if (matName.includes('paisley') && (Number(item.amount) === 800 || (Number(item.qty) === 10 && Number(item.rate) === 80))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async runDataRepair(): Promise<void> {
+    // Delete any dummy challans created for missing numbers (e.g. dummy restored sequence challans)
     try {
-      await this.repairSagirChallan();
+      await this.cleanupDummyChallans();
     } catch (e) {
-      console.error("[Repair] Error running Sagir Master HF-BD-0015 check & repair:", e);
+      console.error("[Cleanup] Error running dummy challans cleanup:", e);
     }
   }
 
-  private async repairSagirChallan(): Promise<void> {
-    const KEY_REPAIRED = 'hf_challan_hf_bd_0015_repaired_v3';
-    if (localStorage.getItem(KEY_REPAIRED) === 'true') {
-      return;
-    }
+  async cleanupDummyChallans(): Promise<void> {
+    console.log("[Cleanup] Checking and deleting any dummy/missing-number challans...");
 
-    console.log("[Repair] Running Sagir Master HF-BD-0015 check & repair...");
-
-    // Find if the challan exists in any local/sandbox cache
-    let existingChallan: any = null;
-    const localChallansRaw = localStorage.getItem('hf_challans');
-    const sandboxChallansRaw = localStorage.getItem('sandbox_kunal_challans');
-
-    if (localChallansRaw) {
-      try {
-        const list = JSON.parse(localChallansRaw);
-        existingChallan = list.find((c: any) => c.challan_no === 'HF-BD-0015' || c.challanNo === 'HF-BD-0015');
-      } catch (_) {}
-    }
-
-    if (!existingChallan && sandboxChallansRaw) {
-      try {
-        const list = JSON.parse(sandboxChallansRaw);
-        existingChallan = list.find((c: any) => c.challan_no === 'HF-BD-0015' || c.challanNo === 'HF-BD-0015');
-      } catch (_) {}
-    }
-
-    // Find or create SAGIR MASTER
-    let sagirMaster = this.getMasters().find(m => m.name.toUpperCase() === 'SAGIR MASTER');
-    if (!sagirMaster) {
-      console.log("[Repair] Creating missing SAGIR MASTER entry...");
-      const newSagir: Master = {
-        id: 'sagir-master-repaired-id',
-        name: 'SAGIR MASTER',
-        code: 'SGR',
-        type: 'jacket',
-        is_active: true,
-        created_at: new Date().toISOString()
-      };
-      
-      const currentMasters = this.getMasters();
-      currentMasters.push(newSagir);
-      this.save('masters', currentMasters);
-
-      if (this.isFirebaseInitialized) {
-        try {
-          // Write to both live and sandbox collections safely
-          this.performCloudWrite(() => setDoc(firestoreDoc(firestore, 'masters', newSagir.id), this.enrichPayload(newSagir))).catch(() => {});
-          this.performCloudWrite(() => setDoc(firestoreDoc(firestore, 'sandbox_kunal_masters', newSagir.id), this.enrichPayload(newSagir))).catch(() => {});
-        } catch (err) {
-          console.warn("[Repair] Could not save SAGIR MASTER to firestore, continuing.", err);
+    // 1. Clean from localStorage for both prod and sandbox
+    const prodChallans = this.load<any[]>('challans', []);
+    const dummyIds = new Set<string>(['hf-bd-0015-repaired-uuid-sagir']);
+    const dummyItemIds = new Set<string>();
+    
+    const filteredProdChallans = prodChallans.filter((c: any) => {
+      const isDummy = this.isDummyRestoredChallan(c);
+      if (isDummy) {
+        if (c.id) dummyIds.add(c.id);
+        if (Array.isArray(c.items)) {
+          c.items.forEach((it: any) => { if (it?.id) dummyItemIds.add(it.id); });
         }
       }
-      sagirMaster = newSagir;
+      return !isDummy;
+    });
+
+    if (filteredProdChallans.length !== prodChallans.length) {
+      this.save('challans', filteredProdChallans);
+      console.log(`[Cleanup] Removed ${prodChallans.length - filteredProdChallans.length} dummy challan(s) locally.`);
     }
 
-    const challanId = existingChallan?.id || 'hf-bd-0015-repaired-uuid-sagir';
-    
-    // Construct robust repaired challan object conforming to schema and requirement
-    const repairedChallan: any = {
-      id: challanId,
-      challan_no: 'HF-BD-0015',
-      challanNo: 'HF-BD-0015',
-      issued_date: '2026-06-23',
-      challanDate: '2026-06-23',
-      created_at: existingChallan?.created_at || new Date().toISOString(),
-      createdAt: existingChallan?.createdAt || new Date().toISOString(),
-      createdBy: 'Sundar',
-      status: 'issued',
-      notes: existingChallan?.notes || 'Repaired missing backdated challan',
-      backdated: true,
-      isBackdated: true,
-      backdatedBy: 'Sundar',
-      backdatedReason: existingChallan?.backdatedReason || 'System data migration repair',
-      originalCreatedMonth: '2026-07',
-      challanMonth: 6,
-      challanYear: 2026,
-      master_id: sagirMaster.id,
-      masterId: sagirMaster.id,
-      masterName: 'SAGIR MASTER',
-      masterCode: sagirMaster.code,
-      masterType: sagirMaster.type,
-      masterDisplayName: 'SAGIR MASTER',
-      masterSnapshot: {
-        id: sagirMaster.id,
-        name: 'SAGIR MASTER',
-        code: sagirMaster.code,
-        type: sagirMaster.type,
-        activeStatus: true
+    // 2. Clean from 'challan_items' locally
+    const localItems = this.load<any[]>('challan_items', []);
+    const filteredItems = localItems.filter((it: any) => {
+      if (dummyItemIds.has(it.id) || (it.challan_id && dummyIds.has(it.challan_id)) || (it.challanId && dummyIds.has(it.challanId))) {
+        dummyItemIds.add(it.id);
+        return false;
       }
-    };
+      return true;
+    });
+    if (filteredItems.length !== localItems.length) {
+      this.save('challan_items', filteredItems);
+    }
 
-    // Save to production Firestore directly (Bypassing sandbox collection name prefix routing)
-    if (this.isFirebaseInitialized) {
+    // Check sandbox storage
+    try {
+      const sandboxRaw = safeGetLocalStorage('sandbox_kunal_challans');
+      if (sandboxRaw) {
+        const sandboxList = JSON.parse(sandboxRaw);
+        if (Array.isArray(sandboxList)) {
+          const filteredSandbox = sandboxList.filter((c: any) => {
+            const isDummy = this.isDummyRestoredChallan(c);
+            if (isDummy) {
+              if (c.id) dummyIds.add(c.id);
+              if (Array.isArray(c.items)) {
+                c.items.forEach((it: any) => { if (it?.id) dummyItemIds.add(it.id); });
+              }
+            }
+            return !isDummy;
+          });
+          if (filteredSandbox.length !== sandboxList.length) {
+            safeSetLocalStorage('sandbox_kunal_challans', JSON.stringify(filteredSandbox));
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Delete from cloud Firestore
+    if (this.isFirebaseInitialized && (dummyIds.size > 0 || dummyItemIds.size > 0)) {
       try {
-        const prodDocRef = firestoreDoc(firestore, 'challans', challanId);
-        this.performCloudWrite(() => setDoc(prodDocRef, this.enrichPayload(repairedChallan))).catch(() => {});
-        console.log("[Repair] HF-BD-0015 saved to local and queued for cloud.");
-
-        // Write custom audit log as explicitly specified in Requirement 8
-        const auditLogId = 'audit_repair_hf_bd_0015_' + Date.now();
-        const auditLog: AuditLog = {
-          id: auditLogId,
-          user_email: 'system-repair@harryfashion.com',
-          action: 'REPAIRED_MISSING_CLOUD_CHALLAN',
-          details: `challanNo: HF-BD-0015, masterName: SAGIR MASTER, repairedBy: Sundar, repairedAt: ${new Date().toISOString()}`,
-          created_at: new Date().toISOString()
-        };
-        this.performCloudWrite(() => setDoc(firestoreDoc(firestore, 'audit_logs', auditLogId), this.enrichPayload(auditLog))).catch(() => {});
-        this.addAuditLog('system-repair@harryfashion.com', 'REPAIRED_MISSING_CLOUD_CHALLAN', `challanNo: HF-BD-0015, masterName: SAGIR MASTER, repairedBy: Sundar, repairedAt: ${new Date().toISOString()}`);
+        for (const dummyId of Array.from(dummyIds)) {
+          // Delete from both standard and sandbox collections
+          this.performCloudWrite(() => deleteDoc(this.getDocRef('challans', dummyId))).catch(() => {});
+          this.performCloudWrite(() => deleteDoc(firestoreDoc(firestore, 'challans', dummyId))).catch(() => {});
+          this.performCloudWrite(() => deleteDoc(firestoreDoc(firestore, 'sandbox_kunal_challans', dummyId))).catch(() => {});
+          console.log(`[Cleanup] Deleted dummy challan ${dummyId} from cloud.`);
+        }
+        for (const itemId of Array.from(dummyItemIds)) {
+          this.performCloudWrite(() => deleteDoc(this.getDocRef('challan_items', itemId))).catch(() => {});
+          this.performCloudWrite(() => deleteDoc(firestoreDoc(firestore, 'challan_items', itemId))).catch(() => {});
+          this.performCloudWrite(() => deleteDoc(firestoreDoc(firestore, 'sandbox_kunal_challan_items', itemId))).catch(() => {});
+        }
       } catch (err) {
-        console.warn("[Repair] Failed to queue HF-BD-0015 to Firestore:", err);
+        console.warn("[Cleanup] Firestore write failed while deleting dummy challan:", err);
       }
     }
 
-    // Always ensure it exists in the local prod 'hf_challans' list
-    const prodChallans = this.load<any[]>('challans', []);
-    const existsInProdIdx = prodChallans.findIndex((c: any) => c.challan_no === 'HF-BD-0015');
-    if (existsInProdIdx > -1) {
-      prodChallans[existsInProdIdx] = repairedChallan;
-    } else {
-      prodChallans.push(repairedChallan);
-    }
-    this.save('challans', prodChallans);
+    // 4. Remove old repair flags from localStorage so dummy is never re-injected
+    safeRemoveLocalStorage('hf_challan_hf_bd_0015_repaired_v3');
+    safeRemoveLocalStorage('hf_challans_repaired_sg_v2');
 
     // Trigger local sync refresh
     window.dispatchEvent(new Event('db_sync'));
-
-    safeSetLocalStorage(KEY_REPAIRED, 'true');
-    console.log("[Repair] Sagir Master HF-BD-0015 repair process completed successfully.");
   }
 
   deleteChallan(challanId: string): void {
@@ -3144,18 +3095,18 @@ class DatabaseService {
         try {
           const batch = writeBatch(firestore);
           // Delete Challan
-          batch.delete(doc(firestore, 'challans', challanId));
+          batch.delete(this.getDocRef('challans', challanId));
           // Delete Items
           deletedItems.forEach(item => {
-            batch.delete(doc(firestore, 'challan_items', item.id));
+            batch.delete(this.getDocRef('challan_items', item.id));
           });
           // Update Stocks atomically using server-side increment to prevent concurrent-write bugs
           deletedItems.forEach(item => {
             const enrichUpdate = this.enrichPayload({});
-            batch.update(doc(firestore, 'materials', item.material_id), {
+            batch.set(this.getDocRef('materials', item.material_id), {
               current_stock: increment(item.qty),
               ...enrichUpdate
-            });
+            }, { merge: true });
           });
           this.performCloudWrite(() => batch.commit())
             .catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_void/${challanId}`));
@@ -3211,9 +3162,9 @@ class DatabaseService {
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
-          batch.delete(doc(firestore, 'challans', challanId));
+          batch.delete(this.getDocRef('challans', challanId));
           deletedItems.forEach(item => {
-            batch.delete(doc(firestore, 'challan_items', item.id));
+            batch.delete(this.getDocRef('challan_items', item.id));
           });
           this.performCloudWrite(() => batch.commit())
             .catch(error => handleFirestoreError(error, OperationType.DELETE, `challans_delete/${challanId}`));
@@ -3283,16 +3234,16 @@ class DatabaseService {
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
-          batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
+          batch.set(this.getDocRef('challans', challanId), this.enrichPayload({
             status: 'voided',
             notes: challan.notes
-          }));
+          }), { merge: true });
           matchingItems.forEach(item => {
             const enrichUpdate = this.enrichPayload({});
-            batch.update(doc(firestore, 'materials', item.material_id), {
+            batch.set(this.getDocRef('materials', item.material_id), {
               current_stock: increment(item.qty),
               ...enrichUpdate
-            });
+            }, { merge: true });
           });
           this.performCloudWrite(() => batch.commit())
             .catch(error => handleFirestoreError(error, OperationType.WRITE, `challans_void/${challanId}`));
@@ -3488,25 +3439,25 @@ class DatabaseService {
         try {
           const batch = writeBatch(firestore);
           // Update Challan fields
-          batch.update(doc(firestore, 'challans', challanId), this.enrichPayload({
+          batch.set(this.getDocRef('challans', challanId), this.enrichPayload({
             notes: challan.notes,
             items: savedChallanItems,
             lastEditedAt: challan.lastEditedAt,
             lastEditedBy: challan.lastEditedBy,
             editReason: challan.editReason,
             editHistory: challan.editHistory
-          }));
+          }), { merge: true });
           
           // Delete old items on cloud
           previousItems.forEach(item => {
             if (item.id) {
-              batch.delete(doc(firestore, 'challan_items', item.id));
+              batch.delete(this.getDocRef('challan_items', item.id));
             }
           });
 
           // Upload new items to cloud
           savedChallanItems.forEach(item => {
-            batch.set(doc(firestore, 'challan_items', item.id), this.enrichPayload(item));
+            batch.set(this.getDocRef('challan_items', item.id), this.enrichPayload(item), { merge: true });
           });
 
           // Calculate net stock changes per material to avoid duplicate calls to batch.update on same document
@@ -3526,10 +3477,10 @@ class DatabaseService {
           Object.entries(netStockDeltas).forEach(([matId, netChange]) => {
             if (netChange !== 0) {
               const enrichUpdate = this.enrichPayload({});
-              batch.update(doc(firestore, 'materials', matId), {
+              batch.set(this.getDocRef('materials', matId), {
                 current_stock: increment(netChange),
                 ...enrichUpdate
-              });
+              }, { merge: true });
             }
           });
 
@@ -3601,8 +3552,8 @@ class DatabaseService {
 
     if (this.isFirebaseInitialized) {
       try {
-        const docRef = doc(firestore, 'challans', challan.id);
-        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(challan)))
+        const docRef = this.getDocRef('challans', challan.id);
+        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(challan), { merge: true }))
           .catch(err => console.warn('Firestore err writing adjusted challan:', err));
       } catch (err) {
         console.warn('Firestore write failed:', err);
@@ -3849,8 +3800,8 @@ class DatabaseService {
     this.addAuditLog(currentUser.email, 'Manual Ledger Record Saved', `${newTx.type} recorded for master. Ref: ${newTx.ref_no}, Amount: ₹${newTx.amount}`);
 
     if (this.isFirebaseInitialized) {
-      const docRef = doc(firestore, 'ledger_transactions', newTx.id);
-      this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(newTx)))
+      const docRef = this.getDocRef('ledger_transactions', newTx.id);
+      this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(newTx), { merge: true }))
         .catch(err => console.warn('Firestore err writing manual transaction:', err));
     }
 
@@ -3870,7 +3821,7 @@ class DatabaseService {
       this.addAuditLog(currentUser.email, 'Manual Ledger Record Deleted', `Removed manual ${tx.type} transaction (${tx.ref_no})`);
 
       if (this.isFirebaseInitialized) {
-        this.performCloudWrite(() => deleteDoc(doc(firestore, 'ledger_transactions', txId)))
+        this.performCloudWrite(() => deleteDoc(this.getDocRef('ledger_transactions', txId)))
           .catch(err => console.warn('Firestore err deleting manual transaction:', err));
       }
 
@@ -3938,13 +3889,13 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, 'inward_entries', newEntry.id), this.enrichPayload(newEntry));
+        batch.set(this.getDocRef('inward_entries', newEntry.id), this.enrichPayload(newEntry), { merge: true });
         if (updatedMaterial) {
           const enrichUpdate = this.enrichPayload({});
-          batch.update(doc(firestore, 'materials', updatedMaterial.id), {
+          batch.set(this.getDocRef('materials', updatedMaterial.id), {
             current_stock: increment(newEntry.qty_received),
             ...enrichUpdate
-          });
+          }, { merge: true });
         }
         this.performCloudWrite(() => batch.commit())
           .catch(error => handleFirestoreError(error, OperationType.WRITE, `inward_entries/${newEntry.id}`));
@@ -4037,9 +3988,9 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, this.getCollectionName('master_advances'), newAdvance.id), this.enrichPayload(newAdvance));
-        batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), newLedgerEntry.id), this.enrichPayload(newLedgerEntry));
-        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        batch.set(this.getDocRef('master_advances', newAdvance.id), this.enrichPayload(newAdvance), { merge: true });
+        batch.set(this.getDocRef('master_advance_ledger', newLedgerEntry.id), this.enrichPayload(newLedgerEntry), { merge: true });
+        batch.set(this.getDocRef('audit_logs', auditRecord.id), this.enrichPayload(auditRecord), { merge: true });
         this.performCloudWrite(() => batch.commit()).catch(err => {
           console.warn("Direct cloud write deferred for advance:", err?.message || err);
         });
@@ -4105,9 +4056,9 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, this.getCollectionName('master_advances'), advance.id), this.enrichPayload(advance));
-        batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), newLedgerEntry.id), this.enrichPayload(newLedgerEntry));
-        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        batch.set(this.getDocRef('master_advances', advance.id), this.enrichPayload(advance), { merge: true });
+        batch.set(this.getDocRef('master_advance_ledger', newLedgerEntry.id), this.enrichPayload(newLedgerEntry), { merge: true });
+        batch.set(this.getDocRef('audit_logs', auditRecord.id), this.enrichPayload(auditRecord), { merge: true });
         this.performCloudWrite(() => batch.commit()).catch(err => {
           console.warn("Direct cloud write deferred for void advance:", err?.message || err);
         });
@@ -4165,11 +4116,11 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, this.getCollectionName('master_advances'), updatedAdvance.id), this.enrichPayload(updatedAdvance));
+        batch.set(this.getDocRef('master_advances', updatedAdvance.id), this.enrichPayload(updatedAdvance), { merge: true });
         if (ledgerIdx > -1) {
-          batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), ledger[ledgerIdx].id), this.enrichPayload(ledger[ledgerIdx]));
+          batch.set(this.getDocRef('master_advance_ledger', ledger[ledgerIdx].id), this.enrichPayload(ledger[ledgerIdx]), { merge: true });
         }
-        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        batch.set(this.getDocRef('audit_logs', auditRecord.id), this.enrichPayload(auditRecord), { merge: true });
         this.performCloudWrite(() => batch.commit()).catch(err => {
           console.warn("Direct cloud write deferred for edit advance:", err?.message || err);
         });
@@ -4315,7 +4266,7 @@ class DatabaseService {
     }
     for (const challanId of challanIds) {
       try {
-        const docRef = doc(firestore, 'challans', challanId);
+        const docRef = this.getDocRef('challans', challanId);
         const docSnap = await getDocFromServer(docRef);
         if (docSnap.exists()) {
           const data = docSnap.data();
@@ -4465,26 +4416,26 @@ class DatabaseService {
         const batch = writeBatch(firestore);
         
         // Write Invoice
-        batch.set(doc(firestore, this.getCollectionName('invoices'), newInvoice.id), this.enrichPayload(newInvoice));
+        batch.set(this.getDocRef('invoices', newInvoice.id), this.enrichPayload(newInvoice), { merge: true });
 
         // Write Linked entries
         linkedInvoiceChallans.forEach(bridge => {
           const idHash = `${bridge.invoice_id}_${bridge.challan_id}`;
-          batch.set(doc(firestore, this.getCollectionName('invoice_challans'), idHash), this.enrichPayload(bridge));
+          batch.set(this.getDocRef('invoice_challans', idHash), this.enrichPayload(bridge), { merge: true });
         });
 
         // Update Challans
         updatedChallans.forEach(ch => {
-          batch.set(doc(firestore, this.getCollectionName('challans'), ch.id), this.enrichPayload(ch));
+          batch.set(this.getDocRef('challans', ch.id), this.enrichPayload(ch), { merge: true });
         });
 
         // Write advance ledger entry if applicable
         if (advanceLedgerEntry) {
-          batch.set(doc(firestore, this.getCollectionName('master_advance_ledger'), advanceLedgerEntry.id), this.enrichPayload(advanceLedgerEntry));
+          batch.set(this.getDocRef('master_advance_ledger', advanceLedgerEntry.id), this.enrichPayload(advanceLedgerEntry), { merge: true });
         }
 
         // Write audit log
-        batch.set(doc(firestore, this.getCollectionName('audit_logs'), auditRecord.id), this.enrichPayload(auditRecord));
+        batch.set(this.getDocRef('audit_logs', auditRecord.id), this.enrichPayload(auditRecord), { merge: true });
 
         this.performCloudWrite(() => batch.commit()).catch(error => {
           console.warn(`Firestore invoice sync deferred: ${error?.message || error}`);
@@ -4595,7 +4546,7 @@ class DatabaseService {
         try {
           const batch = writeBatch(firestore);
           updatedChallans.forEach(ch => {
-            batch.set(doc(firestore, 'challans', ch.id), this.enrichPayload(ch));
+            batch.set(this.getDocRef('challans', ch.id), this.enrichPayload(ch), { merge: true });
           });
           this.performCloudWrite(() => batch.commit())
             .catch(err => console.warn('Error updating challan states on invoice edit:', err));
@@ -4614,8 +4565,8 @@ class DatabaseService {
 
     if (this.isFirebaseInitialized) {
       try {
-        const docRef = doc(firestore, 'invoices', invoiceId);
-        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(updatedInvoice)))
+        const docRef = this.getDocRef('invoices', invoiceId);
+        this.performCloudWrite(() => setDoc(docRef, this.enrichPayload(updatedInvoice), { merge: true }))
           .catch(err => console.warn('Error updating edited invoice in Firestore:', err));
       } catch (err) {
         console.warn('Error updating edited invoice in Firestore:', err);
@@ -4678,22 +4629,22 @@ class DatabaseService {
         try {
           const batch = writeBatch(firestore);
           // Delete invoice reference
-          batch.delete(doc(firestore, this.getCollectionName('invoices'), invoiceId));
+          batch.delete(this.getDocRef('invoices', invoiceId));
 
           // Delete bridge connections
           linkedChallans.forEach(bridge => {
             const idHash = `${bridge.invoice_id}_${bridge.challan_id}`;
-            batch.delete(doc(firestore, this.getCollectionName('invoice_challans'), idHash));
+            batch.delete(this.getDocRef('invoice_challans', idHash));
           });
 
           // Delete associated advance setoffs from cloud ledger
           linkedAdvanceLedgers.forEach(entry => {
-            batch.delete(doc(firestore, this.getCollectionName('master_advance_ledger'), entry.id));
+            batch.delete(this.getDocRef('master_advance_ledger', entry.id));
           });
 
           // Revert challan states
           updatedChallans.forEach(ch => {
-            batch.set(doc(firestore, this.getCollectionName('challans'), ch.id), this.enrichPayload(ch));
+            batch.set(this.getDocRef('challans', ch.id), this.enrichPayload(ch), { merge: true });
           });
 
           this.performCloudWrite(() => batch.commit())
@@ -4740,7 +4691,7 @@ class DatabaseService {
       this.addAuditLog(currentUser.email, 'Invoice State Modified', `Invoice ${list[idx].invoice_no} status changed to ${status}`);
 
       if (this.isFirebaseInitialized) {
-        this.performCloudWrite(() => setDoc(doc(firestore, 'invoices', invoiceId), this.enrichPayload(list[idx])))
+        this.performCloudWrite(() => setDoc(this.getDocRef('invoices', invoiceId), this.enrichPayload(list[idx]), { merge: true }))
           .catch(error => handleFirestoreError(error, OperationType.UPDATE, `invoices/${invoiceId}`));
       }
     }
@@ -4764,7 +4715,7 @@ class DatabaseService {
     this.save('audit_logs', logs.slice(0, 1000)); // Maintain last 1000 logs in local cache
 
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'audit_logs', record.id), this.enrichPayload(record)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('audit_logs', record.id), this.enrichPayload(record), { merge: true }))
         .catch(err => console.warn('Cloud audit log skip:', err));
     }
   }
@@ -4788,7 +4739,7 @@ class DatabaseService {
     this.save('rate_history', history);
 
     if (this.isFirebaseInitialized) {
-      this.performCloudWrite(() => setDoc(doc(firestore, 'rate_history', record.id), this.enrichPayload(record)))
+      this.performCloudWrite(() => setDoc(this.getDocRef('rate_history', record.id), this.enrichPayload(record), { merge: true }))
         .catch(err => console.warn('Cloud rate history log skip:', err));
     }
   }
@@ -4839,13 +4790,13 @@ class DatabaseService {
     if (this.isFirebaseInitialized) {
       try {
         const batch = writeBatch(firestore);
-        batch.set(doc(firestore, 'stock_corrections', correction.id), this.enrichPayload(correction));
+        batch.set(this.getDocRef('stock_corrections', correction.id), this.enrichPayload(correction), { merge: true });
         
         const enrichUpdate = this.enrichPayload({});
-        batch.update(doc(firestore, 'materials', materialId), {
+        batch.set(this.getDocRef('materials', materialId), {
           current_stock: afterStock,
           ...enrichUpdate
-        });
+        }, { merge: true });
 
         this.performCloudWrite(() => batch.commit())
           .catch(error => handleFirestoreError(error, OperationType.WRITE, `stock_corrections/${correction.id}`));
@@ -5045,12 +4996,12 @@ class DatabaseService {
         
         // Add all masters to batch
         updatedMasters.forEach(master => {
-          batch.set(doc(firestore, 'masters', master.id), this.enrichPayload(master));
+          batch.set(this.getDocRef('masters', master.id), this.enrichPayload(master), { merge: true });
         });
 
         // Add all materials to batch
         updatedMaterials.forEach(material => {
-          batch.set(doc(firestore, 'materials', material.id), this.enrichPayload(material));
+          batch.set(this.getDocRef('materials', material.id), this.enrichPayload(material), { merge: true });
         });
 
         await this.performCloudWrite(() => batch.commit());
