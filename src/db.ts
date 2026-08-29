@@ -567,6 +567,13 @@ class DatabaseService {
               ? `${item.invoice_id}_${item.challan_id}`
               : (item.id || item.uid || generateUUID());
             batch.set(this.getDocRef(collName, docId), this.enrichPayload(item), { merge: true });
+            if (collName === 'challans' && Array.isArray(item.items)) {
+              item.items.forEach((it: any) => {
+                if (it && it.id) {
+                  batch.set(this.getDocRef('challan_items', it.id), this.enrichPayload(it), { merge: true });
+                }
+              });
+            }
           });
           await this.performCloudWrite(() => batch.commit());
           await new Promise(r => setTimeout(r, 100));
@@ -1410,12 +1417,11 @@ class DatabaseService {
 
           // Remote Firestore records is canonical cloud source of truth
           const localRecords = this.load<any[]>(collName, []);
-          const myDevId = this.getDeviceId();
           
-          // Only preserve genuinely pending local items created on THIS device that haven't been confirmed in the cloud yet
+          // Preserve all local records that haven't appeared in the remote collection yet
           const pendingLocalRecords = localRecords.filter(item => {
             const k = getKey(item);
-            return k && !remoteKeySet.has(k) && (item._locallyPending === true || (item.deviceId && item.deviceId === myDevId));
+            return k && !remoteKeySet.has(k);
           });
 
           // Construct merged map: canonical remote records + genuine local pending writes
@@ -1447,9 +1453,7 @@ class DatabaseService {
 
           // If there are genuine un-uploaded pending records, schedule auto upload
           if (pendingLocalRecords.length > 0) {
-            if (collName === 'challans' || collName === 'inward_entries' || collName === 'invoices' || collName === 'master_advances') {
-              this.scheduleAutoUpload(collName, pendingLocalRecords);
-            }
+            this.scheduleAutoUpload(collName, pendingLocalRecords);
           }
 
           const mergedRecords = Array.from(mergedMap.values());
@@ -1687,10 +1691,9 @@ class DatabaseService {
 
         // Load local records
         const localRecords = this.load<any[]>(collName, []);
-        const myDevId = this.getDeviceId();
         const pendingLocalRecords = localRecords.filter(item => {
           const key = getKey(collName, item);
-          return key && !remoteDocMap.has(key) && (item._locallyPending === true || (item.deviceId && item.deviceId === myDevId));
+          return key && !remoteDocMap.has(key);
         });
 
         const mergedMap = new Map<string, any>();
@@ -1716,10 +1719,10 @@ class DatabaseService {
           }
         });
 
-        // Push ONLY genuine locally pending records to Firestore
+        // Push ALL un-synced local records to Firestore
         if (pendingLocalRecords.length > 0 && !this.isQuotaExceeded) {
           try {
-            const chunkSize = 200;
+            const chunkSize = 100;
             for (let i = 0; i < pendingLocalRecords.length; i += chunkSize) {
               const chunk = pendingLocalRecords.slice(i, i + chunkSize);
               const batch = writeBatch(firestore);
@@ -1729,6 +1732,13 @@ class DatabaseService {
                   const docRef = this.getDocRef(collName, docId);
                   batch.set(docRef, this.enrichPayload(item), { merge: true });
                   uploadedCount++;
+                  if (collName === 'challans' && Array.isArray(item.items)) {
+                    item.items.forEach((it: any) => {
+                      if (it && it.id) {
+                        batch.set(this.getDocRef('challan_items', it.id), this.enrichPayload(it), { merge: true });
+                      }
+                    });
+                  }
                 }
               });
               await this.performCloudWrite(() => batch.commit());
