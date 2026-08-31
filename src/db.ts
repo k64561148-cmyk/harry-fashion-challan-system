@@ -514,16 +514,32 @@ class DatabaseService {
   private isWriteThrottled: boolean = false;
   private isQuotaExceeded: boolean = (() => {
     const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
-    return ts > 0 && Date.now() - ts < 30 * 60 * 1000;
+    return ts > 0 && Date.now() - ts < 60 * 60 * 1000;
   })();
   private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
 
+  private get isQuotaExceededActive(): boolean {
+    const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
+    if (ts > 0 && Date.now() - ts < 60 * 60 * 1000) {
+      this.isQuotaExceeded = true;
+      this.quotaExceededTimestamp = ts;
+      return true;
+    }
+    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp >= 60 * 60 * 1000) {
+      this.isQuotaExceeded = false;
+      this.quotaExceededTimestamp = 0;
+      safeSetLocalStorage('hf_quota_exceeded_ts', '');
+      return false;
+    }
+    return this.isQuotaExceeded;
+  }
+
   private async scheduleAutoUpload(collName: string, missingRecords: any[]) {
     if (!this.isFirebaseInitialized || !auth.currentUser) return;
-    if (this.isQuotaExceeded) return;
+    if (this.isQuotaExceededActive) return;
     if (!missingRecords || missingRecords.length === 0) return;
 
     // Filter out heavy logs from aggressive background spam
@@ -551,15 +567,15 @@ class DatabaseService {
   }
 
   private async processAutoUploadQueue() {
-    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceeded) return;
+    if (this.isUploadingPending || !this.isFirebaseInitialized || !auth.currentUser || this.isQuotaExceededActive) return;
     this.isUploadingPending = true;
 
     try {
       for (const [collName, records] of this.autoUploadQueue.entries()) {
-        if (records.length === 0) continue;
+        if (records.length === 0 || this.isQuotaExceededActive) continue;
 
         const batchLimit = 20;
-        while (records.length > 0 && !this.isQuotaExceeded) {
+        while (records.length > 0 && !this.isQuotaExceededActive) {
           const chunk = records.splice(0, batchLimit);
           const batch = writeBatch(firestore);
           chunk.forEach(item => {
@@ -575,7 +591,11 @@ class DatabaseService {
               });
             }
           });
-          await this.performCloudWrite(() => batch.commit());
+          const writeRes = await this.performCloudWrite(() => batch.commit());
+          if (writeRes === null && this.isQuotaExceededActive) {
+            this.autoUploadQueue.clear();
+            break;
+          }
           await new Promise(r => setTimeout(r, 100));
         }
       }
@@ -588,13 +608,8 @@ class DatabaseService {
 
   private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T | null> {
     const execute = async (): Promise<T | null> => {
-      if (this.isQuotaExceeded) {
-        if (Date.now() - this.quotaExceededTimestamp < 30 * 60 * 1000) {
-          return null;
-        } else {
-          this.isQuotaExceeded = false;
-          safeSetLocalStorage('hf_quota_exceeded_ts', '');
-        }
+      if (this.isQuotaExceededActive) {
+        return null;
       }
 
       if (this.isWriteThrottled) {
@@ -628,7 +643,7 @@ class DatabaseService {
           this.quotaExceededTimestamp = Date.now();
           safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
           this.autoUploadQueue.clear();
-          console.warn("[Firestore] Daily write quota reached. Operating seamlessly in offline local mode.");
+          console.warn("[Firestore] Daily write quota active. Operating seamlessly in offline local mode.");
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
           return null;
@@ -1447,12 +1462,12 @@ class DatabaseService {
           });
 
           // Auto-seed cloud if remote collection is empty but local has seed data
-          if (remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
+          if (!this.isQuotaExceededActive && remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
             this.backupLocalCollectionToCloud(collName);
           }
 
           // If there are genuine un-uploaded pending records, schedule auto upload
-          if (pendingLocalRecords.length > 0) {
+          if (!this.isQuotaExceededActive && pendingLocalRecords.length > 0) {
             this.scheduleAutoUpload(collName, pendingLocalRecords);
           }
 
@@ -1502,9 +1517,21 @@ class DatabaseService {
           window.dispatchEvent(new Event('db_sync'));
         }, (error: any) => {
           const errMsg = error?.message || String(error);
+          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
           const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
           
-          if (isPermissionError) {
+          if (isQuota) {
+            this.isQuotaExceeded = true;
+            this.quotaExceededTimestamp = Date.now();
+            safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
+            this.autoUploadQueue.clear();
+            if (collName in this.cloudHealth.collectionStatus) {
+              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+            }
+            this.cloudHealth.syncFailed = false;
+            this.cloudHealth.lastError = null;
+            window.dispatchEvent(new Event('db_sync'));
+          } else if (isPermissionError) {
             if (collName in this.cloudHealth.collectionStatus) {
               this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
             }
@@ -1527,7 +1554,7 @@ class DatabaseService {
 
   // Helper to sync local database to Cloud when initially connected
   private async backupLocalCollectionToCloud(collName: string) {
-    if (this.isQuotaExceeded) return;
+    if (this.isQuotaExceededActive) return;
     const localData = this.load<any[]>(collName, []);
     if (localData.length === 0) return;
 
@@ -1548,6 +1575,14 @@ class DatabaseService {
 
   // Complete Two-Way Cloud Force Synchronizer (Push all local collections + Fetch remote)
   public async syncAllDataWithCloud(): Promise<{ uploaded: number; total: number; message: string }> {
+    if (this.isQuotaExceededActive) {
+      return {
+        uploaded: 0,
+        total: 0,
+        message: 'Daily write quota limit active. All records are safely preserved in offline mode.'
+      };
+    }
+
     if (!auth.currentUser) {
       await this.attemptBackgroundAuth();
     }
@@ -1574,6 +1609,7 @@ class DatabaseService {
     let totalRecords = 0;
 
     for (const collName of syncCollections) {
+      if (this.isQuotaExceededActive) break;
       const localRecords = this.load<any[]>(collName, []);
       totalRecords += localRecords.length;
 
@@ -1581,6 +1617,7 @@ class DatabaseService {
         try {
           const chunkSize = 50;
           for (let i = 0; i < localRecords.length; i += chunkSize) {
+            if (this.isQuotaExceededActive) break;
             const chunk = localRecords.slice(i, i + chunkSize);
             const batch = writeBatch(firestore);
             chunk.forEach(item => {
@@ -1590,7 +1627,10 @@ class DatabaseService {
               const docRef = this.getDocRef(collName, docId);
               batch.set(docRef, this.enrichPayload(item), { merge: true });
             });
-            await this.performCloudWrite(() => batch.commit());
+            const writeRes = await this.performCloudWrite(() => batch.commit());
+            if (writeRes === null && this.isQuotaExceededActive) {
+              break;
+            }
             totalUploaded += chunk.length;
             // Short throttle delay between batches to protect write stream buffers
             await new Promise(r => setTimeout(r, 60));
@@ -1627,6 +1667,7 @@ class DatabaseService {
       // 1. Clear any stuck quota or offline flags
       this.isQuotaExceeded = false;
       this.quotaExceededTimestamp = 0;
+      safeRemoveLocalStorage('hf_quota_exceeded_ts');
       safeRemoveLocalStorage('hf_quota_exceeded');
       safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
 
@@ -1720,10 +1761,11 @@ class DatabaseService {
         });
 
         // Push ALL un-synced local records to Firestore
-        if (pendingLocalRecords.length > 0 && !this.isQuotaExceeded) {
+        if (pendingLocalRecords.length > 0 && !this.isQuotaExceededActive) {
           try {
             const chunkSize = 100;
             for (let i = 0; i < pendingLocalRecords.length; i += chunkSize) {
+              if (this.isQuotaExceededActive) break;
               const chunk = pendingLocalRecords.slice(i, i + chunkSize);
               const batch = writeBatch(firestore);
               chunk.forEach((item) => {
@@ -1741,7 +1783,10 @@ class DatabaseService {
                   }
                 }
               });
-              await this.performCloudWrite(() => batch.commit());
+              const res = await this.performCloudWrite(() => batch.commit());
+              if (res === null && this.isQuotaExceededActive) {
+                break;
+              }
             }
           } catch (uploadErr: any) {
             console.warn(`[Manual Full Sync] Push upload on ${collName} deferred:`, uploadErr?.message || uploadErr);
