@@ -466,6 +466,7 @@ export const IssueChallanView: React.FC = () => {
   };
 
   const executeIssueChallan = async () => {
+    if (loading) return;
     setShowIssueConfirm(false);
     setErrorMessage('');
     try {
@@ -1429,12 +1430,13 @@ export const IssueChallanView: React.FC = () => {
               <button
                 type="button"
                 autoFocus
+                disabled={loading}
                 onClick={() => {
                   executeIssueChallan();
                 }}
-                className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-xs font-bold cursor-pointer shadow-xs"
+                className="px-4 py-2 bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold cursor-pointer shadow-xs"
               >
-                Confirm & Issue Voucher
+                {loading ? 'Processing...' : 'Confirm & Issue Voucher'}
               </button>
             </div>
           </div>

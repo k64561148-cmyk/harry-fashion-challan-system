@@ -590,6 +590,7 @@ export const BillingView: React.FC = () => {
 
   // Create invoice and finalize
   const handleGenerateInvoice = async (status: 'draft' | 'finalised') => {
+    if (loading) return;
     try {
       setErrorMsg('');
       setLoading(true);
@@ -2903,13 +2904,14 @@ export const BillingView: React.FC = () => {
               <button 
                 type="button"
                 autoFocus
+                disabled={loading}
                 onClick={() => {
                   setShowInvoiceFinalizeConfirm(false);
                   handleGenerateInvoice('finalised');
                 }}
-                className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
+                className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
               >
-                Yes, Finalise
+                {loading ? 'Finalising...' : 'Yes, Finalise'}
               </button>
             </div>
           </div>

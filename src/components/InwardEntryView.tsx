@@ -101,6 +101,7 @@ export const InwardEntryView: React.FC = () => {
 
   const handleSaveInward = (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setErrorMsg('');
     setSuccessMsg('');
 

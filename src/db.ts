@@ -514,7 +514,7 @@ class DatabaseService {
   private isWriteThrottled: boolean = false;
   private isQuotaExceeded: boolean = (() => {
     const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
-    return ts > 0 && Date.now() - ts < 60 * 60 * 1000;
+    return ts > 0 && Date.now() - ts < 24 * 60 * 60 * 1000;
   })();
   private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
   private autoUploadQueue: Map<string, any[]> = new Map();
@@ -523,12 +523,12 @@ class DatabaseService {
 
   private get isQuotaExceededActive(): boolean {
     const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
-    if (ts > 0 && Date.now() - ts < 60 * 60 * 1000) {
+    if (ts > 0 && Date.now() - ts < 24 * 60 * 60 * 1000) {
       this.isQuotaExceeded = true;
       this.quotaExceededTimestamp = ts;
       return true;
     }
-    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp >= 60 * 60 * 1000) {
+    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp >= 24 * 60 * 60 * 1000) {
       this.isQuotaExceeded = false;
       this.quotaExceededTimestamp = 0;
       safeSetLocalStorage('hf_quota_exceeded_ts', '');
@@ -643,6 +643,10 @@ class DatabaseService {
           this.quotaExceededTimestamp = Date.now();
           safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
           this.autoUploadQueue.clear();
+          if (this.uploadDebounceTimer) {
+            clearTimeout(this.uploadDebounceTimer);
+            this.uploadDebounceTimer = null;
+          }
           console.warn("[Firestore] Daily write quota active. Operating seamlessly in offline local mode.");
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
@@ -775,8 +779,7 @@ class DatabaseService {
     this.activeSyncListeners.clear();
     this.resetCollectionStatuses();
 
-    const currentUser = this.getCurrentUser();
-    this.setupCloudSyncListeners(currentUser.role);
+    this.setupCloudSyncListeners();
   }
 
   private getStorageKey(key: string): string {
@@ -987,10 +990,10 @@ class DatabaseService {
   }
 
   private initDatabase() {
-    // 0. Auto-clean storage and migrate legacy sandbox data to canonical live storage
+    // 0. Auto-clean storage and migrate all legacy sandbox / workstation keys to canonical hf_ unified storage
     this.cleanupLocalStorage();
 
-    const sandboxKeys = [
+    const unifiedCollectionKeys = [
       'masters',
       'materials',
       'master_rate_overrides',
@@ -1001,39 +1004,56 @@ class DatabaseService {
       'invoice_challans',
       'rate_history',
       'stock_corrections',
+      'master_advances',
+      'master_advance_ledger',
       'audit_logs',
       'ledger_transactions'
     ];
-    sandboxKeys.forEach((key) => {
-      const sbKey = `sandbox_kunal_${key}`;
-      const liveKey = `hf_${key}`;
-      const sbDataStr = safeGetLocalStorage(sbKey);
-      if (sbDataStr) {
-        try {
-          const sbItems = JSON.parse(sbDataStr);
-          if (Array.isArray(sbItems) && sbItems.length > 0) {
-            const liveDataStr = safeGetLocalStorage(liveKey);
-            const liveItems = liveDataStr ? JSON.parse(liveDataStr) : [];
-            if (!Array.isArray(liveItems) || liveItems.length === 0) {
-              this.save(key, sbItems);
-            } else {
-              const map = new Map<string, any>();
-              liveItems.forEach((it: any) => {
-                const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null);
-                if (id) map.set(id, it);
-              });
-              sbItems.forEach((it: any) => {
-                const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null);
-                if (id) map.set(id, it);
-              });
-              this.save(key, Array.from(map.values()));
+
+    // Scan all possible legacy local storage variations (e.g. sandbox_kunal_..., sandbox_..., firestore_..., etc.)
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const foundKeys: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k) foundKeys.push(k);
+        }
+
+        unifiedCollectionKeys.forEach((baseKey) => {
+          const matchingKeys = foundKeys.filter(k => 
+            k === `sandbox_kunal_${baseKey}` || 
+            k === `sandbox_${baseKey}` || 
+            k === `firestore_${baseKey}` ||
+            (k.endsWith(`_${baseKey}`) && !k.startsWith('hf_'))
+          );
+
+          matchingKeys.forEach((legacyKey) => {
+            const legacyDataStr = safeGetLocalStorage(legacyKey);
+            if (legacyDataStr) {
+              try {
+                const legacyItems = JSON.parse(legacyDataStr);
+                if (Array.isArray(legacyItems) && legacyItems.length > 0) {
+                  const currentItems = this.load<any[]>(baseKey, []);
+                  const map = new Map<string, any>();
+                  currentItems.forEach((it: any) => {
+                    const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null) || (it.challan_no ? `ch_${it.challan_no}` : null);
+                    if (id) map.set(id, it);
+                  });
+                  legacyItems.forEach((it: any) => {
+                    const id = it.id || (it.invoice_id && it.challan_id ? `${it.invoice_id}_${it.challan_id}` : null) || (it.challan_no ? `ch_${it.challan_no}` : null);
+                    if (id && !map.has(id)) {
+                      map.set(id, it);
+                    }
+                  });
+                  this.save(baseKey, Array.from(map.values()));
+                }
+              } catch (_) {}
+              safeRemoveLocalStorage(legacyKey);
             }
-          }
-        } catch (_) {}
-        // Immediately remove migrated sandbox key to reclaim storage quota
-        safeRemoveLocalStorage(sbKey);
+          });
+        });
       }
-    });
+    } catch (_) {}
 
     // 1. Initialize masters
     const masters = this.load<Master[]>('masters', []);
@@ -1235,6 +1255,7 @@ class DatabaseService {
 
         // Immediately start multi-collection real-time synchronization so all clients see live data
         this.setupCloudSyncListeners();
+        this.performAutomaticCloudRecovery().catch(() => {});
 
         // 1. Establish real-time listener for current user's security profile
         const profileRef = this.getDocRef('profiles', user.uid);
@@ -1280,7 +1301,7 @@ class DatabaseService {
               canCreateBackdatedChallan: canBackdate
             };
 
-            if (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate) {
+            if (!this.isQuotaExceededActive && (data.role !== roleToUse || data.canCreateBackdatedChallan !== canBackdate)) {
               this.performCloudWrite(() => setDoc(profileRef, this.enrichPayload(prof))).catch(() => {});
             }
 
@@ -1339,7 +1360,7 @@ class DatabaseService {
             this.save('current_user', newProfile);
             window.dispatchEvent(new Event('db_sync'));
 
-            if (!user.isAnonymous) {
+            if (!user.isAnonymous && !this.isQuotaExceededActive) {
               try {
                 const enrichedProfile = this.enrichPayload(newProfile);
                 this.performCloudWrite(() => setDoc(profileRef, enrichedProfile)).catch(() => {});
@@ -1369,9 +1390,8 @@ class DatabaseService {
     });
   }
 
-  // Real-time multi-collection snap listeners (Zero cost for local-first, infinite sync)
-  // Real-time multi-collection snap listeners (Zero cost for local-first, infinite sync)
-  private setupCloudSyncListeners(role?: UserRole) {
+  // Real-time multi-collection snap listeners (Zero cost for local-first, infinite sync for ALL roles)
+  private setupCloudSyncListeners(_role?: UserRole) {
     const syncCollections = [
       'profiles',
       'masters',
@@ -1391,165 +1411,184 @@ class DatabaseService {
     ];
 
     syncCollections.forEach((collName) => {
-      try {
-        const resolvedCollName = this.getCollectionName(collName);
+      this.syncFromFirebase(collName);
+    });
+  }
 
-        // Clean up any duplicate listener for this collection
-        if (this.activeSyncListeners.has(collName)) {
+  // Unified single collection snapshot listener with automatic 3s recovery on error
+  public syncFromFirebase(collName: string) {
+    try {
+      const resolvedCollName = this.getCollectionName(collName);
+
+      // Clean up any duplicate existing listener for this collection
+      if (this.activeSyncListeners.has(collName)) {
+        try {
           this.activeSyncListeners.get(collName)!();
-          this.activeSyncListeners.delete(collName);
+        } catch (_) {}
+        this.activeSyncListeners.delete(collName);
+      }
+
+      const unsubscribe = onSnapshot(collection(firestore, resolvedCollName), { includeMetadataChanges: false }, async (snapshot) => {
+        this.cloudHealth.lastRead = new Date().toISOString();
+        safeSetLocalStorage('hf_health_last_read', this.cloudHealth.lastRead);
+        this.cloudHealth.syncFailed = false;
+
+        if (collName in this.cloudHealth.collectionStatus) {
+          this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
         }
 
-        const unsubscribe = onSnapshot(collection(firestore, resolvedCollName), { includeMetadataChanges: false }, async (snapshot) => {
-          this.cloudHealth.lastRead = new Date().toISOString();
-          safeSetLocalStorage('hf_health_last_read', this.cloudHealth.lastRead);
-          this.cloudHealth.syncFailed = false;
-
-          if (collName in this.cloudHealth.collectionStatus) {
-            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+        const remoteRecords: any[] = [];
+        const remoteKeySet = new Set<string>();
+        const getKey = (item: any) => {
+          if (!item) return '';
+          if (collName === 'invoice_challans') {
+            return `${item.invoice_id}_${item.challan_id}`;
           }
+          return item.id || item.uid || '';
+        };
 
-          const remoteRecords: any[] = [];
-          const remoteKeySet = new Set<string>();
-          const getKey = (item: any) => {
-            if (!item) return '';
-            if (collName === 'invoice_challans') {
-              return `${item.invoice_id}_${item.challan_id}`;
-            }
-            return item.id || item.uid || '';
-          };
+        snapshot.forEach((docSnap) => {
+          const rawData = docSnap.data();
+          const data = { id: docSnap.id, ...rawData };
+          if (collName === 'challans' && this.isDummyRestoredChallan(data)) {
+            return;
+          }
+          remoteRecords.push(data);
+          const key = getKey(data) || docSnap.id;
+          if (key) remoteKeySet.add(key);
+        });
 
-          snapshot.forEach((docSnap) => {
-            const rawData = docSnap.data();
-            const data = { id: docSnap.id, ...rawData };
-            if (collName === 'challans' && this.isDummyRestoredChallan(data)) {
-              return;
-            }
-            remoteRecords.push(data);
-            const key = getKey(data) || docSnap.id;
-            if (key) remoteKeySet.add(key);
-          });
+        // Remote Firestore records is canonical cloud source of truth
+        const localRecords = this.load<any[]>(collName, []);
+        
+        // Preserve all local records that haven't appeared in the remote collection yet
+        const pendingLocalRecords = localRecords.filter(item => {
+          const k = getKey(item);
+          return k && !remoteKeySet.has(k);
+        });
 
-          // Remote Firestore records is canonical cloud source of truth
-          const localRecords = this.load<any[]>(collName, []);
-          
-          // Preserve all local records that haven't appeared in the remote collection yet
-          const pendingLocalRecords = localRecords.filter(item => {
-            const k = getKey(item);
-            return k && !remoteKeySet.has(k);
-          });
-
-          // Construct merged map: canonical remote records + genuine local pending writes
-          const mergedMap = new Map<string, any>();
-          remoteRecords.forEach(item => {
-            const key = getKey(item);
-            if (key) {
-              // If local record has items and remote does not, keep items array
-              const localMatch = localRecords.find(lr => getKey(lr) === key);
-              if (collName === 'challans' && localMatch && localMatch.items && (!item.items || item.items.length === 0)) {
-                mergedMap.set(key, { ...item, items: localMatch.items });
-              } else {
-                mergedMap.set(key, item);
-              }
-            }
-          });
-
-          pendingLocalRecords.forEach(item => {
-            const key = getKey(item);
-            if (key && !mergedMap.has(key)) {
+        // Construct merged map: canonical remote records + genuine local pending writes
+        const mergedMap = new Map<string, any>();
+        remoteRecords.forEach(item => {
+          const key = getKey(item);
+          if (key) {
+            // If local record has items and remote does not, keep items array
+            const localMatch = localRecords.find(lr => getKey(lr) === key);
+            if (collName === 'challans' && localMatch && localMatch.items && (!item.items || item.items.length === 0)) {
+              mergedMap.set(key, { ...item, items: localMatch.items });
+            } else {
               mergedMap.set(key, item);
-            }
-          });
-
-          // Auto-seed cloud if remote collection is empty but local has seed data
-          if (!this.isQuotaExceededActive && remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
-            this.backupLocalCollectionToCloud(collName);
-          }
-
-          // If there are genuine un-uploaded pending records, schedule auto upload
-          if (!this.isQuotaExceededActive && pendingLocalRecords.length > 0) {
-            this.scheduleAutoUpload(collName, pendingLocalRecords);
-          }
-
-          const mergedRecords = Array.from(mergedMap.values());
-
-          // If challans synced, extract embedded items into challan_items so item-level queries are always 100% complete
-          if (collName === 'challans') {
-            const localChallanItems = this.load<ChallanItem[]>('challan_items', []);
-            const itemMap = new Map<string, ChallanItem>();
-            localChallanItems.forEach(it => { if (it.id) itemMap.set(it.id, it); });
-            let itemsAdded = false;
-            mergedRecords.forEach(c => {
-              if (Array.isArray(c.items)) {
-                c.items.forEach((it: any) => {
-                  if (it && it.id && !itemMap.has(it.id)) {
-                    itemMap.set(it.id, {
-                      id: it.id,
-                      challan_id: it.challan_id || it.challanId || c.id,
-                      material_id: it.material_id || it.materialId,
-                      qty: Number(it.qty) || 0,
-                      rate: Number(it.rate) || 0,
-                      amount: Number(it.amount) !== undefined && !isNaN(Number(it.amount)) ? Number(it.amount) : ((Number(it.qty) || 0) * (Number(it.rate) || 0)),
-                      created_at: it.created_at || it.createdAt || c.created_at || new Date().toISOString()
-                    });
-                    itemsAdded = true;
-                  }
-                });
-              }
-            });
-            if (itemsAdded) {
-              this.save('challan_items', Array.from(itemMap.values()));
-            }
-          }
-
-          // Re-order by date/createdAt desc if applicable
-          if (collName === 'audit_logs' || collName === 'rate_history') {
-            mergedRecords.sort((a, b) => new Date(b.created_at || b.createdAt || 0).getTime() - new Date(a.created_at || a.createdAt || 0).getTime());
-          } else if (collName === 'challans') {
-            mergedRecords.sort((a, b) => new Date(b.issued_date || b.created_at || 0).getTime() - new Date(a.issued_date || a.created_at || 0).getTime());
-          }
-
-          this.save(collName, mergedRecords);
-          if (collName === 'challans') {
-            this.sanitizeChallanItems();
-          }
-          // Trigger customized global event so UI knows data synced
-          window.dispatchEvent(new Event('db_sync'));
-        }, (error: any) => {
-          const errMsg = error?.message || String(error);
-          const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
-          const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
-          
-          if (isQuota) {
-            this.isQuotaExceeded = true;
-            this.quotaExceededTimestamp = Date.now();
-            safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
-            this.autoUploadQueue.clear();
-            if (collName in this.cloudHealth.collectionStatus) {
-              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
-            }
-            this.cloudHealth.syncFailed = false;
-            this.cloudHealth.lastError = null;
-            window.dispatchEvent(new Event('db_sync'));
-          } else if (isPermissionError) {
-            if (collName in this.cloudHealth.collectionStatus) {
-              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
-            }
-            this.cloudHealth.syncFailed = true;
-            window.dispatchEvent(new Event('db_sync'));
-          } else {
-            if (collName in this.cloudHealth.collectionStatus) {
-              this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
             }
           }
         });
 
-        this.activeSyncListeners.set(collName, unsubscribe);
-        this.activeListeners.push(unsubscribe);
-      } catch (err) {
-        console.warn(`Could not attach snapshot listener on ${collName}:`, err);
-      }
-    });
+        pendingLocalRecords.forEach(item => {
+          const key = getKey(item);
+          if (key && !mergedMap.has(key)) {
+            mergedMap.set(key, item);
+          }
+        });
+
+        // Auto-seed cloud if remote collection is empty but local has seed data
+        if (!this.isQuotaExceededActive && remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
+          this.backupLocalCollectionToCloud(collName);
+        }
+
+        // If there are genuine un-uploaded pending records, schedule auto upload
+        if (!this.isQuotaExceededActive && pendingLocalRecords.length > 0) {
+          this.scheduleAutoUpload(collName, pendingLocalRecords);
+        }
+
+        const mergedRecords = Array.from(mergedMap.values());
+
+        // If challans synced, extract embedded items into challan_items so item-level queries are always 100% complete
+        if (collName === 'challans') {
+          const localChallanItems = this.load<ChallanItem[]>('challan_items', []);
+          const itemMap = new Map<string, ChallanItem>();
+          localChallanItems.forEach(it => { if (it.id) itemMap.set(it.id, it); });
+          let itemsAdded = false;
+          mergedRecords.forEach(c => {
+            if (Array.isArray(c.items)) {
+              c.items.forEach((it: any) => {
+                if (it && it.id && !itemMap.has(it.id)) {
+                  itemMap.set(it.id, {
+                    id: it.id,
+                    challan_id: it.challan_id || it.challanId || c.id,
+                    material_id: it.material_id || it.materialId,
+                    qty: Number(it.qty) || 0,
+                    rate: Number(it.rate) || 0,
+                    amount: Number(it.amount) !== undefined && !isNaN(Number(it.amount)) ? Number(it.amount) : ((Number(it.qty) || 0) * (Number(it.rate) || 0)),
+                    created_at: it.created_at || it.createdAt || c.created_at || new Date().toISOString()
+                  });
+                  itemsAdded = true;
+                }
+              });
+            }
+          });
+          if (itemsAdded) {
+            this.save('challan_items', Array.from(itemMap.values()));
+          }
+        }
+
+        // Re-order by date/createdAt desc if applicable
+        if (collName === 'audit_logs' || collName === 'rate_history') {
+          mergedRecords.sort((a, b) => new Date(b.created_at || b.createdAt || 0).getTime() - new Date(a.created_at || a.createdAt || 0).getTime());
+        } else if (collName === 'challans') {
+          mergedRecords.sort((a, b) => new Date(b.issued_date || b.created_at || 0).getTime() - new Date(a.issued_date || a.created_at || 0).getTime());
+        }
+
+        this.save(collName, mergedRecords);
+        if (collName === 'challans') {
+          this.sanitizeChallanItems();
+        }
+        // Trigger customized global event so UI knows data synced
+        window.dispatchEvent(new Event('db_sync'));
+      }, (error: any) => {
+        const errMsg = error?.message || String(error);
+        const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
+        const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
+        
+        if (isQuota) {
+          this.isQuotaExceeded = true;
+          this.quotaExceededTimestamp = Date.now();
+          safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
+          this.autoUploadQueue.clear();
+          if (collName in this.cloudHealth.collectionStatus) {
+            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+          }
+          this.cloudHealth.syncFailed = false;
+          this.cloudHealth.lastError = null;
+          window.dispatchEvent(new Event('db_sync'));
+        } else if (isPermissionError) {
+          if (collName in this.cloudHealth.collectionStatus) {
+            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
+          }
+          this.cloudHealth.syncFailed = true;
+          window.dispatchEvent(new Event('db_sync'));
+        } else {
+          if (collName in this.cloudHealth.collectionStatus) {
+            this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
+          }
+        }
+
+        // Automatic retry after 3 seconds for non-quota errors / transient network drops
+        if (!isQuota) {
+          setTimeout(() => {
+            console.log(`Auto-retrying listener for collection: ${collName}`);
+            this.syncFromFirebase(collName);
+          }, 3000);
+        }
+      });
+
+      this.activeSyncListeners.set(collName, unsubscribe);
+      this.activeListeners.push(unsubscribe);
+    } catch (err) {
+      console.warn(`Could not attach snapshot listener on ${collName}:`, err);
+      // Auto-retry in 3 seconds
+      setTimeout(() => {
+        this.syncFromFirebase(collName);
+      }, 3000);
+    }
   }
 
   // Helper to sync local database to Cloud when initially connected
@@ -1570,6 +1609,73 @@ class DatabaseService {
       await this.performCloudWrite(() => batch.commit());
     } catch (err) {
       console.warn(`Backup seeding failed for collection ${collName}`, err);
+    }
+  }
+
+  // Automatic Cloud Recovery: Scan all local collections and merge missing records directly into Cloud Firestore
+  public async performAutomaticCloudRecovery(): Promise<void> {
+    if (this.isQuotaExceededActive || !this.isFirebaseInitialized) return;
+    if (safeGetLocalStorage('hf_auto_recovery_completed') === 'true') return;
+    if (!auth.currentUser) {
+      await this.attemptBackgroundAuth();
+    }
+    if (!auth.currentUser) return;
+
+    const coreCollections = [
+      'masters',
+      'materials',
+      'challans',
+      'challan_items',
+      'invoices',
+      'invoice_challans',
+      'inward_entries',
+      'master_advances',
+      'master_advance_ledger',
+      'master_rate_overrides',
+      'ledger_transactions',
+      'stock_corrections'
+    ];
+
+    let allCompleted = true;
+    for (const collName of coreCollections) {
+      if (this.isQuotaExceededActive) {
+        allCompleted = false;
+        break;
+      }
+      const localRecords = this.load<any[]>(collName, []);
+      if (!localRecords || localRecords.length === 0) continue;
+
+      try {
+        const chunkSize = 25;
+        for (let i = 0; i < localRecords.length; i += chunkSize) {
+          if (this.isQuotaExceededActive) {
+            allCompleted = false;
+            break;
+          }
+          const chunk = localRecords.slice(i, i + chunkSize);
+          const batch = writeBatch(firestore);
+          chunk.forEach((item) => {
+            const docId = collName === 'invoice_challans'
+              ? `${item.invoice_id}_${item.challan_id}`
+              : (item.id || item.uid || generateUUID());
+            const docRef = this.getDocRef(collName, docId);
+            batch.set(docRef, this.enrichPayload(item), { merge: true });
+          });
+          const writeRes = await this.performCloudWrite(() => batch.commit());
+          if (writeRes === null && this.isQuotaExceededActive) {
+            allCompleted = false;
+            break;
+          }
+          await new Promise(r => setTimeout(r, 60));
+        }
+      } catch (err) {
+        allCompleted = false;
+        console.warn(`[Auto Cloud Recovery] Deferred for ${collName}:`, err);
+      }
+    }
+
+    if (allCompleted && !this.isQuotaExceededActive) {
+      safeSetLocalStorage('hf_auto_recovery_completed', 'true');
     }
   }
 
