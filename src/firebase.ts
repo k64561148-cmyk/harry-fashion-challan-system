@@ -6,7 +6,7 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, signInAnonymously } from 'firebase/auth';
-import { getFirestore, disableNetwork, enableNetwork } from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import rawFirebaseConfig from '../firebase-applet-config.json';
 
@@ -37,4 +37,4 @@ export const auth = getAuth(app);
 export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export { signInWithPopup, signOut, signInAnonymously, disableNetwork, enableNetwork };
+export { signInWithPopup, signOut, signInAnonymously };

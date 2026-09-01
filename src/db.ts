@@ -512,29 +512,23 @@ class DatabaseService {
 
   private writeQueue: Promise<any> = Promise.resolve();
   private isWriteThrottled: boolean = false;
-  private isQuotaExceeded: boolean = (() => {
-    const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
-    return ts > 0 && Date.now() - ts < 24 * 60 * 60 * 1000;
-  })();
-  private quotaExceededTimestamp: number = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
+  private isQuotaExceeded: boolean = false;
+  private quotaExceededTimestamp: number = 0;
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
 
   private get isQuotaExceededActive(): boolean {
-    const ts = Number(safeGetLocalStorage('hf_quota_exceeded_ts')) || 0;
-    if (ts > 0 && Date.now() - ts < 24 * 60 * 60 * 1000) {
-      this.isQuotaExceeded = true;
-      this.quotaExceededTimestamp = ts;
+    // 3-minute transient in-memory cooldown to avoid aggressive background retry loops
+    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp < 3 * 60 * 1000) {
       return true;
     }
-    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp >= 24 * 60 * 60 * 1000) {
+    if (this.isQuotaExceeded) {
       this.isQuotaExceeded = false;
       this.quotaExceededTimestamp = 0;
-      safeSetLocalStorage('hf_quota_exceeded_ts', '');
-      return false;
+      safeRemoveLocalStorage('hf_quota_exceeded_ts');
     }
-    return this.isQuotaExceeded;
+    return false;
   }
 
   private async scheduleAutoUpload(collName: string, missingRecords: any[]) {
@@ -641,13 +635,8 @@ class DatabaseService {
         if (isQuota) {
           this.isQuotaExceeded = true;
           this.quotaExceededTimestamp = Date.now();
-          safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
-          this.autoUploadQueue.clear();
-          if (this.uploadDebounceTimer) {
-            clearTimeout(this.uploadDebounceTimer);
-            this.uploadDebounceTimer = null;
-          }
-          console.warn("[Firestore] Daily write quota active. Operating seamlessly in offline local mode.");
+          safeRemoveLocalStorage('hf_quota_exceeded_ts');
+          console.warn("[Firestore] Quota active. Operating in resilient local mode with automatic retry.");
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
           return null;
@@ -926,6 +915,7 @@ class DatabaseService {
     this.quotaExceededTimestamp = 0;
     safeRemoveLocalStorage('hf_quota_exceeded');
     safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+    safeRemoveLocalStorage('hf_quota_exceeded_ts');
     this.initDatabase();
     this.attemptBackgroundAuth();
     this.setupCloudSyncListeners();
@@ -1551,7 +1541,9 @@ class DatabaseService {
         if (isQuota) {
           this.isQuotaExceeded = true;
           this.quotaExceededTimestamp = Date.now();
-          safeSetLocalStorage('hf_quota_exceeded_ts', String(Date.now()));
+          safeRemoveLocalStorage('hf_quota_exceeded_ts');
+          safeRemoveLocalStorage('hf_quota_exceeded');
+          safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
           this.autoUploadQueue.clear();
           if (collName in this.cloudHealth.collectionStatus) {
             this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
@@ -4464,8 +4456,9 @@ class DatabaseService {
         if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota limit exceeded')) {
           this.isQuotaExceeded = true;
           this.quotaExceededTimestamp = Date.now();
-          safeSetLocalStorage('hf_quota_exceeded', 'true');
-          safeSetLocalStorage('hf_quota_exceeded_timestamp', String(Date.now()));
+          safeRemoveLocalStorage('hf_quota_exceeded');
+          safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+          safeRemoveLocalStorage('hf_quota_exceeded_ts');
         }
         console.warn(`Failed to re-read challan ${challanId} from server:`, err);
       }
