@@ -6,9 +6,14 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, signInAnonymously } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, setLogLevel } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import rawFirebaseConfig from '../firebase-applet-config.json';
+
+// Silence internal Firestore SDK WebChannel backoff delay logs when free tier daily write limit is active
+try {
+  setLogLevel('silent');
+} catch (_) {}
 
 const metaEnv = (import.meta as any).env || {};
 

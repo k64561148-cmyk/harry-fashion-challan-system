@@ -92,8 +92,25 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const isQuota = errMsg.includes('Quota limit exceeded') || 
+                  errMsg.includes('resource-exhausted') || 
+                  errMsg.includes('Quota exceeded') || 
+                  errMsg.includes('quota metric') ||
+                  (error as any)?.code === 'resource-exhausted';
+
+  if (isQuota) {
+    console.warn(`[Firestore Quota] Cloud write paused for ${path || 'resource'}. Operating in local-first persistence mode.`);
+    try {
+      if (typeof window !== 'undefined' && (window as any).dbInstance?.markQuotaExceeded) {
+        (window as any).dbInstance.markQuotaExceeded();
+      }
+    } catch (_) {}
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -455,8 +472,20 @@ class DatabaseService {
   public getCloudHealth() {
     return { 
       ...this.cloudHealth,
+      isQuotaExceeded: this.isQuotaExceededActive,
       deviceId: this.getDeviceId()
     };
+  }
+
+  public markQuotaExceeded(): void {
+    const now = Date.now();
+    this.isQuotaExceeded = true;
+    this.quotaExceededTimestamp = now;
+    safeSetLocalStorage('hf_quota_exceeded_ts', String(now));
+    this.autoUploadQueue.clear();
+    this.cloudHealth.syncFailed = false;
+    this.cloudHealth.lastError = null;
+    this.notifySync();
   }
 
   public isSyncFailed(): boolean {
@@ -517,13 +546,39 @@ class DatabaseService {
   private autoUploadQueue: Map<string, any[]> = new Map();
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
+  private syncDebounceTimer: any = null;
 
-  private get isQuotaExceededActive(): boolean {
-    // 3-minute transient in-memory cooldown to avoid aggressive background retry loops
-    if (this.isQuotaExceeded && Date.now() - this.quotaExceededTimestamp < 3 * 60 * 1000) {
+  public notifySync(immediate: boolean = false): void {
+    if (immediate) {
+      if (this.syncDebounceTimer) {
+        clearTimeout(this.syncDebounceTimer);
+        this.syncDebounceTimer = null;
+      }
+      window.dispatchEvent(new Event('db_sync'));
+      return;
+    }
+    if (this.syncDebounceTimer) {
+      clearTimeout(this.syncDebounceTimer);
+    }
+    this.syncDebounceTimer = setTimeout(() => {
+      this.syncDebounceTimer = null;
+      window.dispatchEvent(new Event('db_sync'));
+    }, 60);
+  }
+
+  public get isQuotaExceededActive(): boolean {
+    const now = Date.now();
+    const storedTs = Number(safeGetLocalStorage('hf_quota_exceeded_ts') || 0);
+    const effectiveTs = Math.max(this.quotaExceededTimestamp, storedTs);
+    // Free daily write quotas on Google Cloud Firestore Spark tier reset on a 24-hour cycle.
+    // Maintain a 24-hour resilient cooldown window to prevent repeated stream write rejections and backoff churn.
+    const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+    if (effectiveTs > 0 && (now - effectiveTs) < COOLDOWN_MS) {
+      this.isQuotaExceeded = true;
+      this.quotaExceededTimestamp = effectiveTs;
       return true;
     }
-    if (this.isQuotaExceeded) {
+    if (this.isQuotaExceeded || effectiveTs > 0) {
       this.isQuotaExceeded = false;
       this.quotaExceededTimestamp = 0;
       safeRemoveLocalStorage('hf_quota_exceeded_ts');
@@ -610,7 +665,7 @@ class DatabaseService {
         await new Promise(res => setTimeout(res, 200));
       }
       this.cloudHealth.pendingOfflineWrites += 1;
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
       try {
         // Robust 15-second timeout for cloud batch commits
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -623,22 +678,20 @@ class DatabaseService {
         this.cloudHealth.syncFailed = false;
         this.cloudHealth.lastError = null;
         this.isWriteThrottled = false;
-        this.isQuotaExceeded = false;
-        safeSetLocalStorage('hf_quota_exceeded_ts', '');
         return result;
       } catch (error: any) {
         const errMsg = error?.message || String(error);
-        const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
+        const isQuota = errMsg.includes('Quota limit exceeded') || 
+                        errMsg.includes('resource-exhausted') || 
+                        errMsg.includes('Quota exceeded') ||
+                        errMsg.includes('quota metric') ||
+                        error?.code === 'resource-exhausted';
         const isUnavailable = errMsg.includes('unavailable') || errMsg.includes('Could not reach Cloud Firestore') || errMsg.includes('timed out') || error?.code === 'unavailable';
         const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
         
         if (isQuota) {
-          this.isQuotaExceeded = true;
-          this.quotaExceededTimestamp = Date.now();
-          safeRemoveLocalStorage('hf_quota_exceeded_ts');
-          console.warn("[Firestore] Quota active. Operating in resilient local mode with automatic retry.");
-          this.cloudHealth.syncFailed = false;
-          this.cloudHealth.lastError = null;
+          this.markQuotaExceeded();
+          console.warn("[Firestore] Daily write quota active. Operating in resilient local mode without blocking operations.");
           return null;
         } else if (isUnavailable) {
           console.log("[Firestore] Operating in offline mode. Changes saved to local cache and will sync automatically upon reconnection.");
@@ -655,7 +708,7 @@ class DatabaseService {
         }
       } finally {
         this.cloudHealth.pendingOfflineWrites = Math.max(0, this.cloudHealth.pendingOfflineWrites - 1);
-        window.dispatchEvent(new Event('db_sync'));
+        this.notifySync();
       }
     };
 
@@ -691,7 +744,7 @@ class DatabaseService {
   public setSandboxMode(enabled: boolean): void {
     safeSetLocalStorage('hf_sandbox_mode_enabled', enabled ? 'true' : 'false');
     this.reinitializeCloudListeners();
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
   }
 
   public async promoteSandboxToLive(): Promise<void> {
@@ -745,7 +798,7 @@ class DatabaseService {
     this.addAuditLog(currentUser.email, 'SANDBOX_PROMOTED', `Successfully unified all tested data across production database.`);
     safeSetLocalStorage('hf_sandbox_mode_enabled', 'false');
     this.reinitializeCloudListeners();
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
   }
 
   public getCollectionName(baseName: string): string {
@@ -861,32 +914,34 @@ class DatabaseService {
   }
 
   private load<T>(key: string, defaultValue: T): T {
-    if (this.memoryCache.has(key)) {
-      return this.memoryCache.get(key);
+    const storageKey = this.getStorageKey(key);
+    if (this.memoryCache.has(storageKey)) {
+      return this.memoryCache.get(storageKey);
     }
     try {
-      const data = safeGetLocalStorage(this.getStorageKey(key));
+      const data = safeGetLocalStorage(storageKey);
       if (data) {
         const parsed = JSON.parse(data);
-        this.memoryCache.set(key, parsed);
+        this.memoryCache.set(storageKey, parsed);
         return parsed;
       }
     } catch (_) {}
-    this.memoryCache.set(key, defaultValue);
+    this.memoryCache.set(storageKey, defaultValue);
     return defaultValue;
   }
 
   private save<T>(key: string, value: T): void {
-    // 1. Update in-memory cache immediately
-    this.memoryCache.set(key, value);
+    const storageKey = this.getStorageKey(key);
+    // 1. Update in-memory cache immediately (0ms lookup)
+    this.memoryCache.set(storageKey, value);
 
     // 2. Persist to IndexedDB asynchronously
-    idb.set(this.getStorageKey(key), value).catch(() => {});
+    idb.set(storageKey, value).catch(() => {});
 
     // 3. Persist to localStorage with smart quota safety
     try {
       const prepared = this.prepareForLocalStorage(key, value);
-      safeSetLocalStorage(this.getStorageKey(key), JSON.stringify(prepared));
+      safeSetLocalStorage(storageKey, JSON.stringify(prepared));
     } catch (e: any) {
       const isQuota = 
         e?.name === 'QuotaExceededError' || 
@@ -899,7 +954,7 @@ class DatabaseService {
         try {
           if (Array.isArray(value)) {
             const smallerPayload = this.prepareForLocalStorage(key, value.slice(0, 50));
-            safeSetLocalStorage(this.getStorageKey(key), JSON.stringify(smallerPayload));
+            safeSetLocalStorage(storageKey, JSON.stringify(smallerPayload));
           }
         } catch (_) {
           // Local storage is full; data remains safe in memoryCache, IDB and Firestore
@@ -911,11 +966,23 @@ class DatabaseService {
   constructor() {
     this.cleanupLocalStorage();
     this.isFirebaseInitialized = true;
-    this.isQuotaExceeded = false;
-    this.quotaExceededTimestamp = 0;
+    try {
+      if (typeof window !== 'undefined') {
+        (window as any).dbInstance = this;
+      }
+    } catch (_) {}
+    const storedQuotaTs = Number(safeGetLocalStorage('hf_quota_exceeded_ts') || 0);
+    const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+    if (storedQuotaTs > 0 && (Date.now() - storedQuotaTs) < COOLDOWN_MS) {
+      this.isQuotaExceeded = true;
+      this.quotaExceededTimestamp = storedQuotaTs;
+    } else {
+      this.isQuotaExceeded = false;
+      this.quotaExceededTimestamp = 0;
+      safeRemoveLocalStorage('hf_quota_exceeded_ts');
+    }
     safeRemoveLocalStorage('hf_quota_exceeded');
     safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
-    safeRemoveLocalStorage('hf_quota_exceeded_ts');
     this.initDatabase();
     this.attemptBackgroundAuth();
     this.setupCloudSyncListeners();
@@ -930,22 +997,22 @@ class DatabaseService {
       let hasUpdates = false;
       Object.entries(allIdbData).forEach(([storageKey, val]) => {
         if (storageKey.startsWith('hf_')) {
-          const key = storageKey.substring(3);
-          const current = this.memoryCache.get(key);
+          const current = this.memoryCache.get(storageKey);
           if (!current || (Array.isArray(val) && val.length > (Array.isArray(current) ? current.length : 0))) {
-            this.memoryCache.set(key, val);
+            this.memoryCache.set(storageKey, val);
             hasUpdates = true;
           }
         }
       });
       if (hasUpdates) {
-        window.dispatchEvent(new Event('db_sync'));
+        this.notifySync();
       }
     } catch (_) {}
   }
 
   // Mandatory connection test
   private async testCloudConnection() {
+    if (this.isQuotaExceededActive) return;
     try {
       if (!auth.currentUser) {
         await this.attemptBackgroundAuth();
@@ -955,7 +1022,7 @@ class DatabaseService {
       this.cloudHealth.lastRead = new Date().toISOString();
       safeSetLocalStorage('hf_health_last_read', this.cloudHealth.lastRead);
       this.cloudHealth.syncFailed = false;
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
     } catch (error: any) {
       if (error instanceof Error && error.message.includes('the client is offline')) {
         console.log("Terminal is in offline mode.");
@@ -1245,7 +1312,6 @@ class DatabaseService {
 
         // Immediately start multi-collection real-time synchronization so all clients see live data
         this.setupCloudSyncListeners();
-        this.performAutomaticCloudRecovery().catch(() => {});
 
         // 1. Establish real-time listener for current user's security profile
         const profileRef = this.getDocRef('profiles', user.uid);
@@ -1296,7 +1362,7 @@ class DatabaseService {
             }
 
             this.save('current_user', prof);
-            window.dispatchEvent(new Event('db_sync'));
+            this.notifySync();
           } else {
             // Check if registration is already in progress via system UI form
             if (localStorage.getItem('hf_registration_in_progress') === 'true') {
@@ -1348,7 +1414,7 @@ class DatabaseService {
             };
 
             this.save('current_user', newProfile);
-            window.dispatchEvent(new Event('db_sync'));
+            this.notifySync();
 
             if (!user.isAnonymous && !this.isQuotaExceededActive) {
               try {
@@ -1365,7 +1431,7 @@ class DatabaseService {
           const isPermissionError = error?.message?.includes('insufficient permissions') || error?.message?.includes('permission') || error?.message?.includes('PERMISSION_DENIED');
           if (isPermissionError) {
             this.cloudHealth.syncFailed = true;
-            window.dispatchEvent(new Event('db_sync'));
+            this.notifySync();
           }
         });
 
@@ -1479,16 +1545,6 @@ class DatabaseService {
           }
         });
 
-        // Auto-seed cloud if remote collection is empty but local has seed data
-        if (!this.isQuotaExceededActive && remoteRecords.length === 0 && localRecords.length > 0 && (collName === 'masters' || collName === 'materials' || collName === 'profiles')) {
-          this.backupLocalCollectionToCloud(collName);
-        }
-
-        // If there are genuine un-uploaded pending records, schedule auto upload
-        if (!this.isQuotaExceededActive && pendingLocalRecords.length > 0) {
-          this.scheduleAutoUpload(collName, pendingLocalRecords);
-        }
-
         const mergedRecords = Array.from(mergedMap.values());
 
         // If challans synced, extract embedded items into challan_items so item-level queries are always 100% complete
@@ -1532,31 +1588,30 @@ class DatabaseService {
           this.sanitizeChallanItems();
         }
         // Trigger customized global event so UI knows data synced
-        window.dispatchEvent(new Event('db_sync'));
+        this.notifySync();
       }, (error: any) => {
         const errMsg = error?.message || String(error);
         const isQuota = errMsg.includes('Quota limit exceeded') || errMsg.includes('resource-exhausted') || error?.code === 'resource-exhausted';
         const isPermissionError = errMsg.includes('insufficient permissions') || errMsg.includes('permission') || errMsg.includes('PERMISSION_DENIED');
         
         if (isQuota) {
+          const now = Date.now();
           this.isQuotaExceeded = true;
-          this.quotaExceededTimestamp = Date.now();
-          safeRemoveLocalStorage('hf_quota_exceeded_ts');
-          safeRemoveLocalStorage('hf_quota_exceeded');
-          safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+          this.quotaExceededTimestamp = now;
+          safeSetLocalStorage('hf_quota_exceeded_ts', String(now));
           this.autoUploadQueue.clear();
           if (collName in this.cloudHealth.collectionStatus) {
             this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
           }
           this.cloudHealth.syncFailed = false;
           this.cloudHealth.lastError = null;
-          window.dispatchEvent(new Event('db_sync'));
+          this.notifySync();
         } else if (isPermissionError) {
           if (collName in this.cloudHealth.collectionStatus) {
             this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'failed';
           }
           this.cloudHealth.syncFailed = true;
-          window.dispatchEvent(new Event('db_sync'));
+          this.notifySync();
         } else {
           if (collName in this.cloudHealth.collectionStatus) {
             this.cloudHealth.collectionStatus[collName as keyof typeof this.cloudHealth.collectionStatus] = 'healthy';
@@ -1744,7 +1799,7 @@ class DatabaseService {
     this.cloudHealth.syncFailed = false;
 
     // Trigger local refresh
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     return {
       uploaded: totalUploaded,
@@ -1753,8 +1808,8 @@ class DatabaseService {
     };
   }
 
-  // --- MANUAL FULL SYNC: Clear temporary offline blocks, fetch all collections from Firestore, and upload unsynced records ---
-  public async manualFullSync(): Promise<{
+  // --- MANUAL FULL SYNC: Fetch all collections from Firestore, and upload unsynced records ---
+  public async manualFullSync(forceRetryWrites: boolean = false): Promise<{
     success: boolean;
     totalFetched: number;
     totalUploaded: number;
@@ -1762,12 +1817,14 @@ class DatabaseService {
     message: string;
   }> {
     try {
-      // 1. Clear any stuck quota or offline flags
-      this.isQuotaExceeded = false;
-      this.quotaExceededTimestamp = 0;
-      safeRemoveLocalStorage('hf_quota_exceeded_ts');
-      safeRemoveLocalStorage('hf_quota_exceeded');
-      safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+      // 1. Only clear quota flags if explicitly requested via forceRetryWrites
+      if (forceRetryWrites) {
+        this.isQuotaExceeded = false;
+        this.quotaExceededTimestamp = 0;
+        safeRemoveLocalStorage('hf_quota_exceeded_ts');
+        safeRemoveLocalStorage('hf_quota_exceeded');
+        safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
+      }
 
       // 2. Ensure authenticated (anonymous or Google)
       if (!auth.currentUser) {
@@ -1898,6 +1955,10 @@ class DatabaseService {
         totalFetched += fetchedCount;
         totalUploaded += uploadedCount;
         details[collName] = { fetched: fetchedCount, uploaded: uploadedCount };
+
+        if (this.isQuotaExceededActive && uploadedCount === 0 && pendingLocalRecords.length > 0) {
+          // Cloud writes are paused due to daily quota; continue fetching remote docs without pushing
+        }
       }
 
       // Extract embedded challan items
@@ -1927,7 +1988,9 @@ class DatabaseService {
 
       // Update cloud health metrics
       this.cloudHealth.lastRead = new Date().toISOString();
-      this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+      if (!this.isQuotaExceededActive) {
+        this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+      }
       this.cloudHealth.syncFailed = false;
       this.cloudHealth.lastError = null;
       this.resetCollectionStatuses();
@@ -1936,14 +1999,19 @@ class DatabaseService {
       this.reinitializeCloudListeners();
 
       // Trigger global UI re-render
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
+
+      let successMessage = `Manual Full Sync Completed: Retrieved ${totalFetched} records from Cloud, verified and synced ${totalUploaded} local records. All devices and login accounts are now synchronized!`;
+      if (this.isQuotaExceededActive) {
+        successMessage = `Local Cache Synchronized: Retrieved ${totalFetched} cloud records. Cloud writes are currently paused while daily free tier quota resets. All local data is 100% safely persisted on this device.`;
+      }
 
       return {
         success: true,
         totalFetched,
         totalUploaded,
         details,
-        message: `Manual Full Sync Completed: Retrieved ${totalFetched} records from Cloud, verified and synced ${totalUploaded} local records. All devices and login accounts are now synchronized!`
+        message: successMessage
       };
     } catch (err: any) {
       console.error('[Manual Full Sync Error]:', err);
@@ -2026,7 +2094,7 @@ class DatabaseService {
 
       // Refresh in-memory caches and trigger UI update
       this.initDatabase();
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
 
       // If online and quota allows, attempt to push new records to cloud
       if (!this.isQuotaExceeded) {
@@ -2119,7 +2187,7 @@ class DatabaseService {
       this.performCloudWrite(() => setDoc(this.getDocRef('profiles', idToFind), this.enrichPayload(profile), { merge: true }))
         .catch(err => handleFirestoreError(err, OperationType.WRITE, `profiles/${idToFind}`));
     }
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
   }
 
   getCloudStatus(): { isSyncing: boolean; email: string | null } {
@@ -2416,7 +2484,7 @@ class DatabaseService {
           this.performCloudWrite(() => setDoc(this.getDocRef('masters', masterId), this.enrichPayload(masters[idx]), { merge: true }))
             .catch(() => {});
         }
-        window.dispatchEvent(new Event('db_sync'));
+        this.notifySync();
         return true;
       }
     }
@@ -2592,7 +2660,7 @@ class DatabaseService {
     }
 
     // Dispatch global sync event
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     return {
       affectedChallans: totalAffectedChallans,
@@ -3025,7 +3093,7 @@ class DatabaseService {
       this.save('audit_logs', localLogs.slice(0, 1000));
 
       // Trigger local events to refresh active UI screens immediately
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
 
       // 3. Commit to Firestore in background without blocking UI responsiveness
       if (this.isFirebaseInitialized) {
@@ -3210,7 +3278,7 @@ class DatabaseService {
     safeRemoveLocalStorage('hf_challans_repaired_sg_v2');
 
     // Trigger local sync refresh
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
   }
 
   deleteChallan(challanId: string): void {
@@ -3980,7 +4048,7 @@ class DatabaseService {
         .catch(err => console.warn('Firestore err writing manual transaction:', err));
     }
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
     return newTx;
   }
 
@@ -4000,7 +4068,7 @@ class DatabaseService {
           .catch(err => console.warn('Firestore err deleting manual transaction:', err));
       }
 
-      window.dispatchEvent(new Event('db_sync'));
+      this.notifySync();
     }
   }
 
@@ -4158,7 +4226,7 @@ class DatabaseService {
     logs.unshift(auditRecord);
     this.save('audit_logs', logs.slice(0, 1000));
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     if (this.isFirebaseInitialized) {
       try {
@@ -4226,7 +4294,7 @@ class DatabaseService {
     logs.unshift(auditRecord);
     this.save('audit_logs', logs.slice(0, 1000));
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     if (this.isFirebaseInitialized) {
       try {
@@ -4286,7 +4354,7 @@ class DatabaseService {
     logs.unshift(auditRecord);
     this.save('audit_logs', logs.slice(0, 1000));
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     if (this.isFirebaseInitialized) {
       try {
@@ -4374,7 +4442,7 @@ class DatabaseService {
     logs.unshift(auditRecord);
     this.save('audit_logs', logs.slice(0, 1000));
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     if (this.isFirebaseInitialized) {
       try {
@@ -4454,11 +4522,10 @@ class DatabaseService {
         }
       } catch (err: any) {
         if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota limit exceeded')) {
+          const now = Date.now();
           this.isQuotaExceeded = true;
-          this.quotaExceededTimestamp = Date.now();
-          safeRemoveLocalStorage('hf_quota_exceeded');
-          safeRemoveLocalStorage('hf_quota_exceeded_timestamp');
-          safeRemoveLocalStorage('hf_quota_exceeded_ts');
+          this.quotaExceededTimestamp = now;
+          safeSetLocalStorage('hf_quota_exceeded_ts', String(now));
         }
         console.warn(`Failed to re-read challan ${challanId} from server:`, err);
       }
@@ -4584,7 +4651,7 @@ class DatabaseService {
     logs.unshift(auditRecord);
     this.save('audit_logs', logs.slice(0, 1000));
 
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     // Deep write to Firestore using atomic batch in background
     if (this.isFirebaseInitialized) {
@@ -4750,7 +4817,7 @@ class DatabaseService {
     }
 
     // Dispatch global event so UI knows data updated
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     return updatedInvoice;
   }
@@ -4982,7 +5049,7 @@ class DatabaseService {
     }
 
     // Trigger customized global event so UI knows data synced
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     return correction;
   }
@@ -5191,7 +5258,7 @@ class DatabaseService {
     }
 
     safeSetLocalStorage(this.getStorageKey('database_seeded'), 'true');
-    window.dispatchEvent(new Event('db_sync'));
+    this.notifySync();
 
     return {
       mastersCount: updatedMasters.length,

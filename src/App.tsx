@@ -475,17 +475,21 @@ export default function App() {
                   <RefreshCw className="w-3 h-3" />
                 </button>
                 <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-bold uppercase ${
-                  Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
-                    ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                    : cloudHealth.syncFailed
-                      ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                  (cloudHealth as any).isQuotaExceeded
+                    ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                    : Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                      ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                      : cloudHealth.syncFailed
+                        ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                        : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                 }`}>
-                  {Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
-                    ? 'Sync Warning'
-                    : cloudHealth.syncFailed
-                      ? 'Sync Failed'
-                      : 'Healthy'}
+                  {(cloudHealth as any).isQuotaExceeded
+                    ? 'Local-First (Quota Rest)'
+                    : Object.values(cloudHealth.collectionStatus || {}).some(status => status === 'failed')
+                      ? 'Sync Warning'
+                      : cloudHealth.syncFailed
+                        ? 'Sync Failed'
+                        : 'Healthy'}
                 </span>
               </div>
             </div>
@@ -540,10 +544,17 @@ export default function App() {
               </div>
             )}
 
-            {cloudHealth.lastError && (
+            {cloudHealth.lastError && !(cloudHealth as any).isQuotaExceeded && (
               <div className="mt-1.5 p-2 bg-rose-950/30 border border-rose-800/30 rounded-lg text-[9px] text-rose-300 leading-normal font-mono select-text break-all max-h-[80px] overflow-y-auto">
                 <span className="font-bold text-rose-400 block mb-0.5 uppercase tracking-wider">Write Exception:</span>
                 {cloudHealth.lastError}
+              </div>
+            )}
+
+            {(cloudHealth as any).isQuotaExceeded && (
+              <div className="mt-1.5 p-2 bg-amber-950/40 border border-amber-800/40 rounded-lg text-[9px] text-amber-200 leading-normal font-mono select-text">
+                <span className="font-bold text-amber-400 block mb-0.5 uppercase tracking-wider">Local Mode (Quota Rest):</span>
+                Daily cloud write limit active. All records, edits, and challans are 100% safely persisted locally. Cloud reads remain live.
               </div>
             )}
 
@@ -808,9 +819,15 @@ export default function App() {
               {/* Left Column: Cloud Connection & Warnings */}
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-1.5 font-medium">
-                  <span className={`w-2 h-2 rounded-full animate-pulse ${cloudHealth.syncFailed ? 'bg-red-500' : 'bg-green-500'}`}></span>
+                  <span className={`w-2 h-2 rounded-full animate-pulse ${
+                    (cloudHealth as any).isQuotaExceeded ? 'bg-amber-500' : cloudHealth.syncFailed ? 'bg-red-500' : 'bg-green-500'
+                  }`}></span>
                   <span className="text-slate-700 font-semibold uppercase tracking-wider text-[9px]">
-                    {cloudHealth.syncFailed ? 'Sync Status: DEGRADED' : 'Sync Status: HEALTHY'}
+                    {(cloudHealth as any).isQuotaExceeded
+                      ? 'Sync Status: LOCAL-FIRST (DAILY QUOTA REST)'
+                      : cloudHealth.syncFailed
+                        ? 'Sync Status: DEGRADED'
+                        : 'Sync Status: HEALTHY'}
                   </span>
                 </div>
                 {isSandboxActive && (

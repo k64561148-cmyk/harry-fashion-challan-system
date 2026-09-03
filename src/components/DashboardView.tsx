@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db } from '../db';
 import { getLocalTodayString } from '../utils/dateUtils';
-import { Challan, Invoice, Material, ChallanItem } from '../types';
+import { Challan, Invoice, Material, ChallanItem, Master } from '../types';
 import { formatINR, generateChallanPDF } from '../utils/exportUtils';
 import { 
   FileText, 
@@ -45,6 +45,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const [pendingInvoicesCount, setPendingInvoicesCount] = useState<number>(0);
   const [lowStockAlerts, setLowStockAlerts] = useState<Material[]>([]);
   const [recentChallans, setRecentChallans] = useState<Challan[]>([]);
+  const [recentMasters, setRecentMasters] = useState<Master[]>([]);
   const currentUser = db.getCurrentUser();
   const isKunalUser = 
     currentUser?.email?.toLowerCase().includes('kunal') || 
@@ -133,6 +134,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     // Sort challans chronologically desc, so fresh ones appear first
     const sortedChallans = [...challans].sort((a, b) => b.created_at.localeCompare(a.created_at));
     setRecentChallans(sortedChallans);
+
+    // 6. Masters for instant O(1) in-memory lookups
+    const masters = db.getMasters();
+    setRecentMasters(masters);
   };
 
   const handleApplyCorrection = (e: React.FormEvent) => {
@@ -169,28 +174,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
     return () => window.removeEventListener('db_sync', loadDashboardData);
   }, []);
 
-  const getMasterName = (masterId: string, challan?: Challan): string => {
-    const masters = db.getMasters();
-    const c = challan || db.getChallans().find(ch => ch.id === masterId || ch.master_id === masterId);
-    if (c) {
-      if (c.masterSnapshot?.name) return c.masterSnapshot.name;
-      if (c.masterDisplayName) return c.masterDisplayName;
-      if (c.masterName) return c.masterName;
+  const mastersMap = useMemo(() => {
+    const map = new Map<string, string>();
+    recentMasters.forEach(m => map.set(m.id, m.name));
+    return map;
+  }, [recentMasters]);
+
+  const getMasterName = useCallback((masterId: string, challan?: Challan): string => {
+    if (challan) {
+      if (challan.masterSnapshot?.name) return challan.masterSnapshot.name;
+      if (challan.masterDisplayName) return challan.masterDisplayName;
+      if (challan.masterName) return challan.masterName;
     }
-    const foundMaster = masters.find(m => m.id === masterId);
-    if (foundMaster) {
-      return foundMaster.name;
+    const cachedName = mastersMap.get(masterId);
+    if (cachedName) {
+      return cachedName;
     }
-    if (db.isCloudSyncEnabled && masters.length === 0) {
+    if (db.isCloudSyncEnabled && recentMasters.length === 0) {
       return "Loading master...";
     }
     return 'Unknown Master';
-  };
+  }, [mastersMap, recentMasters.length]);
 
   const handleDownloadChallan = async (c: Challan) => {
     setAlertMsg({ text: `Compiling PDF binary for Challan ${c.challan_no}... Please wait.` });
     try {
-      const masters = db.getMasters();
+      const masters = recentMasters.length > 0 ? recentMasters : db.getMasters();
       const materials = db.getMaterials();
       const masterObj = masters.find(m => m.id === c.master_id);
       if (!masterObj) {
@@ -218,7 +227,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const handlePrintChallan = async (c: Challan) => {
     setAlertMsg({ text: `Compiling print preview layout for Challan ${c.challan_no}... Please wait.` });
     try {
-      const masters = db.getMasters();
+      const masters = recentMasters.length > 0 ? recentMasters : db.getMasters();
       const materials = db.getMaterials();
       const masterObj = masters.find(m => m.id === c.master_id);
       if (!masterObj) {
@@ -431,23 +440,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         setAdjustingChallan(null);
         loadDashboardData();
         // Emit trigger sync event
-        window.dispatchEvent(new Event('db_sync'));
+        db.notifySync();
       }, 2000);
     } catch (err: any) {
       setAdjustError(err?.message || 'Error occurred while saving ledger adjustment.');
     }
   };
 
-  // Perform search & filters on challans collection
-  const filteredChallans = recentChallans.filter(c => {
-    const mName = getMasterName(c.master_id, c);
-    const matchesSearch = c.challan_no.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          mName.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' ? true : c.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  // Perform search & filters on challans collection with memoization
+  const filteredChallans = useMemo(() => {
+    const query = searchQuery.toLowerCase().trim();
+    return recentChallans.filter(c => {
+      const mName = getMasterName(c.master_id, c);
+      const matchesSearch = !query || 
+                            c.challan_no.toLowerCase().includes(query) || 
+                            mName.toLowerCase().includes(query);
+      const matchesStatus = statusFilter === 'all' ? true : c.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [recentChallans, searchQuery, statusFilter, getMasterName]);
 
-  const displayedChallans = showAll ? filteredChallans : filteredChallans.slice(0, 5);
+  const displayedChallans = useMemo(() => {
+    return showAll ? filteredChallans : filteredChallans.slice(0, 5);
+  }, [showAll, filteredChallans]);
 
   return (
     <div className="space-y-6" id="dashboard-tab">
