@@ -15,6 +15,7 @@ import SettingsView from './components/SettingsView';
 import ChecklistView from './components/ChecklistView';
 import { BankLimitsView } from './components/BankLimitsView';
 import LoginGate from './components/LoginGate';
+import { DeviceTransferModal } from './components/DeviceTransferModal';
 import { 
   LayoutDashboard, 
   PlusCircle, 
@@ -31,7 +32,8 @@ import {
   CalendarCheck,
   Cloud,
   CreditCard,
-  RefreshCw
+  RefreshCw,
+  ArrowRightLeft
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
@@ -47,9 +49,12 @@ export default function App() {
 
   const isKunalUser = 
     currentUser?.email?.toLowerCase().includes('kunal') || 
+    currentUser?.email?.toLowerCase() === 'k64561148@gmail.com' ||
+    currentUser?.email?.toLowerCase() === 'kunal3012@harryfashion.com' ||
     currentUser?.name?.toLowerCase().includes('kunal') || 
     currentUser?.displayName?.toLowerCase().includes('kunal') ||
-    (currentUser as any)?.username?.toLowerCase().includes('kunal');
+    (currentUser as any)?.username?.toLowerCase().includes('kunal') ||
+    (currentUser as any)?.username?.toLowerCase() === 'kunal3012';
 
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
   const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
@@ -61,6 +66,7 @@ export default function App() {
   const [promoteStatus, setPromoteStatus] = useState<string>('');
   const [isManualSyncing, setIsManualSyncing] = useState<boolean>(false);
   const [syncBannerMsg, setSyncBannerMsg] = useState<string | null>(null);
+  const [isDeviceTransferModalOpen, setIsDeviceTransferModalOpen] = useState<boolean>(false);
 
   const handleManualFullSync = async () => {
     setIsManualSyncing(true);
@@ -279,7 +285,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-3">
           <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeColor(currentUser.role)}`}>
-            {currentUser.role.replace('_', ' ').toUpperCase()}
+            {(currentUser.role || 'user').replace('_', ' ').toUpperCase()}
           </span>
           <button 
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -569,13 +575,24 @@ export default function App() {
               <RefreshCw className={`w-3 h-3 ${isManualSyncing ? 'animate-spin' : ''}`} />
               {isManualSyncing ? 'Synchronizing Cloud...' : 'Manual Full Sync (Fetch All)'}
             </button>
+
+            {/* Device Sync & Transfer Button */}
+            <button
+              type="button"
+              id="btn-device-transfer"
+              onClick={() => setIsDeviceTransferModalOpen(true)}
+              className="w-full mt-1.5 py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 rounded-lg text-[10px] font-bold tracking-wider uppercase transition flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <ArrowRightLeft className="w-3 h-3 text-blue-400" />
+              Transfer / Sync Devices
+            </button>
           </div>
 
           {/* Quick Active user Profile Panel */}
           <div className="p-4 border-t border-[#2D3E5D] bg-[#14233a] flex flex-col gap-3">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold border border-blue-400/20">
-                {currentUser.name.substring(0, 2).toUpperCase()}
+                {(currentUser.name || currentUser.username || 'US').substring(0, 2).toUpperCase()}
               </div>
               <div className="flex-1 overflow-hidden">
                 <p className="text-xs font-bold text-white truncate uppercase tracking-tight">{currentUser.name}</p>
@@ -710,6 +727,13 @@ export default function App() {
                       <RefreshCw className={`w-2.5 h-2.5 ${isManualSyncing ? 'animate-spin' : ''}`} /> {isManualSyncing ? 'Syncing...' : 'Sync'}
                     </button>
                     <button
+                      onClick={() => setIsDeviceTransferModalOpen(true)}
+                      title="Sync data directly to another device or tab"
+                      className="text-[9px] font-extrabold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition py-1 px-2 rounded-md cursor-pointer uppercase flex items-center gap-1"
+                    >
+                      <ArrowRightLeft className="w-2.5 h-2.5 text-blue-600" /> Device Sync
+                    </button>
+                    <button
                       onClick={handleCloudLogout}
                       className="text-[9px] font-extrabold text-[#1A2E4A] hover:text-rose-600 bg-slate-100 hover:bg-rose-50/70 border border-slate-250 hover:border-rose-200 transition py-1 px-2 rounded-md cursor-pointer uppercase"
                     >
@@ -760,11 +784,11 @@ export default function App() {
                   <div className="text-right">
                     <p className="text-xs font-bold text-slate-800">{currentUser.name}</p>
                     <span className={`inline-block text-[9px] font-bold px-2 py-0.5 mt-0.5 rounded-full border uppercase ${getRoleBadgeColor(currentUser.role)}`}>
-                      {currentUser.role.replace('_', ' ')}
+                      {(currentUser.role || 'user').replace('_', ' ')}
                     </span>
                   </div>
                   <div className="w-8 h-8 rounded-full bg-[#1A2E4A] text-white flex items-center justify-center text-xs font-bold border border-[#2D3E5D]">
-                    {currentUser.name.substring(0, 2).toUpperCase()}
+                    {(currentUser.name || currentUser.username || 'US').substring(0, 2).toUpperCase()}
                   </div>
                 </div>
               </div>
@@ -950,6 +974,12 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Device & Tab Sync Modal */}
+      <DeviceTransferModal
+        isOpen={isDeviceTransferModalOpen}
+        onClose={() => setIsDeviceTransferModalOpen(false)}
+      />
 
     </div>
   );

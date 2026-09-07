@@ -460,7 +460,7 @@ class DatabaseService {
     };
   }
 
-  private getDeviceId(): string {
+  public getDeviceId(): string {
     let devId = safeGetLocalStorage('hf_device_id');
     if (!devId) {
       devId = 'device_' + Math.random().toString(36).substring(2, 15);
@@ -547,6 +547,7 @@ class DatabaseService {
   private isUploadingPending: boolean = false;
   private uploadDebounceTimer: any = null;
   private syncDebounceTimer: any = null;
+  private broadcastChannel: BroadcastChannel | null = null;
 
   public notifySync(immediate: boolean = false): void {
     if (immediate) {
@@ -563,20 +564,41 @@ class DatabaseService {
     this.syncDebounceTimer = setTimeout(() => {
       this.syncDebounceTimer = null;
       window.dispatchEvent(new Event('db_sync'));
-    }, 60);
+    }, 40);
   }
 
   public get isQuotaExceededActive(): boolean {
     const now = Date.now();
     const storedTs = Number(safeGetLocalStorage('hf_quota_exceeded_ts') || 0);
     const effectiveTs = Math.max(this.quotaExceededTimestamp, storedTs);
-    // Free daily write quotas on Google Cloud Firestore Spark tier reset on a 24-hour cycle.
-    // Maintain a 24-hour resilient cooldown window to prevent repeated stream write rejections and backoff churn.
-    const COOLDOWN_MS = 24 * 60 * 60 * 1000;
-    if (effectiveTs > 0 && (now - effectiveTs) < COOLDOWN_MS) {
-      this.isQuotaExceeded = true;
-      this.quotaExceededTimestamp = effectiveTs;
-      return true;
+    
+    if (effectiveTs > 0) {
+      try {
+        // Google Cloud Firestore resets daily quotas at 00:00:00 Pacific Time (America/Los_Angeles)
+        const nowPT = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+        const recordedPT = new Date(new Date(effectiveTs).toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+        
+        const isDifferentDayPT = 
+          nowPT.getFullYear() !== recordedPT.getFullYear() ||
+          nowPT.getMonth() !== recordedPT.getMonth() ||
+          nowPT.getDate() !== recordedPT.getDate();
+
+        // If midnight Pacific Time has elapsed, quota has reset!
+        if (isDifferentDayPT) {
+          this.isQuotaExceeded = false;
+          this.quotaExceededTimestamp = 0;
+          safeRemoveLocalStorage('hf_quota_exceeded_ts');
+          return false;
+        }
+      } catch (_) {}
+
+      // Keep quota rest active for 30 minutes before allowing automatic background attempts
+      const COOLDOWN_MS = 30 * 60 * 1000;
+      if ((now - effectiveTs) < COOLDOWN_MS) {
+        this.isQuotaExceeded = true;
+        this.quotaExceededTimestamp = effectiveTs;
+        return true;
+      }
     }
     if (this.isQuotaExceeded || effectiveTs > 0) {
       this.isQuotaExceeded = false;
@@ -655,9 +677,9 @@ class DatabaseService {
     }
   }
 
-  private async performCloudWrite<T>(operation: () => Promise<T>): Promise<T | null> {
+  private async performCloudWrite<T>(operation: () => Promise<T>, forceCloudAttempt: boolean = false): Promise<T | null> {
     const execute = async (): Promise<T | null> => {
-      if (this.isQuotaExceededActive) {
+      if (this.isQuotaExceededActive && !forceCloudAttempt) {
         return null;
       }
 
@@ -678,6 +700,10 @@ class DatabaseService {
         this.cloudHealth.syncFailed = false;
         this.cloudHealth.lastError = null;
         this.isWriteThrottled = false;
+        // When cloud write succeeds, clear any prior quota lock
+        this.isQuotaExceeded = false;
+        this.quotaExceededTimestamp = 0;
+        safeRemoveLocalStorage('hf_quota_exceeded_ts');
         return result;
       } catch (error: any) {
         const errMsg = error?.message || String(error);
@@ -961,6 +987,18 @@ class DatabaseService {
         }
       }
     }
+
+    // 4. Real-time Cross-Tab Broadcast: notify all other tabs and windows immediately
+    if (this.broadcastChannel) {
+      try {
+        this.broadcastChannel.postMessage({
+          type: 'DB_SYNC',
+          key,
+          storageKey,
+          timestamp: Date.now()
+        });
+      } catch (_) {}
+    }
   }
 
   constructor() {
@@ -969,11 +1007,45 @@ class DatabaseService {
     try {
       if (typeof window !== 'undefined') {
         (window as any).dbInstance = this;
+
+        // Setup real-time Cross-Tab synchronization
+        if ('BroadcastChannel' in window) {
+          try {
+            this.broadcastChannel = new BroadcastChannel('hf_sync_channel');
+            this.broadcastChannel.onmessage = (event) => {
+              if (event?.data?.type === 'DB_SYNC') {
+                const { key, storageKey } = event.data;
+                if (storageKey) {
+                  this.memoryCache.delete(storageKey);
+                }
+                if (key) {
+                  this.memoryCache.delete(this.getStorageKey(key));
+                  this.memoryCache.delete(key);
+                } else {
+                  this.memoryCache.clear();
+                }
+                // Instantly notify all React views in this tab to re-render with fresh data
+                this.notifySync(true);
+              }
+            };
+          } catch (bcErr) {
+            console.warn('[BroadcastChannel] Initialization note:', bcErr);
+          }
+        }
+
+        // Secondary cross-tab fallback using standard browser storage event
+        window.addEventListener('storage', (event) => {
+          if (event.key && (event.key.startsWith('hf_') || event.key.startsWith('sb_'))) {
+            this.memoryCache.delete(event.key);
+            this.notifySync(true);
+          }
+        });
       }
     } catch (_) {}
+    
+    // Evaluate initial quota state with smart Pacific Time reset awareness
     const storedQuotaTs = Number(safeGetLocalStorage('hf_quota_exceeded_ts') || 0);
-    const COOLDOWN_MS = 24 * 60 * 60 * 1000;
-    if (storedQuotaTs > 0 && (Date.now() - storedQuotaTs) < COOLDOWN_MS) {
+    if (storedQuotaTs > 0 && this.isQuotaExceededActive) {
       this.isQuotaExceeded = true;
       this.quotaExceededTimestamp = storedQuotaTs;
     } else {
@@ -1916,18 +1988,19 @@ class DatabaseService {
         });
 
         // Push ALL un-synced local records to Firestore
-        if (pendingLocalRecords.length > 0 && !this.isQuotaExceededActive) {
+        if (pendingLocalRecords.length > 0) {
           try {
-            const chunkSize = 100;
+            const chunkSize = 50;
             for (let i = 0; i < pendingLocalRecords.length; i += chunkSize) {
-              if (this.isQuotaExceededActive) break;
               const chunk = pendingLocalRecords.slice(i, i + chunkSize);
               const batch = writeBatch(firestore);
               chunk.forEach((item) => {
                 const docId = getKey(collName, item);
                 if (docId) {
                   const docRef = this.getDocRef(collName, docId);
-                  batch.set(docRef, this.enrichPayload(item), { merge: true });
+                  const cleanItem = { ...item };
+                  delete cleanItem._locallyPending;
+                  batch.set(docRef, this.enrichPayload(cleanItem), { merge: true });
                   uploadedCount++;
                   if (collName === 'challans' && Array.isArray(item.items)) {
                     item.items.forEach((it: any) => {
@@ -1938,8 +2011,9 @@ class DatabaseService {
                   }
                 }
               });
-              const res = await this.performCloudWrite(() => batch.commit());
+              const res = await this.performCloudWrite(() => batch.commit(), true);
               if (res === null && this.isQuotaExceededActive) {
+                // Quota active, break without crashing
                 break;
               }
             }
@@ -2112,6 +2186,148 @@ class DatabaseService {
         success: false,
         message: err?.message || 'Failed to parse and import backup file.',
         recordCount: 0
+      };
+    }
+  }
+
+  // Retrieve all locally created challans and records that are waiting for cloud upload
+  public getPendingCloudWrites(): { challans: Challan[]; total: number } {
+    const allChallans = this.getChallans();
+    const pendingChallans = allChallans.filter(c => (c as any)._locallyPending === true);
+    return {
+      challans: pendingChallans,
+      total: pendingChallans.length
+    };
+  }
+
+  // Force push all pending un-uploaded challans to Firestore
+  public async pushPendingWritesToCloud(): Promise<{ success: boolean; pushedCount: number; message: string }> {
+    if (!this.isFirebaseInitialized) {
+      return { success: false, pushedCount: 0, message: "Firebase connection is offline." };
+    }
+    if (!auth.currentUser) {
+      await this.attemptBackgroundAuth();
+    }
+
+    const allChallans = this.load<Challan[]>('challans', []);
+    const pendingChallans = allChallans.filter(c => (c as any)._locallyPending === true);
+    if (pendingChallans.length === 0) {
+      return { success: true, pushedCount: 0, message: "All challans are already synchronized with Cloud Firestore!" };
+    }
+
+    let pushedCount = 0;
+    try {
+      const batch = writeBatch(firestore);
+      pendingChallans.forEach((ch) => {
+        const challanRef = this.getDocRef('challans', ch.id);
+        const cleanChallan = { ...ch };
+        delete (cleanChallan as any)._locallyPending;
+        batch.set(challanRef, this.enrichPayload(cleanChallan), { merge: true });
+      });
+
+      const writeRes = await this.performCloudWrite(() => batch.commit(), true);
+      if (writeRes !== null) {
+        // Mark all as uploaded locally
+        pendingChallans.forEach(ch => {
+          delete (ch as any)._locallyPending;
+        });
+        this.save('challans', allChallans);
+        pushedCount = pendingChallans.length;
+        this.notifySync(true);
+
+        return {
+          success: true,
+          pushedCount,
+          message: `Successfully pushed ${pushedCount} challans to Cloud Firestore! All other devices will now see them automatically.`
+        };
+      } else {
+        return {
+          success: false,
+          pushedCount: 0,
+          message: "Cloud daily write limit is currently active. Your challans are 100% safe locally and will auto-upload when quota resets. You can also use Device Transfer to sync immediately."
+        };
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      return {
+        success: false,
+        pushedCount,
+        message: `Cloud upload notice: ${errMsg}`
+      };
+    }
+  }
+
+  // Export a lightweight sync package for transferring data directly to another device (phone, laptop, PC)
+  public exportDeviceSyncPackage(): string {
+    const challans = this.getChallans();
+    const masters = this.getMasters();
+    const materials = this.getMaterials();
+    const pkg = {
+      appName: 'Harry Fashion Quick Device Sync',
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      sourceDeviceId: this.getDeviceId(),
+      challans: challans.slice(0, 200), // Recent 200 challans
+      masters,
+      materials
+    };
+    return JSON.stringify(pkg, null, 2);
+  }
+
+  // Import and merge a sync package received from another device
+  public importDeviceSyncPackage(jsonStr: string): { success: boolean; importedChallans: number; importedMasters: number; message: string } {
+    try {
+      const data = JSON.parse(jsonStr);
+      if (!data || !Array.isArray(data.challans)) {
+        throw new Error("Invalid sync package: missing challans list.");
+      }
+
+      // Merge Challans
+      const existingChallans = this.getChallans();
+      const existingMap = new Map<string, Challan>();
+      existingChallans.forEach(c => existingMap.set(c.id, c));
+      
+      let importedChallans = 0;
+      data.challans.forEach((c: Challan) => {
+        if (c && c.id && !existingMap.has(c.id)) {
+          existingMap.set(c.id, c);
+          importedChallans++;
+        }
+      });
+
+      const mergedChallans = Array.from(existingMap.values()).sort(
+        (a, b) => new Date(b.created_at || b.issued_date || 0).getTime() - new Date(a.created_at || a.issued_date || 0).getTime()
+      );
+      this.save('challans', mergedChallans);
+
+      // Merge Masters
+      let importedMasters = 0;
+      if (Array.isArray(data.masters)) {
+        const existingMasters = this.getMasters();
+        const masterMap = new Map<string, Master>();
+        existingMasters.forEach(m => masterMap.set(m.id, m));
+        data.masters.forEach((m: Master) => {
+          if (m && m.id && !masterMap.has(m.id)) {
+            masterMap.set(m.id, m);
+            importedMasters++;
+          }
+        });
+        this.save('masters', Array.from(masterMap.values()));
+      }
+
+      this.notifySync(true);
+      return {
+        success: true,
+        importedChallans,
+        importedMasters,
+        message: `Successfully imported ${importedChallans} new challan(s) and ${importedMasters} master(s) from the other device!`
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        importedChallans: 0,
+        importedMasters: 0,
+        message: `Failed to import sync package: ${err.message}`
       };
     }
   }
@@ -2355,8 +2571,8 @@ class DatabaseService {
     const targetPANs = targetMaster.pan_accounts || [];
     sourcePANs.forEach(span => {
       const exists = targetPANs.some(tpan => 
-        tpan.pan_no.toUpperCase() === span.pan_no.toUpperCase() &&
-        tpan.account_no.trim() === span.account_no.trim()
+        (tpan.pan_no || '').toUpperCase() === (span.pan_no || '').toUpperCase() &&
+        (tpan.account_no || '').trim() === (span.account_no || '').trim()
       );
       if (!exists) {
         targetPANs.push(span);
@@ -3124,7 +3340,18 @@ class DatabaseService {
           const auditRef = this.getDocRef('audit_logs', auditId);
           batch.set(auditRef, this.enrichPayload(auditPayloadLocal), { merge: true });
 
-          this.performCloudWrite(() => batch.commit()).catch(cloudErr => {
+          this.performCloudWrite(() => batch.commit(), true).then((res) => {
+            if (res !== null) {
+              // Direct cloud write succeeded! Mark _locallyPending as false in local cache
+              const curList = this.load<Challan[]>('challans', []);
+              const matchIdx = curList.findIndex(c => c.id === finalChallan.id);
+              if (matchIdx > -1) {
+                (curList[matchIdx] as any)._locallyPending = false;
+                this.save('challans', curList);
+              }
+              this.notifySync(true);
+            }
+          }).catch(cloudErr => {
             console.warn("Direct cloud write deferred/failed (will sync in background):", cloudErr?.message || cloudErr);
           });
         } catch (cloudErr: any) {
@@ -3952,7 +4179,7 @@ class DatabaseService {
     });
 
     // Sort chronologically and then by creation date
-    return list.sort((a, b) => a.date.localeCompare(b.date) || (a.created_at || '').localeCompare(b.created_at || ''));
+    return list.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''));
   }
 
   getLedgerSummaryForMasterMonth(masterId: string, month: number, year: number) {

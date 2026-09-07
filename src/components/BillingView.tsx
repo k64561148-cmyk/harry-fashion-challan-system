@@ -176,7 +176,7 @@ export const BillingView: React.FC = () => {
     filteredMasters.forEach(m => {
       if (m.pan_accounts && m.pan_accounts.length > 0) {
         m.pan_accounts.forEach((p, idx) => {
-          const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
+          const panLabel = `${(m.code || 'M').toUpperCase()}-${idx + 1}`;
           const displayLabel = p.pan_name 
             ? `${m.name} (${panLabel}: ${p.pan_name})` 
             : `${m.name} (${panLabel}: ${p.pan_no})`;
@@ -192,7 +192,7 @@ export const BillingView: React.FC = () => {
         list.push({
           masterId: m.id,
           panId: '',
-          displayName: `${m.name} (${m.code.toUpperCase()})`,
+          displayName: `${m.name} (${(m.code || 'M').toUpperCase()})`,
           type: m.type,
           code: m.code
         });
@@ -802,7 +802,7 @@ export const BillingView: React.FC = () => {
     try {
       const master = masters.find(m => m.id === editingInvoice.master_id);
       const matchedProfile = master?.pan_accounts?.find(
-        p => p.pan_no.toUpperCase() === editPanNo.toUpperCase() && p.account_no === editAccountNo
+        p => (p.pan_no || '').toUpperCase() === (editPanNo || '').toUpperCase() && p.account_no === editAccountNo
       );
 
       db.editInvoice(editingInvoice.id, {
@@ -1115,13 +1115,13 @@ export const BillingView: React.FC = () => {
                               const p = m.pan_accounts.find(x => x.id === selectedPanId);
                               if (p) {
                                 const idx = m.pan_accounts.indexOf(p);
-                                const panLabel = `${m.code.toUpperCase()}-${idx + 1}`;
+                                const panLabel = `${(m.code || 'M').toUpperCase()}-${idx + 1}`;
                                 return p.pan_name 
                                   ? `${m.name} (${panLabel}: ${p.pan_name})` 
                                   : `${m.name} (${panLabel}: ${p.pan_no})`;
                               }
                             }
-                            return `${m.name} (${m.code.toUpperCase()})`;
+                            return `${m.name} (${(m.code || 'M').toUpperCase()})`;
                           })()
                     }
                     onChange={(e) => {
@@ -1758,7 +1758,7 @@ export const BillingView: React.FC = () => {
                                     : ` [Billed: ${formatINR(usage.totalBilled)}]`;
                                   return (
                                     <option key={p.id} value={p.id}>
-                                      {p.label ? `${p.label.toUpperCase()} : ` : ''}{p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')}){tag}
+                                      {p.label ? `${(p.label || '').toUpperCase()} : ` : ''}{p.pan_no} | {p.bank_name} ({p.account_no.slice(-4).padStart(p.account_no.length, '*')}){tag}
                                     </option>
                                   );
                                 })}
@@ -1847,7 +1847,7 @@ export const BillingView: React.FC = () => {
                               <div className="col-span-full">
                                 <label className="block text-[10px] font-bold text-amber-800 uppercase">Cheque in Favour Of</label>
                                 <div className="text-xs font-mono font-bold text-amber-900 bg-amber-50/50 border border-amber-200/50 rounded px-2.5 py-1.5 mt-0.5">
-                                  {chequeInFavourOf.toUpperCase()}
+                                  {(chequeInFavourOf || '').toUpperCase()}
                                 </div>
                               </div>
                             )}
@@ -2366,7 +2366,7 @@ export const BillingView: React.FC = () => {
                                     ? 'bg-emerald-50 text-emerald-700 border border-emerald-150' 
                                     : 'bg-amber-50 text-amber-700 border border-amber-150'
                                 }`}>
-                                  {inv.status.toUpperCase()}
+                                  {(inv.status || 'DRAFT').toUpperCase()}
                                 </span>
                               </td>
                               <td className="py-3 px-3 text-right whitespace-nowrap text-slate-700">
@@ -2475,7 +2475,7 @@ export const BillingView: React.FC = () => {
                             }}
                             className="px-3 py-2 text-xs font-semibold hover:bg-slate-50 cursor-pointer text-slate-800"
                           >
-                            {m.name} ({m.type.toUpperCase()})
+                            {m.name} ({(m.type || '').toUpperCase()})
                           </div>
                         ))}
                     </div>
@@ -2575,7 +2575,7 @@ export const BillingView: React.FC = () => {
                 >
                   <option value="all">ALL MASTERS</option>
                   {masters.map(m => (
-                    <option key={m.id} value={m.id}>{m.name.toUpperCase()}</option>
+                    <option key={m.id} value={m.id}>{(m.name || '').toUpperCase()}</option>
                   ))}
                 </select>
 
@@ -2637,7 +2637,7 @@ export const BillingView: React.FC = () => {
                                 ? 'bg-green-50 text-green-700 border border-green-150' 
                                 : 'bg-rose-50 text-rose-700 border border-rose-150'
                             }`}>
-                              {adv.status.toUpperCase()}
+                              {(adv.status || 'ACTIVE').toUpperCase()}
                             </span>
                           </td>
                           <td className="py-2.5 px-3 text-right">

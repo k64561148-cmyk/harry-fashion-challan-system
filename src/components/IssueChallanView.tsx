@@ -844,7 +844,7 @@ export const IssueChallanView: React.FC = () => {
                       >
                         <span>{m.name}</span>
                         <span className="bg-slate-200 text-slate-600 text-[9px] px-1.5 py-0.5 rounded-full font-bold">
-                          {m.type.toUpperCase()} • {m.code}
+                          {(m.type || '').toUpperCase()} • {m.code || ''}
                         </span>
                       </button>
                     ))

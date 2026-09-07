@@ -116,7 +116,7 @@ export const SettingsView: React.FC = () => {
       }
       const updatedProf = { ...userProf, role: newRole };
       db.saveProfile(updatedProf);
-      showFeedback(`Employee role for ${userProf.name} successfully updated to ${newRole.toUpperCase()}!`);
+      showFeedback(`Employee role for ${userProf.name} successfully updated to ${(newRole || '').toUpperCase()}!`);
     }
   };
 
@@ -611,7 +611,7 @@ export const SettingsView: React.FC = () => {
     if (user) {
       db.setCurrentUser(user);
       setCurrentUser(user);
-      showFeedback(`Profile swapped! Switched to role: ${user.role.toUpperCase()}`);
+      showFeedback(`Profile swapped! Switched to role: ${(user.role || '').toUpperCase()}`);
       // Hack to reload whole dashboard permissions if parent listens or we just refresh lists
       window.dispatchEvent(new Event('storage'));
       setTimeout(() => window.location.reload(), 400);
@@ -805,7 +805,7 @@ export const SettingsView: React.FC = () => {
     // Prevent duplicate PAN + account_no under the same master
     const isDuplicate = panAccounts.some(p => {
       if (editingPanId && p.id === editingPanId) return false;
-      return p.pan_no.toUpperCase() === panNoClean && p.account_no === accountNoClean;
+      return (p.pan_no || '').toUpperCase() === panNoClean && p.account_no === accountNoClean;
     });
 
     if (isDuplicate) {
@@ -1198,7 +1198,7 @@ export const SettingsView: React.FC = () => {
                             <p className="text-slate-600 font-medium">{p.bank_name} - <span className="font-mono text-slate-800">{p.account_no}</span></p>
                             <p className="text-[10px] text-slate-400 font-mono">IFSC: {p.ifsc_code} {p.branch_name ? `(${p.branch_name})` : ''}</p>
                             {p.cheque_in_favour_of && (
-                              <p className="text-[10px] text-slate-700 font-semibold">Chq in favor of: <span className="font-bold text-[#1A2E4A]">{p.cheque_in_favour_of.toUpperCase()}</span></p>
+                              <p className="text-[10px] text-slate-700 font-semibold">Chq in favor of: <span className="font-bold text-[#1A2E4A]">{(p.cheque_in_favour_of || '').toUpperCase()}</span></p>
                             )}
                           </div>
                           <div className="flex gap-1">
@@ -1508,7 +1508,7 @@ export const SettingsView: React.FC = () => {
                           </td>
                           <td className="py-2.5 px-3">
                             <span className="bg-slate-100 text-slate-600 font-bold text-[9px] px-2 py-0.5 rounded-full inline-block">
-                              {m.type.toUpperCase()}
+                              {(m.type || '').toUpperCase()}
                             </span>
                           </td>
                           <td className="py-2.5 px-3 uppercase text-[9px] font-bold">
@@ -1632,7 +1632,7 @@ export const SettingsView: React.FC = () => {
                           <div className="space-y-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="bg-[#1A2E4A] text-white text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
-                                {group.type.toUpperCase()}
+                                {(group.type || '').toUpperCase()}
                               </span>
                               <span className="bg-slate-200 text-slate-700 text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider">
                                 CODE: {group.code}
@@ -2044,7 +2044,7 @@ export const SettingsView: React.FC = () => {
               </div>
               <div className="text-right">
                 <span className="text-[10px] bg-slate-100 text-slate-650 font-extrabold px-3 py-1.5 rounded-lg uppercase">
-                  ACTIVE USER: {currentUser.name} ({currentUser.role.replace('_', ' ').toUpperCase()})
+                  ACTIVE USER: {currentUser?.name} ({(currentUser?.role || 'user').replace('_', ' ').toUpperCase()})
                 </span>
               </div>
             </div>
@@ -2180,7 +2180,7 @@ export const SettingsView: React.FC = () => {
                                       updatedAt: new Date().toISOString()
                                     };
                                     db.saveProfile(updatedProf);
-                                    showFeedback(`Successfully updated internal profile parameters for ${prof.role.toUpperCase()}!`);
+                                    showFeedback(`Successfully updated internal profile parameters for ${(prof.role || '').toUpperCase()}!`);
                                     setEditingProfileId(null);
                                     setProfiles(db.getProfiles());
                                   }}
@@ -2259,7 +2259,7 @@ export const SettingsView: React.FC = () => {
                       log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
                     );
                     const matchAction = auditActionFilter === 'all' ? true : (
-                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                      (log.action || '').toUpperCase() === (auditActionFilter || '').toUpperCase()
                     );
                     if (auditStartDate) {
                       const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
@@ -2288,7 +2288,7 @@ export const SettingsView: React.FC = () => {
                       log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
                     );
                     const matchAction = auditActionFilter === 'all' ? true : (
-                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                      (log.action || '').toUpperCase() === (auditActionFilter || '').toUpperCase()
                     );
                     if (auditStartDate) {
                       const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
@@ -2384,7 +2384,7 @@ export const SettingsView: React.FC = () => {
                     log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
                   );
                   const matchAction = auditActionFilter === 'all' ? true : (
-                    log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                    (log.action || '').toUpperCase() === (auditActionFilter || '').toUpperCase()
                   );
                   if (auditStartDate) {
                     const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
@@ -2411,7 +2411,7 @@ export const SettingsView: React.FC = () => {
                       log.details.toLowerCase().includes(auditSearchQuery.toLowerCase())
                     );
                     const matchAction = auditActionFilter === 'all' ? true : (
-                      log.action.toUpperCase() === auditActionFilter.toUpperCase()
+                      (log.action || '').toUpperCase() === (auditActionFilter || '').toUpperCase()
                     );
                     if (auditStartDate) {
                       const startMs = new Date(auditStartDate + 'T00:00:00').getTime();
@@ -2519,7 +2519,7 @@ export const SettingsView: React.FC = () => {
 
                     <div className="p-3.5 bg-sky-50 rounded-xl border border-sky-100 text-[11px] text-sky-850 leading-relaxed font-medium">
                       <p className="font-bold text-sky-900 mb-0.5">ℹ️ Multi-User Separation Preserved</p>
-                      Your Google or Anonymous connection is used strictly as a database-level secure synchronizer pipeline. The active logged-in terminal employee (<strong className="text-sky-900">{currentUser.name} as {currentUser.role.toUpperCase()}</strong>) remains independent and separate. This ensures Sundar Department (Issue) and Kevin Billing can use separate devices on the same database in real time!
+                      Your Google or Anonymous connection is used strictly as a database-level secure synchronizer pipeline. The active logged-in terminal employee (<strong className="text-sky-900">{currentUser?.name} as {(currentUser?.role || 'user').toUpperCase()}</strong>) remains independent and separate. This ensures Sundar Department (Issue) and Kevin Billing can use separate devices on the same database in real time!
                     </div>
                     
                     <div className="flex flex-wrap gap-2 pt-1">

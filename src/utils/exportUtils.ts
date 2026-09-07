@@ -354,7 +354,7 @@ function drawLetterhead(doc: jsPDF, title: string) {
   doc.setFont('Helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(26, 46, 74);
-  doc.text(title.toUpperCase(), 105, 50.5, { align: 'center' });
+  doc.text((title || '').toUpperCase(), 105, 50.5, { align: 'center' });
 
   // Border rule below badge for visual rhythm
   doc.setDrawColor(218, 224, 233);
@@ -426,10 +426,10 @@ export async function generateChallanPDF(
     // Column 1: Master Craftsman (Bold and Beautiful)
     doc.setFont('Helvetica', 'bold');
     doc.setFontSize(12); // Bold and prominent as requested
-    doc.text(`ISSUED TO ${master.name.toUpperCase()} MASTER:`, 12, 34);
+    doc.text(`ISSUED TO ${(master.name || '').toUpperCase()} MASTER:`, 12, 34);
     doc.setFont('Helvetica', 'normal');
     doc.setFontSize(11);
-    doc.text(`Department: ${master.type.toUpperCase()} Master`, 12, 40);
+    doc.text(`Department: ${(master.type || '').toUpperCase()} Master`, 12, 40);
 
     // Column 2: Challan Details (No "CHALLAN METADATA:" heading as requested)
     doc.setFont('Helvetica', 'normal');
@@ -686,7 +686,7 @@ export async function generateInvoicePDF(
                           invoice.paymentProfileSnapshot?.pan_no ||
                           matchedProfile?.pan_no ||
                           (master.pan_accounts && master.pan_accounts.length > 0 ? master.pan_accounts[0].pan_no : null) || 
-                          `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String(master.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
+                          `ABNPU${(master.code || 'KK').substring(0, 2).toUpperCase()}${String((master.name || 'Master').split('').reduce((acc, char) => acc + char.charCodeAt(0), 17) * 4821).slice(0, 4).padStart(4, '8')}B`;
 
     doc.text(`Tailor Name: ${master.name}`, 196, 34, { align: 'right' });
     doc.text(`Pan #: ${tailorPanCode}`, 196, 40, { align: 'right' });
@@ -958,19 +958,19 @@ export async function generateInvoicePDF(
       doc.setFontSize(8.5);
       
       if (actualPanHolder) {
-        doc.text(`A/C Holder Name: ${actualPanHolder.toUpperCase()}`, 14, currentY);
+        doc.text(`A/C Holder Name: ${(actualPanHolder || '').toUpperCase()}`, 14, currentY);
         currentY += 4.5;
       }
       if (actualBankName) {
-        doc.text(`Bank: ${actualBankName.toUpperCase()}`, 14, currentY);
+        doc.text(`Bank: ${(actualBankName || '').toUpperCase()}`, 14, currentY);
         currentY += 4.5;
       }
       doc.text(`Account No: ${actualAcNo}`, 14, currentY);
       currentY += 4.5;
-      doc.text(`IFSC Code: ${actualIfsc.toUpperCase()}`, 14, currentY);
+      doc.text(`IFSC Code: ${(actualIfsc || '').toUpperCase()}`, 14, currentY);
       if (actualBranch) {
         currentY += 4.5;
-        doc.text(`Branch: ${actualBranch.toUpperCase()}`, 14, currentY);
+        doc.text(`Branch: ${(actualBranch || '').toUpperCase()}`, 14, currentY);
       }
       // Add extra padding after the bank details block before Chq in favor of
       currentY += 10;
@@ -989,10 +989,10 @@ export async function generateInvoicePDF(
     const labelWidth = doc.getTextWidth('Cheque in Favour Of: ');
     
     doc.setFont('Helvetica', 'bold');
-    doc.text(chequeFavorName.toUpperCase(), 14 + labelWidth, currentY);
+    doc.text((chequeFavorName || '').toUpperCase(), 14 + labelWidth, currentY);
     
     // Underline the chequeFavorName
-    const nameWidth = doc.getTextWidth(chequeFavorName.toUpperCase());
+    const nameWidth = doc.getTextWidth((chequeFavorName || '').toUpperCase());
     doc.setLineWidth(0.35);
     doc.line(14 + labelWidth, currentY + 0.8, 14 + labelWidth + nameWidth, currentY + 0.8);
 
@@ -1049,7 +1049,7 @@ export async function generateMasterLedgerPDF(
   doc.setFontSize(10);
   doc.text(`Master Stitcher:`, 14, 66);
   doc.setFont('Helvetica', 'normal');
-  doc.text(`${master.name} (${master.code}) - ${master.type.toUpperCase()} DIVISION`, 45, 66);
+  doc.text(`${master.name} (${master.code}) - ${(master.type || '').toUpperCase()} DIVISION`, 45, 66);
 
   doc.setFont('Helvetica', 'bold');
   doc.text(`Date Interval:`, 14, 72);
@@ -1107,7 +1107,7 @@ export async function generateMasterLedgerPDF(
     doc.text(row.ref, 38, y + 5);
     doc.setFont('Helvetica', 'bold');
     doc.setTextColor(row.type === 'issue' ? 180 : 40, row.type === 'issue' ? 40 : 120, 40);
-    doc.text(row.type.toUpperCase(), 70, y + 5);
+    doc.text((row.type || '').toUpperCase(), 70, y + 5);
     
     doc.setTextColor(20, 30, 40);
     doc.setFont('Helvetica', 'normal');
@@ -1130,7 +1130,7 @@ export async function generateMasterLedgerPDF(
   doc.text(formatINR(netBalance), 192, y + 6.5, { align: 'right' });
 
   drawFooter(doc, 1, 1);
-  doc.save(`LEDGER_MASTER_${master.code.toUpperCase()}.pdf`);
+  doc.save(`LEDGER_MASTER_${(master.code || 'MASTER').toUpperCase()}.pdf`);
   } catch (err: any) {
     showPDFError(err.message || "Failed to generate Master Ledger Report.");
   } finally {
@@ -1364,7 +1364,7 @@ export async function generateMonthlySummaryPDF(
     doc.setTextColor(20, 30, 40);
     doc.text(String(idx + 1), 18, y + 5);
     doc.text(val.masterName, 28, y + 5);
-    doc.text(val.type.toUpperCase(), 88, y + 5);
+    doc.text((val.type || '').toUpperCase(), 88, y + 5);
     doc.text(formatINR(val.totalIssuedVal), 122, y + 5, { align: 'right' });
     doc.text(formatINR(val.workEarned), 158, y + 5, { align: 'right' });
     
@@ -1396,7 +1396,7 @@ export async function generateMonthlySummaryPDF(
   doc.text(formatINR(totalNet), 192, y + 6.5, { align: 'right' });
 
   drawFooter(doc, 1, 1);
-  doc.save(`SUMMARY_MONTHLY_${months[month-1].toUpperCase()}_${year}.pdf`);
+  doc.save(`SUMMARY_MONTHLY_${(months[month-1] || '').toUpperCase()}_${year}.pdf`);
   } catch (err: any) {
     showPDFError(err.message || "Failed to generate Monthly Summary Report.");
   } finally {
@@ -1495,7 +1495,7 @@ export async function generateAuditTrailPDF(audits: AuditLog[], triggerDownload 
     
     // Bold Action Tag
     doc.setFont('Helvetica', 'bold');
-    doc.text(log.action.toUpperCase(), 105, y + 4.5);
+    doc.text((log.action || '').toUpperCase(), 105, y + 4.5);
     doc.setFont('Helvetica', 'normal');
 
     // Softly split multi line detail text to fit within page bounds (width 60mm)

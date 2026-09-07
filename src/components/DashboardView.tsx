@@ -132,7 +132,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
     // 5. Recent Challans
     // Sort challans chronologically desc, so fresh ones appear first
-    const sortedChallans = [...challans].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const sortedChallans = [...challans].sort((a, b) => {
+      const dateB = b.created_at || b.issued_date || '';
+      const dateA = a.created_at || a.issued_date || '';
+      return dateB.localeCompare(dateA);
+    });
     setRecentChallans(sortedChallans);
 
     // 6. Masters for instant O(1) in-memory lookups
@@ -704,15 +708,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
                               )}
                             </td>
                             <td className="py-3 px-3 font-medium">{getMasterName(c.master_id, c)}</td>
-                            <td className="py-3 px-3 font-mono text-[10.5px] text-slate-500">{c.issued_date.split('-').reverse().join('/')}</td>
-                            <td className="py-3 px-3 text-slate-500">{c.issued_by}</td>
+                            <td className="py-3 px-3 font-mono text-[10.5px] text-slate-500">{c.issued_date ? c.issued_date.split('-').reverse().join('/') : '-'}</td>
+                            <td className="py-3 px-3 text-slate-500">{c.issued_by || '-'}</td>
                             <td className="py-3 px-3 text-right">
                               <span className={`inline-block px-2.5 py-0.5 rounded-full text-[9px] font-bold ${
                                 c.status === 'issued' ? 'bg-blue-50 text-blue-700 border border-blue-100' :
                                 c.status === 'voided' ? 'bg-rose-50 text-rose-700 border border-rose-100' : 
                                 'bg-green-50 text-green-700 border border-green-100'
                               }`}>
-                                {c.status.toUpperCase()}
+                                {(c.status || 'issued').toUpperCase()}
                               </span>
                             </td>
                             <td className="py-3 px-3 text-right">
@@ -1017,7 +1021,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <div className="text-xs font-semibold text-slate-600 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100">
                 <p>Challan reference: <span className="font-bold text-slate-900">{voidingChallan.challan_no}</span></p>
                 <p>Stitching Master: <span className="font-bold text-slate-900">{getMasterName(voidingChallan.master_id)}</span></p>
-                <p>Issue Date: <span className="font-bold text-slate-900">{voidingChallan.issued_date.split('-').reverse().join('/')}</span></p>
+                <p>Issue Date: <span className="font-bold text-slate-900">{voidingChallan.issued_date ? voidingChallan.issued_date.split('-').reverse().join('/') : '-'}</span></p>
               </div>
 
               <div>
@@ -1170,7 +1174,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <div className="grid grid-cols-2 gap-4 text-xs font-semibold text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100">
                 <div>
                   <p>Challan reference: <span className="font-bold text-slate-900">{editingChallan.challan_no}</span></p>
-                  <p>Issue Date: <span className="font-bold text-slate-900">{editingChallan.issued_date.split('-').reverse().join('/')}</span></p>
+                  <p>Issue Date: <span className="font-bold text-slate-900">{editingChallan.issued_date ? editingChallan.issued_date.split('-').reverse().join('/') : '-'}</span></p>
                 </div>
                 <div>
                   <p>Master Stitcher: <span className="font-bold text-slate-950">{getMasterName(editingChallan.master_id)}</span></p>
@@ -1320,8 +1324,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               <div className="text-xs font-semibold text-slate-600 space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100">
                 <p>Challan Number: <span className="font-bold text-slate-900">{deletingChallan.challan_no}</span></p>
                 <p>Stitching Master: <span className="font-bold text-slate-900">{getMasterName(deletingChallan.master_id, deletingChallan)}</span></p>
-                <p>Issue Date: <span className="font-bold text-slate-900">{deletingChallan.issued_date.split('-').reverse().join('/')}</span></p>
-                <p>Status: <span className="font-bold text-rose-600 uppercase">{deletingChallan.status}</span></p>
+                <p>Issue Date: <span className="font-bold text-slate-900">{deletingChallan.issued_date ? deletingChallan.issued_date.split('-').reverse().join('/') : '-'}</span></p>
+                <p>Status: <span className="font-bold text-rose-600 uppercase">{deletingChallan.status || 'ISSUED'}</span></p>
               </div>
 
               <div className="p-3 bg-rose-50 border border-rose-200/50 rounded-lg text-rose-850 text-xs leading-relaxed space-y-1.5">

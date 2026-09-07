@@ -323,7 +323,7 @@ export const ReportsView: React.FC = () => {
     });
 
     // Sort chronologically
-    ledgerRows.sort((a, b) => a.date.localeCompare(b.date));
+    ledgerRows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
     // Balance is Credits (Work credit + adjustments) minus Debits (material deductions + payments)
     const balance = totalEarned + totalAdjustments - totalIssued - totalPayments;
@@ -357,13 +357,13 @@ export const ReportsView: React.FC = () => {
       const excelRows = dataObj.rows.map(r => ({
         Date: formatDate(r.date),
         'Reference ID': r.ref,
-        'Transaction Type': r.type.toUpperCase(),
+        'Transaction Type': (r.type || '').toUpperCase(),
         'Narrative/Particular': r.material,
         Qty: r.qty || '',
         'Outflow/Deduction Value (₹)': (r.type === 'issue' || r.type === 'payment' || (r.type === 'adjustment' && r.value < 0)) ? Math.abs(r.value) : 0,
         'Inflow/Earnings Work (₹)': (r.type === 'work' || (r.type === 'adjustment' && r.value >= 0)) ? r.value : 0
       }));
-      exportToExcel(excelRows, `LEDGER_${activeMaster.code.toUpperCase()}`);
+      exportToExcel(excelRows, `LEDGER_${(activeMaster.code || 'MASTER').toUpperCase()}`);
     }
   };
 
@@ -417,14 +417,14 @@ export const ReportsView: React.FC = () => {
     });
 
     // Sort events
-    events.sort((a, b) => a.date.localeCompare(b.date));
+    events.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
     // Calculate running balance based on current stock backward deduction or forward sum
     // Let's do forward calculations starting with an estimated start balance
     let currentBal = selectedMaterial.current_stock;
     
     // We want the events to show a logical running count. Let's do backward calculation first to find starting inventory balance
-    const eventsSortedDesc = [...events].sort((a, b) => b.date.localeCompare(a.date));
+    const eventsSortedDesc = [...events].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     eventsSortedDesc.forEach(ev => {
       // If we go backwards, inwards decreases stock and issues increases stock
       ev.balance = currentBal;
@@ -437,7 +437,7 @@ export const ReportsView: React.FC = () => {
 
     // Re-adjust sequential events chronologically with correct cumulative balances
     let runStock = currentBal;
-    events.sort((a, b) => a.date.localeCompare(b.date)).forEach(ev => {
+    events.sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(ev => {
       if (ev.type === 'stock_in') {
         runStock += ev.qty;
       } else {
@@ -491,7 +491,7 @@ export const ReportsView: React.FC = () => {
       // Find last inward date
       const matsInward = inwardEntries.filter(inw => inw.material_id === m.id);
       const lastIn = matsInward.length > 0 
-        ? matsInward.sort((a, b) => b.inward_date.localeCompare(a.inward_date))[0].inward_date 
+        ? matsInward.sort((a, b) => (b.inward_date || '').localeCompare(a.inward_date || ''))[0].inward_date 
         : 'NA';
 
       // Sum units issued this calendar month
@@ -563,7 +563,7 @@ export const ReportsView: React.FC = () => {
     } else {
       const excelRows = summaryList.map(item => ({
         'Master Custom Name': item.masterName,
-        'Stitching Department': item.type.toUpperCase(),
+        'Stitching Department': (item.type || '').toUpperCase(),
         'Aggregate Material Deductions (A) (₹)': item.totalIssuedVal,
         'Stitch Job Earnings (B) (₹)': item.workEarned,
         'Settle Net Amount (B-A) (₹)': item.netPaid
@@ -643,7 +643,7 @@ export const ReportsView: React.FC = () => {
                   onChange={(e) => setSelectedMasterId(e.target.value)}
                 >
                   {masters.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.type.toUpperCase()})</option>
+                    <option key={m.id} value={m.id}>{m.name} ({(m.type || '').toUpperCase()})</option>
                   ))}
                 </select>
               </div>
@@ -1332,7 +1332,7 @@ export const ReportsView: React.FC = () => {
                 >
                   <option value="">-- Choose active master --</option>
                   {masters.map(m => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.code.toUpperCase()})</option>
+                    <option key={m.id} value={m.id}>{m.name} ({(m.code || '').toUpperCase()})</option>
                   ))}
                 </select>
               </div>
