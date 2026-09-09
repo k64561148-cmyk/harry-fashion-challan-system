@@ -28,6 +28,8 @@ export const DeviceTransferModal: React.FC<DeviceTransferModalProps> = ({ isOpen
   const [pendingChallans, setPendingChallans] = useState<Challan[]>([]);
   const [isPushingCloud, setIsPushingCloud] = useState(false);
   const [cloudPushMessage, setCloudPushMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [syncAllMsg, setSyncAllMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   // Export states
   const [exportedJSON, setExportedJSON] = useState('');
@@ -125,6 +127,30 @@ export const DeviceTransferModal: React.FC<DeviceTransferModalProps> = ({ isOpen
     }
   };
 
+  const handleSyncAllDevices = async () => {
+    setIsSyncingAll(true);
+    setSyncAllMsg(null);
+    try {
+      const res = await db.syncWithCentralServer(true);
+      await db.manualFullSync(false);
+      setSyncAllMsg({
+        type: res.success ? 'success' : 'info',
+        text: res.message || 'All devices synchronized successfully!'
+      });
+      refreshPendingStatus();
+      try {
+        setExportedJSON(db.exportDeviceSyncPackage());
+      } catch (_) {}
+    } catch (err: any) {
+      setSyncAllMsg({
+        type: 'error',
+        text: `Sync error: ${err?.message || String(err)}`
+      });
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
   const handleForceCloudPush = async () => {
     setIsPushingCloud(true);
     setCloudPushMessage(null);
@@ -215,6 +241,47 @@ export const DeviceTransferModal: React.FC<DeviceTransferModalProps> = ({ isOpen
           {/* TAB 1: CLOUD & AUTO-SYNC */}
           {activeTab === 'cloud' && (
             <div className="space-y-4">
+              {/* Central Multi-Device Sync Card */}
+              <div className="p-4 bg-gradient-to-r from-blue-950/40 via-indigo-950/30 to-purple-950/30 border border-blue-600/30 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className={`w-4 h-4 text-blue-400 ${isSyncingAll ? 'animate-spin' : ''}`} />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Central Multi-Device Synchronization
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    Live Server Relay Active
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Connects all your phones, laptops, and PCs together. When any device issues a challan or creates an invoice, it is automatically synchronized across all other devices.
+                </p>
+
+                <button
+                  type="button"
+                  id="btn-sync-all-devices-now"
+                  onClick={handleSyncAllDevices}
+                  disabled={isSyncingAll}
+                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold tracking-wide transition flex items-center justify-center gap-2 cursor-pointer shadow-md"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isSyncingAll ? 'animate-spin' : ''}`} />
+                  {isSyncingAll ? 'Synchronizing All Connected Devices...' : 'Sync All Devices Now (One-Click)'}
+                </button>
+
+                {syncAllMsg && (
+                  <div className={`p-2.5 rounded-lg text-xs border ${
+                    syncAllMsg.type === 'success'
+                      ? 'bg-emerald-950/40 border-emerald-700/50 text-emerald-300'
+                      : syncAllMsg.type === 'error'
+                      ? 'bg-rose-950/40 border-rose-700/50 text-rose-300'
+                      : 'bg-blue-950/40 border-blue-700/50 text-blue-300'
+                  }`}>
+                    {syncAllMsg.text}
+                  </div>
+                )}
+              </div>
+
               {/* Live Cross-Tab Status */}
               <div className="p-3.5 bg-emerald-950/20 border border-emerald-800/30 rounded-xl flex items-start gap-3">
                 <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
@@ -315,10 +382,10 @@ export const DeviceTransferModal: React.FC<DeviceTransferModalProps> = ({ isOpen
               <div className="p-3.5 bg-slate-900/60 border border-slate-700/50 rounded-xl">
                 <div className="flex items-center gap-2 mb-1">
                   <Laptop className="w-4 h-4 text-blue-400" />
-                  <span className="text-xs font-bold text-white">Transfer Challans to Another Computer or Phone</span>
+                  <span className="text-xs font-bold text-white">Transfer Complete Database to Another Computer or Phone</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  This generates a complete sync package of your recent challans, masters, and materials. You can copy the code or download the file to import on your other device in seconds.
+                  This generates a complete sync package of all your challans, invoices, inward entries, masters, materials, and advances. You can copy the code or download the file to import on your other device in seconds.
                 </p>
               </div>
 

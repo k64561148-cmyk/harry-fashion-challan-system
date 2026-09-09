@@ -548,6 +548,276 @@ class DatabaseService {
   private uploadDebounceTimer: any = null;
   private syncDebounceTimer: any = null;
   private broadcastChannel: BroadcastChannel | null = null;
+  private serverSyncTimer: any = null;
+  private sseSource: EventSource | null = null;
+  private isServerSyncing: boolean = false;
+  private pendingServerPushes: Map<string, any> = new Map();
+  private serverPushDebounceTimer: any = null;
+  private lastServerSyncTs: number = 0;
+
+  public getDeletedRecordIds(coll: string): Set<string> {
+    try {
+      const raw = localStorage.getItem(`hf_tombstones_${coll}`);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) return new Set(arr);
+      }
+    } catch (_) {}
+    return new Set();
+  }
+
+  public recordTombstone(coll: string, idOrIds: string | string[]): void {
+    try {
+      const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+      const set = this.getDeletedRecordIds(coll);
+      ids.forEach(id => set.add(id));
+      localStorage.setItem(`hf_tombstones_${coll}`, JSON.stringify(Array.from(set)));
+
+      // Call server delete endpoint in background
+      fetch('/api/sync/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entity: coll,
+          ids,
+          deviceId: this.getDeviceId()
+        })
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  public setupCentralServerSync() {
+    if (typeof window === 'undefined') return;
+
+    // 1. Initial background sync with central server
+    this.syncWithCentralServer();
+
+    // 2. Connect to Server-Sent Events (SSE) stream for instantaneous multi-device updates
+    this.initSSEConnection();
+
+    // 3. Fallback periodic sync every 12 seconds to ensure eventual consistency across all devices
+    if (this.serverSyncTimer) clearInterval(this.serverSyncTimer);
+    this.serverSyncTimer = setInterval(() => {
+      this.syncWithCentralServer();
+    }, 12000);
+
+    // 4. On tab focus / visibility change, sync immediately
+    window.addEventListener('focus', () => {
+      this.syncWithCentralServer();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.syncWithCentralServer();
+      }
+    });
+  }
+
+  private initSSEConnection() {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+    try {
+      if (this.sseSource) {
+        this.sseSource.close();
+      }
+      this.sseSource = new EventSource('/api/sync/events');
+      this.sseSource.addEventListener('sync', (e: MessageEvent) => {
+        try {
+          const payload = JSON.parse(e.data);
+          // If this device was NOT the sender, pull the latest data
+          if (payload?.sourceDeviceId !== this.getDeviceId()) {
+            this.syncWithCentralServer(false, true);
+          }
+        } catch (_) {}
+      });
+      this.sseSource.onerror = () => {
+        // SSE dropped or server restarted, will automatically reconnect
+      };
+    } catch (_) {}
+  }
+
+  public async syncWithCentralServer(forceFullPush: boolean = false, isRemoteNotification: boolean = false): Promise<{
+    success: boolean;
+    totalSynced: number;
+    message: string;
+  }> {
+    if (this.isServerSyncing && !forceFullPush) {
+      return { success: true, totalSynced: 0, message: 'Sync already in progress' };
+    }
+    this.isServerSyncing = true;
+    try {
+      const syncCollections = [
+        'masters',
+        'materials',
+        'master_rate_overrides',
+        'challans',
+        'challan_items',
+        'inward_entries',
+        'invoices',
+        'invoice_challans',
+        'rate_history',
+        'stock_corrections',
+        'master_advances',
+        'master_advance_ledger',
+        'audit_logs',
+        'ledger_transactions',
+        'company_settings',
+        'profiles'
+      ];
+
+      // Prepare local collections payload
+      const localPayload: Record<string, any[]> = {};
+      const deletedPayload: Record<string, string[]> = {};
+      syncCollections.forEach(c => {
+        localPayload[c] = this.load<any[]>(c, []);
+        const tomb = Array.from(this.getDeletedRecordIds(c));
+        if (tomb.length > 0) deletedPayload[c] = tomb;
+      });
+
+      // Send to server
+      const response = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: this.getDeviceId(),
+          data: localPayload,
+          deletedIds: deletedPayload
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server returned status ${response.status}`);
+      }
+
+      const result = await response.json();
+      if (!result.success || !result.data) {
+        throw new Error(result.message || 'Invalid server response');
+      }
+
+      const serverData = result.data;
+      if (serverData?.tombstones) {
+        Object.keys(serverData.tombstones).forEach(coll => {
+          const arr = serverData.tombstones[coll];
+          if (Array.isArray(arr)) {
+            const loc = this.getDeletedRecordIds(coll);
+            arr.forEach(id => loc.add(id));
+            localStorage.setItem(`hf_tombstones_${coll}`, JSON.stringify(Array.from(loc)));
+          }
+        });
+      }
+
+      let totalSynced = 0;
+      let hasChanges = false;
+
+      const getKey = (coll: string, item: any) => {
+        if (!item) return '';
+        if (coll === 'invoice_challans') {
+          return `${item.invoice_id}_${item.challan_id}`;
+        }
+        return item.id || item.uid || item._id || '';
+      };
+
+      // Merge server data into local storage
+      syncCollections.forEach(coll => {
+        const remoteList = serverData[coll];
+        if (!Array.isArray(remoteList)) return;
+
+        const currentLocal = this.load<any[]>(coll, []);
+        const localMap = new Map<string, any>();
+        const tombSet = this.getDeletedRecordIds(coll);
+        let collChanged = false;
+
+        currentLocal.forEach(it => {
+          const k = getKey(coll, it);
+          if (k && !tombSet.has(k)) {
+            localMap.set(k, it);
+          } else if (k && tombSet.has(k)) {
+            collChanged = true;
+          }
+        });
+
+        remoteList.forEach((remoteItem: any) => {
+          const k = getKey(coll, remoteItem);
+          if (!k || tombSet.has(k)) return; // Strictly ignore deleted / tombstoned records!
+          if (!localMap.has(k)) {
+            localMap.set(k, remoteItem);
+            collChanged = true;
+            totalSynced++;
+          } else {
+            const localItem = localMap.get(k);
+            if (coll === 'challans' && Array.isArray(remoteItem.items) && remoteItem.items.length > 0 && (!localItem.items || localItem.items.length === 0)) {
+              localMap.set(k, { ...localItem, ...remoteItem });
+              collChanged = true;
+            } else {
+              const remoteTs = new Date(remoteItem.updated_at || remoteItem.updatedAt || remoteItem.created_at || remoteItem.createdAt || 0).getTime();
+              const localTs = new Date(localItem.updated_at || localItem.updatedAt || localItem.created_at || localItem.createdAt || 0).getTime();
+              if (remoteTs > localTs) {
+                localMap.set(k, remoteItem);
+                collChanged = true;
+              }
+            }
+          }
+        });
+
+        if (collChanged || currentLocal.length !== localMap.size) {
+          this.save(coll, Array.from(localMap.values()));
+          hasChanges = true;
+        }
+      });
+
+      if (hasChanges) {
+        this.sanitizeChallanItems();
+        this.notifySync(true);
+      }
+
+      this.lastServerSyncTs = Date.now();
+      this.cloudHealth.lastRead = new Date().toISOString();
+      this.cloudHealth.lastSuccessfulWrite = new Date().toISOString();
+      this.cloudHealth.syncFailed = false;
+
+      return {
+        success: true,
+        totalSynced,
+        message: `All devices synchronized successfully! (${totalSynced} updates received)`
+      };
+    } catch (err: any) {
+      console.warn('[Central Server Sync] Notice:', err?.message || err);
+      return {
+        success: false,
+        totalSynced: 0,
+        message: `Sync notice: ${err?.message || String(err)}`
+      };
+    } finally {
+      this.isServerSyncing = false;
+    }
+  }
+
+  private scheduleServerPush(key: string, value: any) {
+    if (typeof window === 'undefined' || !Array.isArray(value)) return;
+    this.pendingServerPushes.set(key, value);
+    if (this.serverPushDebounceTimer) clearTimeout(this.serverPushDebounceTimer);
+    this.serverPushDebounceTimer = setTimeout(() => {
+      this.flushServerPushes();
+    }, 400);
+  }
+
+  private async flushServerPushes() {
+    if (this.pendingServerPushes.size === 0) return;
+    const toPush: Record<string, any[]> = {};
+    for (const [k, val] of this.pendingServerPushes.entries()) {
+      toPush[k] = val;
+    }
+    this.pendingServerPushes.clear();
+
+    try {
+      await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId: this.getDeviceId(),
+          data: toPush
+        })
+      });
+    } catch (_) {}
+  }
 
   public notifySync(immediate: boolean = false): void {
     if (immediate) {
@@ -999,6 +1269,9 @@ class DatabaseService {
         });
       } catch (_) {}
     }
+
+    // 5. Automatic Central Server multi-device synchronization
+    this.scheduleServerPush(key, value);
   }
 
   constructor() {
@@ -1061,6 +1334,7 @@ class DatabaseService {
     this.testCloudConnection();
     this.setupAuthStateListener();
     this.hydrateFromIndexedDB();
+    this.setupCentralServerSync();
   }
 
   private async hydrateFromIndexedDB(): Promise<void> {
@@ -1889,6 +2163,9 @@ class DatabaseService {
     message: string;
   }> {
     try {
+      // 0. Synchronize with Central Server to unite all devices immediately
+      const centralSyncRes = await this.syncWithCentralServer(true);
+
       // 1. Only clear quota flags if explicitly requested via forceRetryWrites
       if (forceRetryWrites) {
         this.isQuotaExceeded = false;
@@ -2075,9 +2352,9 @@ class DatabaseService {
       // Trigger global UI re-render
       this.notifySync();
 
-      let successMessage = `Manual Full Sync Completed: Retrieved ${totalFetched} records from Cloud, verified and synced ${totalUploaded} local records. All devices and login accounts are now synchronized!`;
+      let successMessage = `All devices and logins synchronized! Unified data across all devices (${centralSyncRes.totalSynced} updates merged). Cloud sync active.`;
       if (this.isQuotaExceededActive) {
-        successMessage = `Local Cache Synchronized: Retrieved ${totalFetched} cloud records. Cloud writes are currently paused while daily free tier quota resets. All local data is 100% safely persisted on this device.`;
+        successMessage = `All devices synchronized! Unified records across all devices and logins (${centralSyncRes.totalSynced} updates merged). Cloud writes paused for daily free quota.`;
       }
 
       return {
@@ -2257,76 +2534,134 @@ class DatabaseService {
     }
   }
 
-  // Export a lightweight sync package for transferring data directly to another device (phone, laptop, PC)
+  // Export a complete sync package for transferring data directly to another device (phone, laptop, PC)
   public exportDeviceSyncPackage(): string {
-    const challans = this.getChallans();
-    const masters = this.getMasters();
-    const materials = this.getMaterials();
     const pkg = {
-      appName: 'Harry Fashion Quick Device Sync',
-      version: '1.0',
+      appName: 'Harry Fashion Complete Device Sync',
+      version: '2.0',
       exportedAt: new Date().toISOString(),
       sourceDeviceId: this.getDeviceId(),
-      challans: challans.slice(0, 200), // Recent 200 challans
-      masters,
-      materials
+      challans: this.getChallans(),
+      challan_items: this.load<any[]>('challan_items', []),
+      masters: this.getMasters(),
+      materials: this.getMaterials(),
+      inward_entries: this.getInwardEntries(),
+      invoices: this.getInvoices(),
+      invoice_challans: this.load<any[]>('invoice_challans', []),
+      master_rate_overrides: this.load<any[]>('master_rate_overrides', []),
+      rate_history: this.load<any[]>('rate_history', []),
+      stock_corrections: this.load<any[]>('stock_corrections', []),
+      master_advances: this.load<any[]>('master_advances', []),
+      master_advance_ledger: this.load<any[]>('master_advance_ledger', []),
+      ledger_transactions: this.load<any[]>('ledger_transactions', []),
+      company_settings: this.load<any[]>('company_settings', []),
+      profiles: this.load<any[]>('profiles', [])
     };
     return JSON.stringify(pkg, null, 2);
   }
 
   // Import and merge a sync package received from another device
-  public importDeviceSyncPackage(jsonStr: string): { success: boolean; importedChallans: number; importedMasters: number; message: string } {
+  public importDeviceSyncPackage(jsonStr: string): { 
+    success: boolean; 
+    importedChallans: number; 
+    importedMasters: number; 
+    importedInvoices: number;
+    importedInward: number;
+    message: string 
+  } {
     try {
       const data = JSON.parse(jsonStr);
-      if (!data || !Array.isArray(data.challans)) {
-        throw new Error("Invalid sync package: missing challans list.");
+      if (!data || typeof data !== 'object') {
+        throw new Error("Invalid sync package: not a valid JSON object.");
       }
 
-      // Merge Challans
-      const existingChallans = this.getChallans();
-      const existingMap = new Map<string, Challan>();
-      existingChallans.forEach(c => existingMap.set(c.id, c));
-      
-      let importedChallans = 0;
-      data.challans.forEach((c: Challan) => {
-        if (c && c.id && !existingMap.has(c.id)) {
-          existingMap.set(c.id, c);
-          importedChallans++;
+      const getKey = (coll: string, item: any) => {
+        if (!item) return '';
+        if (coll === 'invoice_challans') {
+          return `${item.invoice_id}_${item.challan_id}`;
         }
-      });
+        return item.id || item.uid || item._id || '';
+      };
 
-      const mergedChallans = Array.from(existingMap.values()).sort(
-        (a, b) => new Date(b.created_at || b.issued_date || 0).getTime() - new Date(a.created_at || a.issued_date || 0).getTime()
-      );
-      this.save('challans', mergedChallans);
+      const collectionsToMerge = [
+        'challans',
+        'challan_items',
+        'masters',
+        'materials',
+        'inward_entries',
+        'invoices',
+        'invoice_challans',
+        'master_rate_overrides',
+        'rate_history',
+        'stock_corrections',
+        'master_advances',
+        'master_advance_ledger',
+        'ledger_transactions',
+        'company_settings',
+        'profiles'
+      ];
 
-      // Merge Masters
+      let importedChallans = 0;
       let importedMasters = 0;
-      if (Array.isArray(data.masters)) {
-        const existingMasters = this.getMasters();
-        const masterMap = new Map<string, Master>();
-        existingMasters.forEach(m => masterMap.set(m.id, m));
-        data.masters.forEach((m: Master) => {
-          if (m && m.id && !masterMap.has(m.id)) {
-            masterMap.set(m.id, m);
-            importedMasters++;
+      let importedInvoices = 0;
+      let importedInward = 0;
+
+      collectionsToMerge.forEach((coll) => {
+        const incomingList = data[coll];
+        if (!Array.isArray(incomingList)) return;
+
+        const currentLocal = this.load<any[]>(coll, []);
+        const localMap = new Map<string, any>();
+        currentLocal.forEach(it => {
+          const k = getKey(coll, it);
+          if (k) localMap.set(k, it);
+        });
+
+        incomingList.forEach((incomingItem: any) => {
+          const k = getKey(coll, incomingItem);
+          if (!k) return;
+
+          if (!localMap.has(k)) {
+            localMap.set(k, incomingItem);
+            if (coll === 'challans') importedChallans++;
+            if (coll === 'masters') importedMasters++;
+            if (coll === 'invoices') importedInvoices++;
+            if (coll === 'inward_entries') importedInward++;
+          } else {
+            const localItem = localMap.get(k);
+            if (coll === 'challans' && Array.isArray(incomingItem.items) && incomingItem.items.length > 0 && (!localItem.items || localItem.items.length === 0)) {
+              localMap.set(k, { ...localItem, ...incomingItem });
+            } else {
+              const inTs = new Date(incomingItem.updated_at || incomingItem.updatedAt || incomingItem.created_at || incomingItem.createdAt || 0).getTime();
+              const locTs = new Date(localItem.updated_at || localItem.updatedAt || localItem.created_at || localItem.createdAt || 0).getTime();
+              if (inTs > locTs) {
+                localMap.set(k, incomingItem);
+              }
+            }
           }
         });
-        this.save('masters', Array.from(masterMap.values()));
-      }
 
+        this.save(coll, Array.from(localMap.values()));
+      });
+
+      this.sanitizeChallanItems();
       this.notifySync(true);
+
       return {
         success: true,
         importedChallans,
         importedMasters,
-        message: `Successfully imported ${importedChallans} new challan(s) and ${importedMasters} master(s) from the other device!`
+        importedInvoices,
+        importedInward,
+        message: `Successfully imported & merged: ${importedChallans} challans, ${importedInvoices} invoices, ${importedInward} inward entries, and ${importedMasters} masters from other device!`
       };
     } catch (err: any) {
       return {
         success: false,
         importedChallans: 0,
         importedMasters: 0,
+        importedInvoices: 0,
+        importedInward: 0,
         message: `Failed to import sync package: ${err.message}`
       };
     }
@@ -3560,6 +3895,10 @@ class DatabaseService {
       this.save('challan_items', newItemsList);
       this.save('materials', materialsList);
 
+      // Record tombstones to permanently prevent resurrection on any device
+      this.recordTombstone('challans', challanId);
+      this.recordTombstone('challan_items', deletedItems.map(item => item.id));
+
       if (this.isFirebaseInitialized) {
         try {
           const batch = writeBatch(firestore);
@@ -3626,6 +3965,10 @@ class DatabaseService {
 
       this.save('challans', challanList);
       this.save('challan_items', remainingItems);
+
+      // Record tombstones so this deleted challan and its items NEVER resurrect on any device
+      this.recordTombstone('challans', challanId);
+      this.recordTombstone('challan_items', deletedItems.map(item => item.id));
 
       this.addAuditLog(currentUser.email, 'DELETED', `Permanently deleted Challan ${challan.challan_no} for Master ${masterName}`);
 

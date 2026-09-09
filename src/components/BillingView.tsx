@@ -159,6 +159,33 @@ export const BillingView: React.FC = () => {
   const [viewingChallanDetails, setViewingChallanDetails] = useState<Challan | null>(null);
   const [viewingChallanDetailsItems, setViewingChallanDetailsItems] = useState<ChallanItem[]>([]);
 
+  // Pending challan filter & direct deletion in BillingView
+  const [pendingSearchFilter, setPendingSearchFilter] = useState<string>('');
+  const [challanToDelete, setChallanToDelete] = useState<Challan | null>(null);
+  const [deleteChallanSuccessMsg, setDeleteChallanSuccessMsg] = useState<string>('');
+
+  const handleConfirmPurgeChallan = () => {
+    if (!challanToDelete) return;
+    try {
+      db.permanentlyDeleteChallan(challanToDelete.id);
+      const chNo = challanToDelete.challan_no;
+      const chId = challanToDelete.id;
+      setPendingChallans(prev => prev.filter(c => c.id !== chId));
+      setSelectedChallanIds(prev => {
+        const next = { ...prev };
+        delete next[chId];
+        return next;
+      });
+      setChallanToDelete(null);
+      setDeleteChallanSuccessMsg(`Challan ${chNo} permanently purged and tombstoned.`);
+      setTimeout(() => setDeleteChallanSuccessMsg(''), 4000);
+      loadInitialData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to purge challan');
+      setChallanToDelete(null);
+    }
+  };
+
   const getFilteredMasters = () => {
     if (!masterSearchQuery) return masters;
     const query = masterSearchQuery.toLowerCase();
@@ -1361,17 +1388,76 @@ export const BillingView: React.FC = () => {
                   
                   {/* List 1: Pending Challans To Bill */}
                   <div>
-                    <div className="flex justify-between items-center mb-3 border-b border-slate-100 pb-2">
+                    <div className="flex justify-between items-center mb-2 border-b border-slate-100 pb-2">
                       <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#1A2E4A]">
                         <Clock className="w-4 h-4 text-amber-500 animate-pulse" />
                         <span className="uppercase tracking-wider">Pending Challans To Bill ({pendingChallans.length})</span>
                       </div>
-                      {pendingChallans.length > 0 && (
-                        <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded-sm">
-                          Tab + Arrow Keys
-                        </span>
-                      )}
+                      <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
+                        Selected: <strong className="text-[#1A2E4A]">{Object.values(selectedChallanIds).filter(Boolean).length}</strong> / {pendingChallans.length}
+                      </span>
                     </div>
+
+                    {deleteChallanSuccessMsg && (
+                      <div className="mb-2 p-2 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg flex items-center gap-1.5 animate-fade-in">
+                        <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>{deleteChallanSuccessMsg}</span>
+                      </div>
+                    )}
+
+                    {pendingChallans.length > 0 && (
+                      <div className="space-y-2 mb-2.5">
+                        {/* Quick Action Buttons */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const bulk: { [id: string]: boolean } = {};
+                                pendingChallans.forEach(ch => {
+                                  bulk[ch.id] = true;
+                                });
+                                setSelectedChallanIds(bulk);
+                              }}
+                              className="text-[11px] font-bold text-[#1A2E4A] hover:bg-slate-100 px-2.5 py-1 rounded border border-slate-200 shadow-2xs transition cursor-pointer"
+                            >
+                              Select All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedChallanIds({})}
+                              className="text-[11px] font-bold text-rose-700 hover:bg-rose-50 px-2.5 py-1 rounded border border-rose-200 shadow-2xs transition cursor-pointer"
+                            >
+                              Deselect All
+                            </button>
+                          </div>
+                          <span className="text-[10px] text-slate-400 font-bold bg-slate-50 px-1.5 py-0.5 rounded border border-slate-200">
+                            Tab + Arrows
+                          </span>
+                        </div>
+
+                        {/* Search Filter */}
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+                          <input
+                            type="text"
+                            placeholder="Filter challan no (e.g. 1042)..."
+                            value={pendingSearchFilter}
+                            onChange={e => setPendingSearchFilter(e.target.value)}
+                            className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50/80 border border-slate-200 rounded-lg focus:outline-none focus:border-[#1A2E4A] focus:bg-white transition"
+                          />
+                          {pendingSearchFilter && (
+                            <button
+                              type="button"
+                              onClick={() => setPendingSearchFilter('')}
+                              className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 text-xs"
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {pendingChallans.length === 0 ? (
                       <div className="text-center py-6 text-slate-400 text-[11px] leading-relaxed bg-slate-50/50 rounded-lg border border-dashed border-slate-200">
@@ -1392,7 +1478,17 @@ export const BillingView: React.FC = () => {
                           className="space-y-2 max-h-[250px] overflow-y-auto pr-1 focus:outline-2 focus:outline-blue-500 rounded-xl p-0.5"
                           title="Click here or press Tab to navigate via keyboard arrows"
                         >
-                          {pendingChallans.map((ch, idx) => {
+                          {pendingChallans
+                            .filter(ch => {
+                              if (!pendingSearchFilter.trim()) return true;
+                              const q = pendingSearchFilter.toLowerCase().trim();
+                              return (
+                                ch.challan_no?.toLowerCase().includes(q) ||
+                                ch.issued_date?.includes(q) ||
+                                ch.issued_by?.toLowerCase().includes(q)
+                              );
+                            })
+                            .map((ch, idx) => {
                             const cleanNotes = ch.notes ? ch.notes.split('\n').filter(line => !line.trim().startsWith('EDIT REASON:')).join(' ') : '';
                             const isFocused = idx === focusedChallanIndex && isChallanListFocused;
                             return (
@@ -1402,7 +1498,7 @@ export const BillingView: React.FC = () => {
                                   setFocusedChallanIndex(idx);
                                   setIsChallanListFocused(true);
                                 }}
-                                className={`flex items-start gap-2.5 p-3 rounded-xl border transition cursor-pointer text-left block relative ${
+                                className={`flex items-start gap-2.5 p-3 rounded-xl border transition cursor-pointer text-left block relative group ${
                                   selectedChallanIds[ch.id] 
                                     ? 'bg-slate-50 border-[#1A2E4A]/40' 
                                     : 'bg-white border-slate-150'
@@ -1410,14 +1506,27 @@ export const BillingView: React.FC = () => {
                               >
                                 <input
                                   type="checkbox"
-                                  className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer"
+                                  className="mt-1 w-4 h-4 text-[#1A2E4A] focus:ring-[#2D3E5D] rounded border-slate-300 cursor-pointer shrink-0"
                                   checked={!!selectedChallanIds[ch.id]}
                                   onChange={() => handleChallanToggle(ch.id)}
                                 />
-                                <div className="flex-1 text-xs">
+                                <div className="flex-1 text-xs min-w-0">
                                   <div className="flex justify-between items-center font-bold text-slate-900">
-                                    <span>{ch.challan_no}</span>
-                                    <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
+                                    <span className="font-mono">{ch.challan_no}</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px] text-slate-400 font-mono">{formatDate(ch.issued_date)}</span>
+                                      <button
+                                        type="button"
+                                        title="Permanently delete this unwanted extra challan"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setChallanToDelete(ch);
+                                        }}
+                                        className="p-1 text-slate-350 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
                                   </div>
                                   <p className="text-[10px] text-slate-550 mt-1">
                                     Issued By: <span className="font-semibold">{ch.issued_by}</span>
@@ -2970,6 +3079,45 @@ export const BillingView: React.FC = () => {
                 className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
               >
                 Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. PERMANENT CHALLAN PURGE CONFIRMATION MODAL */}
+      {challanToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl border border-rose-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto border border-rose-100">
+                <Trash2 className="w-6 h-6 animate-pulse" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800">Permanently Delete Challan?</h4>
+              <div className="bg-slate-50 p-3 rounded-lg text-xs text-left space-y-1 border border-slate-150">
+                <p>Challan No: <strong className="text-slate-900 font-mono">{challanToDelete.challan_no}</strong></p>
+                <p>Issue Date: <span className="text-slate-700">{formatDate(challanToDelete.issued_date)}</span></p>
+                <p>Issued By: <span className="text-slate-700">{challanToDelete.issued_by}</span></p>
+              </div>
+              <p className="text-rose-600 text-xs text-left leading-relaxed">
+                ⚠️ This will permanently remove this challan and its line items. It will be recorded with a permanent deletion tombstone so that it <strong>never re-appears on this or any other device or login</strong>.
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button 
+                type="button"
+                onClick={() => setChallanToDelete(null)}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-lg text-xs border border-slate-250 cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button 
+                type="button"
+                onClick={handleConfirmPurgeChallan}
+                className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-2 px-4 rounded-lg text-xs cursor-pointer transition shadow-sm uppercase tracking-wider"
+              >
+                Permanently Delete
               </button>
             </div>
           </div>
